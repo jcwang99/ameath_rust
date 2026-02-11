@@ -1,14 +1,14 @@
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT, SIZE};
+use windows::Win32::Foundation::{COLORREF, HWND, RECT};
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, DrawTextW, GdiFlush,
-    GetDC, ReleaseDC, SelectObject, SetBkMode, SetTextColor, AC_SRC_ALPHA, AC_SRC_OVER,
-    ANSI_CHARSET, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, CLIP_DEFAULT_PRECIS,
-    DEFAULT_PITCH, DIB_RGB_COLORS, DT_CENTER, DT_WORDBREAK, FF_SWISS, FW_BOLD, HFONT,
-    NONANTIALIASED_QUALITY, OUT_DEFAULT_PRECIS, TRANSPARENT,
+    GetDC, ReleaseDC, SelectObject, SetBkMode, SetTextColor, ANSI_CHARSET, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, CLIP_DEFAULT_PRECIS, DEFAULT_PITCH, DIB_RGB_COLORS, DT_CENTER,
+    DT_WORDBREAK, FF_SWISS, FW_BOLD, HFONT, NONANTIALIASED_QUALITY, OUT_DEFAULT_PRECIS,
+    TRANSPARENT,
 };
 
 pub const BUBBLE_WIDTH: i32 = 180;
@@ -18,6 +18,7 @@ pub struct SpeechBubble {
     pub text: String,
     pub show_until: Option<Instant>,
     pub font: Option<HFONT>,
+    pub is_at_bottom: bool,
 }
 
 impl SpeechBubble {
@@ -26,16 +27,13 @@ impl SpeechBubble {
             text: String::new(),
             show_until: None,
             font: None,
+            is_at_bottom: false,
         }
     }
 
     pub fn show(&mut self, text: &str, duration: Duration) {
         self.text = text.to_string();
         self.show_until = Some(Instant::now() + duration);
-    }
-
-    pub fn hide(&mut self) {
-        self.show_until = None;
     }
 
     pub fn is_visible(&self) -> bool {

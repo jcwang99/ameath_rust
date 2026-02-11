@@ -1,14 +1,15 @@
 mod anim;
 mod bubble;
+mod menu;
 mod pet;
 mod render;
 mod types;
 
 use pet::Pet;
+use types::{PetState, PreprocessedFrame, BehaviorMode};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
-use types::{PetState, PreprocessedFrame};
 use winit::{
     dpi::PhysicalPosition,
     event::{ElementState, Event, MouseButton, WindowEvent},
@@ -63,6 +64,7 @@ fn main() {
         PetState,
         (Vec<Vec<PreprocessedFrame>>, Vec<Vec<PreprocessedFrame>>),
     > = HashMap::new();
+    animation_map.insert(PetState::Clingy, (move_frames_right.clone(), move_frames_left.clone()));
     animation_map.insert(PetState::Idle, (idle_frames_right, idle_frames_left));
     animation_map.insert(PetState::Move, (move_frames_right, move_frames_left));
     animation_map.insert(PetState::Drag, (drag_frames_right, drag_frames_left));
@@ -142,6 +144,7 @@ fn main() {
     }
 
     let mut bubble_manager = bubble::SpeechBubble::new();
+    let mut menu_manager = menu::QuickMenu::new();
     let quotes = vec![
         "哎呀，被发现了！😆",
         "别戳我啦~",
@@ -162,6 +165,8 @@ fn main() {
     // Click detection
     let mut click_start_time: Option<Instant> = None;
     let mut click_start_pos: Option<(f64, f64)> = None;
+    let mut last_click_time: Option<Instant> = None;
+    let mut menu_open = false;
 
     event_loop
         .run(move |event, elwt| {
@@ -172,59 +177,93 @@ fn main() {
                     match event {
                         WindowEvent::CloseRequested => elwt.exit(),
                         WindowEvent::RedrawRequested => {
-                            let pet_frame = pet.current_frame();
+                            let draw_scale = pet.scale;
+                            let (cur_pw, cur_ph) = pet.get_scaled_size();
+                            let win_w = (cur_pw as u32 + 100).max(bubble::BUBBLE_WIDTH as u32).max(menu::MENU_W as u32);
+                            let win_h = cur_ph as u32 + (bubble::BUBBLE_HEIGHT as u32).max(menu::MENU_H as u32) + 100;
 
-                            // Composite Buffer
-                            let mut composite_data = vec![0u8; (win_w * win_h * 4) as usize];
+                            // Flip logic: if pet is near top, show menu/bubble below
+                            let is_at_top = pet.position.1 < 150.0;
+                            menu_manager.is_at_bottom = is_at_top;
+                            bubble_manager.is_at_bottom = is_at_top;
 
-                            // 1. Draw Pet Frame (Dynamic sizing)
-                            let pw = pet_frame.width as usize;
-                            let ph = pet_frame.height as usize;
+                            let pet_off_x = (win_w as f64 - cur_pw) / 2.0;
+                            let pet_off_y = if is_at_top {
+                                50.0 
+                            } else {
+                                (win_h as f64 - cur_ph) - 20.0
+                            };
 
-                            // Center pet horizontally in its slot
-                            let px = ((win_w as usize - pw) / 2).max(0);
-                            let py = pet_off_y as usize;
+                            // Update window size if scale changed
+                            let current_size = window.inner_size();
+                            if current_size.width != win_w || current_size.height != win_h {
+                                let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(win_w, win_h));
+                            }
 
-                            for y in 0..ph {
-                                for x in 0..pw {
-                                    let src_idx = (y * pw + x) * 4;
-                                    let dst_idx = ((py + y) * win_w as usize + (px + x)) * 4;
-                                    if dst_idx + 3 < composite_data.len()
-                                        && src_idx + 3 < pet_frame.data.len()
-                                    {
-                                        composite_data[dst_idx] = pet_frame.data[src_idx];
-                                        composite_data[dst_idx + 1] = pet_frame.data[src_idx + 1];
-                                        composite_data[dst_idx + 2] = pet_frame.data[src_idx + 2];
-                                        composite_data[dst_idx + 3] = pet_frame.data[src_idx + 3];
+                            // Update win_h for subsequent drawing
+                            let win_h = window.inner_size().height;
+
+                            let mut composite_data = vec![0u8; win_w as usize * win_h as usize * 4usize];
+
+                            // 1. Draw Pet
+                            let frame = pet.current_frame();
+                            for y in 0..(cur_ph as u32) {
+                                for x in 0..(cur_pw as u32) {
+                                    let src_x = (x as f32 / draw_scale) as u32;
+                                    let src_y = (y as f32 / draw_scale) as u32;
+                                    if src_x >= frame.width as u32 || src_y >= frame.height as u32 { continue; }
+                                    
+                                    let src_idx = (src_y as usize * frame.width as usize + src_x as usize) * 4usize;
+                                    let dest_x = (x as f64 + pet_off_x) as u32;
+                                    let dest_y = (y as f64 + pet_off_y) as u32;
+                                    
+                                    if dest_x < win_w && dest_y < win_h {
+                                        let dest_idx = (dest_y as usize * win_w as usize + dest_x as usize) * 4usize;
+                                        let alpha = frame.data[src_idx + 3];
+                                        if alpha > 0 {
+                                            composite_data[dest_idx] = frame.data[src_idx];
+                                            composite_data[dest_idx + 1] = frame.data[src_idx + 1];
+                                            composite_data[dest_idx + 2] = frame.data[src_idx + 2];
+                                            composite_data[dest_idx + 3] = alpha;
+                                        }
                                     }
                                 }
                             }
 
-                            // 2. Draw Bubble if visible
-                            if bubble_manager.is_visible() {
-                                let mut bubble_buf = vec![
-                                    0u8;
-                                    (bubble::BUBBLE_WIDTH * bubble::BUBBLE_HEIGHT * 4)
-                                        as usize
-                                ];
+                            // 2. Draw Bubble
+                            if bubble_manager.is_visible() && !menu_open {
+                                let mut bubble_buf = vec![0u8; (bubble::BUBBLE_WIDTH * bubble::BUBBLE_HEIGHT * 4) as usize];
                                 bubble_manager.render_to_buffer(bubble_buf.as_mut_ptr());
+                                
+                                let bx = (win_w as i32 - bubble::BUBBLE_WIDTH) / 2;
+                                let by = if is_at_top {
+                                    win_h as i32 - bubble::BUBBLE_HEIGHT - 10
+                                } else {
+                                    10
+                                };
 
-                                let bx = ((win_w as i32 - bubble::BUBBLE_WIDTH) / 2) as usize;
-                                let by = 30usize; // Move bubble down from very top
                                 for y in 0..bubble::BUBBLE_HEIGHT as usize {
                                     for x in 0..bubble::BUBBLE_WIDTH as usize {
-                                        let src_idx = (y * bubble::BUBBLE_WIDTH as usize + x) * 4;
-                                        let dst_idx = ((by + y) * win_w as usize + (bx + x)) * 4;
-                                        // Simple Alpha Blending
-                                        let alpha = bubble_buf[src_idx + 3] as f32 / 255.0;
-                                        if alpha > 0.0 {
-                                            composite_data[dst_idx] = bubble_buf[src_idx];
-                                            composite_data[dst_idx + 1] = bubble_buf[src_idx + 1];
-                                            composite_data[dst_idx + 2] = bubble_buf[src_idx + 2];
-                                            composite_data[dst_idx + 3] = bubble_buf[src_idx + 3];
+                                        let src_idx = (y * bubble::BUBBLE_WIDTH as usize + x) * 4usize;
+                                        let dest_x = bx as usize + x;
+                                        let dest_y = by as usize + y;
+                                        if dest_x < win_w as usize && dest_y < win_h as usize {
+                                            let dest_idx = (dest_y * win_w as usize + dest_x) * 4usize;
+                                            let alpha = bubble_buf[src_idx + 3] as f32 / 255.0;
+                                            if alpha > 0.0 {
+                                                composite_data[dest_idx] = bubble_buf[src_idx];
+                                                composite_data[dest_idx + 1] = bubble_buf[src_idx + 1];
+                                                composite_data[dest_idx + 2] = bubble_buf[src_idx + 2];
+                                                composite_data[dest_idx + 3] = bubble_buf[src_idx + 3];
+                                            }
                                         }
                                     }
                                 }
+                            }
+
+                            // 3. Draw Menu
+                            if menu_open {
+                                menu_manager.render_to_buffer(composite_data.as_mut_ptr(), win_w, win_h);
                             }
 
                             #[cfg(target_os = "windows")]
@@ -285,13 +324,73 @@ fn main() {
                                         }
 
                                         if is_click {
-                                            if let Some(&quote) = rand::seq::SliceRandom::choose(
-                                                &quotes[..],
-                                                &mut rand::thread_rng(),
-                                            ) {
-                                                bubble_manager.show(quote, Duration::from_secs(4));
+                                            let now = Instant::now();
+                                            let is_double_click = if let Some(last) = last_click_time {
+                                                now.duration_since(last) < Duration::from_millis(300)
+                                            } else {
+                                                false
+                                            };
+                                            last_click_time = Some(now);
+
+                                            if is_double_click {
+                                                menu_open = !menu_open;
+                                                if menu_open {
+                                                    bubble_manager.show_until = None;
+                                                }
+                                            } else if menu_open {
+                                                // Handle Menu Clicks
+                                                if let Some(pos) = last_cursor_pos {
+                                                    if let Some(action) = menu_manager.check_hit(pos.x, pos.y, win_w, win_h) {
+                                                        match action.as_str() {
+                                                            "zoom_in" => pet.scale = (pet.scale + 0.1).min(3.0),
+                                                            "zoom_out" => pet.scale = (pet.scale - 0.1).max(0.5),
+                                                            "mode_quiet" => {
+                                                                pet.behavior_mode = BehaviorMode::Quiet;
+                                                                menu_manager.active_mode = BehaviorMode::Quiet;
+                                                                pet.state = PetState::Idle;
+                                                                pet.timer = Instant::now();
+                                                            }
+                                                            "mode_active" => {
+                                                                pet.behavior_mode = BehaviorMode::Active;
+                                                                menu_manager.active_mode = BehaviorMode::Active;
+                                                                pet.state = PetState::Move;
+                                                                pet.timer = Instant::now();
+                                                            }
+                                                            "mode_clingy" => {
+                                                                pet.behavior_mode = BehaviorMode::Clingy;
+                                                                menu_manager.active_mode = BehaviorMode::Clingy;
+                                                                pet.state = PetState::Clingy;
+                                                                // Use the calculated pet offsets
+                                                                if let Some(pos) = last_cursor_pos {
+                                                                    if let Ok(win_pos) = window.outer_position() {
+                                                                        let global_x = win_pos.x as f64 + pos.x - pet_off_x;
+                                                                        let global_y = win_pos.y as f64 + pos.y - pet_off_y;
+                                                                        pet.follow_mouse((global_x, global_y));
+                                                                    }
+                                                                }
+                                                            },
+                                                            "music" => {
+                                                                bubble_manager.show("音乐播放功能正在准备中... 🎵", Duration::from_secs(3));
+                                                            }
+                                                            "exit" => elwt.exit(),
+                                                            _ => {}
+                                                        }
+                                                        // Close menu after action? 
+                                                        // menu_open = false; 
+                                                    } else {
+                                                        // Clicked outside menu, close it?
+                                                        menu_open = false;
+                                                    }
+                                                }
+                                            } else {
+                                                if let Some(&quote) = rand::seq::SliceRandom::choose(
+                                                    &quotes[..],
+                                                    &mut rand::thread_rng(),
+                                                ) {
+                                                    bubble_manager.show(quote, Duration::from_secs(4));
+                                                }
+                                                pet.velocity = (0.0, 0.0);
                                             }
-                                            pet.velocity = (0.0, 0.0);
                                         } else {
                                             pet.end_drag();
                                         }
@@ -310,6 +409,8 @@ fn main() {
 
                                 if pet.state == PetState::Drag {
                                     pet.update_drag((global_x, global_y));
+                                } else if pet.state == PetState::Clingy {
+                                    pet.follow_mouse((global_x, global_y));
                                 } else if let Some(start_pos) = click_start_pos {
                                     // Potentially start drag if threshold exceeded
                                     let dx = global_x - start_pos.0;
@@ -325,6 +426,18 @@ fn main() {
                     }
                 }
                 Event::AboutToWait => {
+                    #[cfg(target_os = "windows")]
+                    unsafe {
+                        use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+                        use windows::Win32::Foundation::POINT;
+                        let mut pt = POINT::default();
+                        if GetCursorPos(&mut pt).is_ok() {
+                            if pet.state == PetState::Clingy || pet.behavior_mode == BehaviorMode::Clingy {
+                                pet.follow_mouse((pt.x as f64, pt.y as f64));
+                            }
+                        }
+                    }
+
                     if let Some(elapsed) = last_update.map(|t| t.elapsed().as_secs_f64()) {
                         pet.update_state(elapsed);
                         window.set_outer_position(PhysicalPosition::new(

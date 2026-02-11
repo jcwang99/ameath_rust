@@ -13,4 +13,12 @@ pub enum PetState {
     Idle,
     Move,
     Drag,
+    Clingy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BehaviorMode {
+    Quiet,
+    Active,
+    Clingy,
 }

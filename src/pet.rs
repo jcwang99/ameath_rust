@@ -27,6 +27,10 @@ pub struct Pet {
 
     // Drag
     pub drag_start_offset: Option<(f64, f64)>,
+
+    // Layout
+    pub scale: f32,
+    pub behavior_mode: crate::types::BehaviorMode,
 }
 
 impl Pet {
@@ -53,7 +57,16 @@ impl Pet {
             state_duration: Duration::from_secs(2),
             target_position: None,
             drag_start_offset: None,
+            scale: 1.0,
+            behavior_mode: crate::types::BehaviorMode::Active,
         }
+    }
+
+    pub fn get_scaled_size(&self) -> (f64, f64) {
+        (
+            self.window_size.0 * self.scale as f64,
+            self.window_size.1 * self.scale as f64,
+        )
     }
 
     pub fn start_drag(&mut self, mouse_pos: (f64, f64)) {
@@ -87,10 +100,23 @@ impl Pet {
         if self.timer.elapsed() >= self.state_duration {
             match self.state {
                 PetState::Idle => {
-                    self.state = PetState::Move;
+                    if self.behavior_mode == crate::types::BehaviorMode::Clingy {
+                        self.state = PetState::Clingy;
+                    } else {
+                        self.state = PetState::Move;
+                    }
                     self.current_anim_variant = 0;
                     self.timer = Instant::now();
-                    self.state_duration = Duration::from_secs(rand::thread_rng().gen_range(3..7));
+
+                    self.state_duration = match self.behavior_mode {
+                        crate::types::BehaviorMode::Quiet => {
+                            Duration::from_secs(rand::thread_rng().gen_range(2..4))
+                        }
+                        crate::types::BehaviorMode::Active => {
+                            Duration::from_secs(rand::thread_rng().gen_range(5..10))
+                        }
+                        crate::types::BehaviorMode::Clingy => Duration::from_secs(2),
+                    };
 
                     let max_x = self.screen_size.0 - self.window_size.0;
                     let max_y = self.screen_size.1 - self.window_size.1;
@@ -112,7 +138,17 @@ impl Pet {
                 PetState::Move => {
                     self.state = PetState::Idle;
                     self.timer = Instant::now();
-                    self.state_duration = Duration::from_secs(rand::thread_rng().gen_range(2..5));
+
+                    self.state_duration = match self.behavior_mode {
+                        crate::types::BehaviorMode::Quiet => {
+                            Duration::from_secs(rand::thread_rng().gen_range(5..10))
+                        }
+                        crate::types::BehaviorMode::Active => {
+                            Duration::from_secs(rand::thread_rng().gen_range(1..3))
+                        }
+                        crate::types::BehaviorMode::Clingy => Duration::from_secs(2),
+                    };
+
                     self.velocity = (0.0, 0.0);
                     self.target_position = None;
 
@@ -123,12 +159,29 @@ impl Pet {
                         self.current_anim_variant = 0;
                     }
                 }
+                PetState::Clingy => {
+                    self.timer = Instant::now();
+                }
                 _ => {}
             }
         }
 
         // Movement Logic
-        if self.state == PetState::Move {
+        if self.state == PetState::Move || self.state == PetState::Clingy {
+            if self.state == PetState::Clingy {
+                if let Some(target) = self.target_position {
+                    let dx = target.0 - self.position.0;
+                    let dy = target.1 - self.position.1;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    if dist > 5.0 {
+                        self.velocity.0 = (dx / dist) * SPEED_PPS;
+                        self.velocity.1 = (dy / dist) * SPEED_PPS;
+                    } else {
+                        self.velocity = (0.0, 0.0);
+                    }
+                }
+            }
+
             self.position.0 += self.velocity.0 * dt;
             self.position.1 += self.velocity.1 * dt;
 
@@ -141,29 +194,49 @@ impl Pet {
             if let Some((tx, ty)) = self.target_position {
                 let dx = tx - self.position.0;
                 let dy = ty - self.position.1;
-                if dx * dx + dy * dy < 100.0 {
+                let dist_sq = dx * dx + dy * dy;
+
+                if self.state == PetState::Move && dist_sq < 100.0 {
                     self.timer = Instant::now() - self.state_duration;
+                } else if self.state == PetState::Clingy && dist_sq < 25.0 {
+                    self.velocity = (0.0, 0.0);
                 }
             }
+        }
 
-            let (w, h) = self.window_size;
-            let (sw, sh) = self.screen_size;
+        let (w, h) = self.get_scaled_size();
+        let (sw, sh) = self.screen_size;
 
-            if self.position.0 <= 0.0 {
-                self.position.0 = 0.0;
-                self.velocity.0 = self.velocity.0.abs();
-            } else if self.position.0 + w >= sw {
-                self.position.0 = sw - w;
-                self.velocity.0 = -self.velocity.0.abs();
-            }
+        if self.position.0 <= 0.0 {
+            self.position.0 = 0.0;
+            self.velocity.0 = self.velocity.0.abs();
+        } else if self.position.0 + w >= sw {
+            self.position.0 = sw - w;
+            self.velocity.0 = -self.velocity.0.abs();
+        }
 
-            if self.position.1 <= 0.0 {
-                self.position.1 = 0.0;
-                self.velocity.1 = self.velocity.1.abs();
-            } else if self.position.1 + h >= sh {
-                self.position.1 = sh - h;
-                self.velocity.1 = -self.velocity.1.abs();
-            }
+        if self.position.1 <= 0.0 {
+            self.position.1 = 0.0;
+            self.velocity.1 = self.velocity.1.abs();
+        } else if self.position.1 + h >= sh {
+            self.position.1 = sh - h;
+            self.velocity.1 = -self.velocity.1.abs();
+        }
+    }
+
+    pub fn follow_mouse(&mut self, mouse_pos: (f64, f64)) {
+        self.state = PetState::Clingy;
+        self.target_position = Some(mouse_pos);
+
+        let dx = mouse_pos.0 - self.position.0;
+        let dy = mouse_pos.1 - self.position.1;
+        let dist = (dx * dx + dy * dy).sqrt();
+
+        if dist > 5.0 {
+            self.velocity.0 = (dx / dist) * SPEED_PPS;
+            self.velocity.1 = (dy / dist) * SPEED_PPS;
+        } else {
+            self.velocity = (0.0, 0.0);
         }
     }
 
