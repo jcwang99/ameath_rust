@@ -77,8 +77,8 @@ impl SpeechBubble {
             let width = BUBBLE_WIDTH as usize;
             let height = BUBBLE_HEIGHT as usize;
 
-            let bg_color = [0xFF, 0xD1, 0xE8, 0xFF]; // #FFD1E8
-            let border_color = [0x4A, 0x3B, 0x5C, 0xFF];
+            let bg_color = [0xE9, 0xDE, 0xFF, 0xFF]; // Soft Pink matching hair
+            let border_color = [0x69, 0x4B, 0x8A, 0xFF]; // Darker Rose border
             let white_color = [0xFF, 0xFF, 0xFF, 0xFF];
 
             std::ptr::write_bytes(pixel_ptr, 0, width * height * 4);
@@ -131,7 +131,7 @@ impl SpeechBubble {
 
             // --- Text Rendering ---
             SetBkMode(hdc_mem, TRANSPARENT);
-            SetTextColor(hdc_mem, COLORREF(0x005C3B4A));
+            SetTextColor(hdc_mem, COLORREF(0x004A3B5C)); // Deep Brown/Purple
 
             if self.font.is_none() {
                 use windows::core::PCWSTR;

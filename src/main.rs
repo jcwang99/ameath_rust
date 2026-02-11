@@ -85,9 +85,9 @@ fn main() {
         }
     }
 
-    let win_w = (max_pw as u32 + 20).max(bubble::BUBBLE_WIDTH as u32);
-    let win_h = (max_ph as u32 + bubble::BUBBLE_HEIGHT as u32 + 20);
-    let pet_off_y = (win_h - max_ph as u32) as f64 - 10.0;
+    let win_w = (max_pw as u32 + 40).max(bubble::BUBBLE_WIDTH as u32);
+    let win_h = max_ph as u32 + bubble::BUBBLE_HEIGHT as u32 + 60; // More vertical space
+    let pet_off_y = (win_h - max_ph as u32) as f64 - 15.0; // Stay slightly above bottom
 
     let mut pet = Pet::new(animation_map, (max_pw as f64, max_ph as f64));
     pet.state = PetState::Move;
@@ -110,7 +110,7 @@ fn main() {
     let refresh_rate_millihertz = monitor
         .and_then(|m| m.refresh_rate_millihertz())
         .unwrap_or(60000);
-    let fps = refresh_rate_millihertz as f64 / 1000.0;
+    let _fps = refresh_rate_millihertz as f64 / 1000.0;
 
     if let Some(monitor) = window.current_monitor() {
         let size = monitor.size();
