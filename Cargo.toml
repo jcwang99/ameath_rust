@@ -1,0 +1,16 @@
+[package]
+name = "ameath-rust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+winit = { version = "0.29.15", features = ["rwh_05"] }
+softbuffer = "0.4.1"
+raw-window-handle = "0.6.0"
+image = "0.24"
+rand = "0.8"
+windows = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+] }
