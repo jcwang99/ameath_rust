@@ -3,13 +3,16 @@ mod bubble;
 mod menu;
 mod pet;
 mod render;
+mod settings_window;
 mod types;
 
+use settings_window::SettingsWindow;
+
 use pet::Pet;
-use types::{PetState, PreprocessedFrame, BehaviorMode};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
+use types::{BehaviorMode, PetState, PreprocessedFrame};
 use winit::{
     dpi::PhysicalPosition,
     event::{ElementState, Event, MouseButton, WindowEvent},
@@ -64,7 +67,10 @@ fn main() {
         PetState,
         (Vec<Vec<PreprocessedFrame>>, Vec<Vec<PreprocessedFrame>>),
     > = HashMap::new();
-    animation_map.insert(PetState::Clingy, (move_frames_right.clone(), move_frames_left.clone()));
+    animation_map.insert(
+        PetState::Clingy,
+        (move_frames_right.clone(), move_frames_left.clone()),
+    );
     animation_map.insert(PetState::Idle, (idle_frames_right, idle_frames_left));
     animation_map.insert(PetState::Move, (move_frames_right, move_frames_left));
     animation_map.insert(PetState::Drag, (drag_frames_right, drag_frames_left));
@@ -121,24 +127,22 @@ fn main() {
 
     #[cfg(target_os = "windows")]
     {
-        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        if let Ok(handle) = window.window_handle() {
-            if let RawWindowHandle::Win32(handle) = handle.as_raw() {
-                let hwnd = HWND(handle.hwnd.get() as isize);
-                unsafe {
-                    let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
-                    let _ = SetWindowLongW(
-                        hwnd,
-                        GWL_EXSTYLE,
-                        ex_style
-                            | (WS_EX_LAYERED.0 as i32)
-                            | (WS_EX_TOOLWINDOW.0 as i32)
-                            | (WS_EX_TOPMOST.0 as i32),
-                    );
-                    let style = windows::Win32::UI::WindowsAndMessaging::WS_POPUP.0
-                        | windows::Win32::UI::WindowsAndMessaging::WS_VISIBLE.0;
-                    let _ = SetWindowLongW(hwnd, GWL_STYLE, style as i32);
-                }
+        use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
+        if let RawWindowHandle::Win32(handle) = window.raw_window_handle() {
+            let hwnd = HWND(handle.hwnd as isize);
+            unsafe {
+                let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+                let _ = SetWindowLongW(
+                    hwnd,
+                    GWL_EXSTYLE,
+                    ex_style
+                        | (WS_EX_LAYERED.0 as i32)
+                        | (WS_EX_TOOLWINDOW.0 as i32)
+                        | (WS_EX_TOPMOST.0 as i32),
+                );
+                let style = windows::Win32::UI::WindowsAndMessaging::WS_POPUP.0
+                    | windows::Win32::UI::WindowsAndMessaging::WS_VISIBLE.0;
+                let _ = SetWindowLongW(hwnd, GWL_STYLE, style as i32);
             }
         }
     }
@@ -158,120 +162,222 @@ fn main() {
         "在努力工作吗？加油！💪",
     ];
 
-    let pet_off_x = (win_w as f64 - max_pw as f64) / 2.0;
+    let pet_off_x = 20.0; // Fixed left offset
     let mut last_update = Some(Instant::now());
     let mut last_cursor_pos: Option<PhysicalPosition<f64>> = None;
 
     // Click detection
     let mut click_start_time: Option<Instant> = None;
     let mut click_start_pos: Option<(f64, f64)> = None;
-    let mut last_click_time: Option<Instant> = None;
-    let mut menu_open = false;
+
+    let mut settings_win: Option<SettingsWindow> = None;
+    let mut menu_visible_timer: Option<Instant> = None;
+    let mut pet_off_x = 20.0;
+    let mut pet_off_y = 50.0;
 
     event_loop
         .run(move |event, elwt| {
             elwt.set_control_flow(ControlFlow::Poll);
 
             match event {
-                Event::WindowEvent { event, window_id } if window_id == window.id() => {
-                    match event {
-                        WindowEvent::CloseRequested => elwt.exit(),
-                        WindowEvent::RedrawRequested => {
-                            let draw_scale = pet.scale;
-                            let (cur_pw, cur_ph) = pet.get_scaled_size();
-                            let win_w = (cur_pw as u32 + 100).max(bubble::BUBBLE_WIDTH as u32).max(menu::MENU_W as u32);
-                            let win_h = cur_ph as u32 + (bubble::BUBBLE_HEIGHT as u32).max(menu::MENU_H as u32) + 100;
+                Event::WindowEvent { event, window_id } => {
+                    if window_id == window.id() {
+                        match event {
+                            WindowEvent::CloseRequested => elwt.exit(),
+                            WindowEvent::RedrawRequested => {
+                                let draw_scale = pet.scale.max(0.5); // Ensure safe scale
+                                let (cur_pw, cur_ph) = pet.get_scaled_size();
 
-                            // Flip logic: if pet is near top, show menu/bubble below
-                            let is_at_top = pet.position.1 < 150.0;
-                            menu_manager.is_at_bottom = is_at_top;
-                            bubble_manager.is_at_bottom = is_at_top;
+                                // Update Menu Layout
+                                menu_manager.update_layout(draw_scale);
 
-                            let pet_off_x = (win_w as f64 - cur_pw) / 2.0;
-                            let pet_off_y = if is_at_top {
-                                50.0 
-                            } else {
-                                (win_h as f64 - cur_ph) - 20.0
-                            };
-
-                            // Update window size if scale changed
-                            let current_size = window.inner_size();
-                            if current_size.width != win_w || current_size.height != win_h {
-                                let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(win_w, win_h));
-                            }
-
-                            // Update win_h for subsequent drawing
-                            let win_h = window.inner_size().height;
-
-                            let mut composite_data = vec![0u8; win_w as usize * win_h as usize * 4usize];
-
-                            // 1. Draw Pet
-                            let frame = pet.current_frame();
-                            for y in 0..(cur_ph as u32) {
-                                for x in 0..(cur_pw as u32) {
-                                    let src_x = (x as f32 / draw_scale) as u32;
-                                    let src_y = (y as f32 / draw_scale) as u32;
-                                    if src_x >= frame.width as u32 || src_y >= frame.height as u32 { continue; }
-                                    
-                                    let src_idx = (src_y as usize * frame.width as usize + src_x as usize) * 4usize;
-                                    let dest_x = (x as f64 + pet_off_x) as u32;
-                                    let dest_y = (y as f64 + pet_off_y) as u32;
-                                    
-                                    if dest_x < win_w && dest_y < win_h {
-                                        let dest_idx = (dest_y as usize * win_w as usize + dest_x as usize) * 4usize;
-                                        let alpha = frame.data[src_idx + 3];
-                                        if alpha > 0 {
-                                            composite_data[dest_idx] = frame.data[src_idx];
-                                            composite_data[dest_idx + 1] = frame.data[src_idx + 1];
-                                            composite_data[dest_idx + 2] = frame.data[src_idx + 2];
-                                            composite_data[dest_idx + 3] = alpha;
-                                        }
-                                    }
-                                }
-                            }
-
-                            // 2. Draw Bubble
-                            if bubble_manager.is_visible() && !menu_open {
-                                let mut bubble_buf = vec![0u8; (bubble::BUBBLE_WIDTH * bubble::BUBBLE_HEIGHT * 4) as usize];
-                                bubble_manager.render_to_buffer(bubble_buf.as_mut_ptr());
-                                
-                                let bx = (win_w as i32 - bubble::BUBBLE_WIDTH) / 2;
-                                let by = if is_at_top {
-                                    win_h as i32 - bubble::BUBBLE_HEIGHT - 10
+                                // Menu visibility logic
+                                let menu_w = if menu_manager.visible || menu_manager.opacity > 0.0 {
+                                    menu_manager.menu_width as u32
                                 } else {
-                                    10
+                                    0
                                 };
 
-                                for y in 0..bubble::BUBBLE_HEIGHT as usize {
-                                    for x in 0..bubble::BUBBLE_WIDTH as usize {
-                                        let src_idx = (y * bubble::BUBBLE_WIDTH as usize + x) * 4usize;
-                                        let dest_x = bx as usize + x;
-                                        let dest_y = by as usize + y;
-                                        if dest_x < win_w as usize && dest_y < win_h as usize {
-                                            let dest_idx = (dest_y * win_w as usize + dest_x) * 4usize;
-                                            let alpha = bubble_buf[src_idx + 3] as f32 / 255.0;
-                                            if alpha > 0.0 {
-                                                composite_data[dest_idx] = bubble_buf[src_idx];
-                                                composite_data[dest_idx + 1] = bubble_buf[src_idx + 1];
-                                                composite_data[dest_idx + 2] = bubble_buf[src_idx + 2];
-                                                composite_data[dest_idx + 3] = bubble_buf[src_idx + 3];
+                                let bubble_w = if bubble_manager.is_visible() {
+                                    bubble::BUBBLE_WIDTH as u32
+                                } else {
+                                    0
+                                };
+                                let bubble_h = if bubble_manager.is_visible() {
+                                    bubble::BUBBLE_HEIGHT as u32
+                                } else {
+                                    0
+                                };
+
+                                // Layout Strategy: Stack from Bottom
+                                let base_padding_bottom = 20u32;
+                                let padding_gap = 10u32;
+
+                                let menu_h = if menu_w > 0 {
+                                    menu_manager.menu_height as u32
+                                } else {
+                                    0
+                                };
+
+                                // Calculate the padding needed at the bottom to fit the menu
+                                // The menu starts at pet_off_y (pet top) and goes DOWN.
+                                // We need (cur_ph + padding_bottom) >= menu_h to avoid truncation.
+                                let padding_bottom = if menu_h > cur_ph as u32 {
+                                    base_padding_bottom.max(menu_h - cur_ph as u32)
+                                } else {
+                                    base_padding_bottom
+                                };
+
+                                // Total content height in the pet column
+                                let pet_col_h = cur_ph as u32
+                                    + padding_bottom
+                                    + if bubble_h > 0 {
+                                        bubble_h + padding_gap
+                                    } else {
+                                        0
+                                    };
+
+                                let total_h = pet_col_h + 40;
+                                let win_h = total_h;
+                                let win_w = (cur_pw as u32 + 20 + menu_w + 40).max(bubble_w + 40);
+
+                                // Update window size if changed
+                                let current_size = window.inner_size();
+                                if current_size.width != win_w || current_size.height != win_h {
+                                    // PREVENT JUMP: Maintain pet screen position
+                                    let old_off_x = pet_off_x;
+                                    let old_off_y = pet_off_y;
+
+                                    let new_off_x = 20.0;
+                                    let new_off_y = (win_h as f64 - cur_ph - padding_bottom as f64);
+
+                                    if let Ok(win_pos) = window.outer_position() {
+                                        let screen_x = win_pos.x as f64 + old_off_x;
+                                        let screen_y = win_pos.y as f64 + old_off_y;
+
+                                        let _ = window.request_inner_size(
+                                            winit::dpi::PhysicalSize::new(win_w, win_h),
+                                        );
+                                        // Update position to keep pet at same screen coordinates
+                                        window.set_outer_position(PhysicalPosition::new(
+                                            (screen_x - new_off_x) as i32,
+                                            (screen_y - new_off_y) as i32,
+                                        ));
+                                    }
+
+                                    pet_off_x = new_off_x;
+                                    pet_off_y = new_off_y;
+                                } else {
+                                    pet_off_x = 20.0;
+                                    pet_off_y = (win_h as f64 - cur_ph - padding_bottom as f64);
+                                }
+
+                                // Bubble is above pet
+                                let bubble_y = pet_off_y - padding_gap as f64 - bubble_h as f64;
+
+                                // Menu is to right of pet, aligned with pet top
+                                let menu_x = (pet_off_x + cur_pw + 10.0) as i32;
+                                let menu_y = pet_off_y as i32;
+
+                                let mut composite_data =
+                                    vec![0u8; win_w as usize * win_h as usize * 4usize];
+
+                                // 1. Draw Pet
+                                let frame = pet.current_frame();
+                                for y in 0..(cur_ph as u32) {
+                                    for x in 0..(cur_pw as u32) {
+                                        let src_x = (x as f32 / draw_scale) as u32;
+                                        let src_y = (y as f32 / draw_scale) as u32;
+                                        if src_x >= frame.width as u32
+                                            || src_y >= frame.height as u32
+                                        {
+                                            continue;
+                                        }
+
+                                        let src_idx = (src_y as usize * frame.width as usize
+                                            + src_x as usize)
+                                            * 4usize;
+                                        let dest_x = (x as f64 + pet_off_x) as u32;
+                                        let dest_y = (y as f64 + pet_off_y) as u32;
+
+                                        if dest_x < win_w && dest_y < win_h {
+                                            let dest_idx = (dest_y as usize * win_w as usize
+                                                + dest_x as usize)
+                                                * 4usize;
+                                            let alpha = frame.data[src_idx + 3];
+                                            if alpha > 0 {
+                                                composite_data[dest_idx] = frame.data[src_idx];
+                                                composite_data[dest_idx + 1] =
+                                                    frame.data[src_idx + 1];
+                                                composite_data[dest_idx + 2] =
+                                                    frame.data[src_idx + 2];
+                                                composite_data[dest_idx + 3] = alpha;
                                             }
                                         }
                                     }
                                 }
-                            }
 
-                            // 3. Draw Menu
-                            if menu_open {
-                                menu_manager.render_to_buffer(composite_data.as_mut_ptr(), win_w, win_h);
-                            }
+                                // 2. Draw Bubble
+                                if bubble_manager.is_visible() {
+                                    let mut bubble_buf = vec![
+                                        0u8;
+                                        (bubble::BUBBLE_WIDTH * bubble::BUBBLE_HEIGHT * 4)
+                                            as usize
+                                    ];
+                                    bubble_manager.render_to_buffer(bubble_buf.as_mut_ptr());
 
-                            #[cfg(target_os = "windows")]
-                            {
-                                use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-                                if let Ok(handle) = window.window_handle() {
-                                    if let RawWindowHandle::Win32(handle) = handle.as_raw() {
-                                        let hwnd = HWND(handle.hwnd.get() as isize);
+                                    let bx = (win_w as i32 - bubble::BUBBLE_WIDTH) / 2;
+                                    let by = bubble_y as i32;
+
+                                    if by >= 0 {
+                                        for y in 0..bubble::BUBBLE_HEIGHT as usize {
+                                            for x in 0..bubble::BUBBLE_WIDTH as usize {
+                                                let src_idx = (y * bubble::BUBBLE_WIDTH as usize
+                                                    + x)
+                                                    * 4usize;
+                                                let dest_x = bx as usize + x;
+                                                let dest_y = by as usize + y;
+                                                if dest_x < win_w as usize
+                                                    && dest_y < win_h as usize
+                                                {
+                                                    let dest_idx =
+                                                        (dest_y * win_w as usize + dest_x) * 4usize;
+                                                    let alpha =
+                                                        bubble_buf[src_idx + 3] as f32 / 255.0;
+                                                    if alpha > 0.0 {
+                                                        composite_data[dest_idx] =
+                                                            bubble_buf[src_idx];
+                                                        composite_data[dest_idx + 1] =
+                                                            bubble_buf[src_idx + 1];
+                                                        composite_data[dest_idx + 2] =
+                                                            bubble_buf[src_idx + 2];
+                                                        composite_data[dest_idx + 3] =
+                                                            bubble_buf[src_idx + 3];
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // 3. Draw Menu
+                                if menu_manager.visible || menu_manager.opacity > 0.0 {
+                                    menu_manager.render(
+                                        composite_data.as_mut_slice(),
+                                        win_w as i32,
+                                        win_h as i32,
+                                        menu_x,
+                                        menu_y,
+                                    );
+                                }
+
+                                #[cfg(target_os = "windows")]
+                                {
+                                    use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
+                                    if let RawWindowHandle::Win32(handle) =
+                                        window.raw_window_handle()
+                                    {
+                                        let hwnd = HWND(handle.hwnd as isize);
                                         unsafe {
                                             render::update_layered_window_scaled(
                                                 hwnd,
@@ -283,163 +389,233 @@ fn main() {
                                     }
                                 }
                             }
-                        }
-                        WindowEvent::MouseInput { state, button, .. } => {
-                            if button == MouseButton::Left {
-                                match state {
-                                    ElementState::Pressed => {
-                                        if let Some(pos) = last_cursor_pos {
-                                            if let Ok(win_pos) = window.outer_position() {
-                                                // Adjust global_pos to be relative to the pet's top-left corner
-                                                let global_pos = (
-                                                    win_pos.x as f64 + pos.x - pet_off_x,
-                                                    win_pos.y as f64 + pos.y - pet_off_y,
-                                                );
-                                                // Don't call start_drag yet, just record start
-                                                click_start_time = Some(Instant::now());
-                                                click_start_pos = Some(global_pos);
+                            WindowEvent::MouseInput { state, button, .. } => {
+                                if button == MouseButton::Left {
+                                    match state {
+                                        ElementState::Pressed => {
+                                            if let Some(pos) = last_cursor_pos {
+                                                if let Ok(win_pos) = window.outer_position() {
+                                                    // Adjust global_pos to be relative to the pet's top-left corner
+                                                    let global_pos = (
+                                                        win_pos.x as f64 + pos.x - pet_off_x,
+                                                        win_pos.y as f64 + pos.y - pet_off_y,
+                                                    );
+                                                    // Don't call start_drag yet, just record start
+                                                    click_start_time = Some(Instant::now());
+                                                    click_start_pos = Some(global_pos);
+                                                }
                                             }
                                         }
-                                    }
-                                    ElementState::Released => {
-                                        let mut is_click = false;
-                                        if let (Some(start_time), Some(start_pos)) =
-                                            (click_start_time, click_start_pos)
-                                        {
-                                            if start_time.elapsed() < Duration::from_millis(200) {
-                                                if let Some(pos) = last_cursor_pos {
-                                                    if let Ok(win_pos) = window.outer_position() {
-                                                        let global_x =
-                                                            win_pos.x as f64 + pos.x - pet_off_x;
-                                                        let global_y =
-                                                            win_pos.y as f64 + pos.y - pet_off_y;
-                                                        let dx = global_x - start_pos.0;
-                                                        let dy = global_y - start_pos.1;
-                                                        if (dx * dx + dy * dy).sqrt() < 5.0 {
-                                                            is_click = true;
+                                        ElementState::Released => {
+                                            let mut is_click = false;
+                                            if let (Some(start_time), Some(start_pos)) =
+                                                (click_start_time, click_start_pos)
+                                            {
+                                                if start_time.elapsed() < Duration::from_millis(200)
+                                                {
+                                                    if let Some(pos) = last_cursor_pos {
+                                                        if let Ok(win_pos) = window.outer_position()
+                                                        {
+                                                            let global_x = win_pos.x as f64 + pos.x
+                                                                - pet_off_x;
+                                                            let global_y = win_pos.y as f64 + pos.y
+                                                                - pet_off_y;
+                                                            let dx = global_x - start_pos.0;
+                                                            let dy = global_y - start_pos.1;
+                                                            if (dx * dx + dy * dy).sqrt() < 5.0 {
+                                                                is_click = true;
+                                                            }
                                                         }
                                                     }
                                                 }
                                             }
-                                        }
 
-                                        if is_click {
-                                            let now = Instant::now();
-                                            let is_double_click = if let Some(last) = last_click_time {
-                                                now.duration_since(last) < Duration::from_millis(300)
-                                            } else {
-                                                false
-                                            };
-                                            last_click_time = Some(now);
+                                            if is_click {
+                                                let _now = Instant::now();
 
-                                            if is_double_click {
-                                                menu_open = !menu_open;
-                                                if menu_open {
-                                                    bubble_manager.show_until = None;
-                                                }
-                                            } else if menu_open {
-                                                // Handle Menu Clicks
-                                                if let Some(pos) = last_cursor_pos {
-                                                    if let Some(action) = menu_manager.check_hit(pos.x, pos.y, win_w, win_h) {
-                                                        match action.as_str() {
-                                                            "zoom_in" => pet.scale = (pet.scale + 0.1).min(3.0),
-                                                            "zoom_out" => pet.scale = (pet.scale - 0.1).max(0.5),
-                                                            "mode_quiet" => {
-                                                                pet.behavior_mode = BehaviorMode::Quiet;
-                                                                menu_manager.active_mode = BehaviorMode::Quiet;
-                                                                pet.state = PetState::Idle;
-                                                                pet.timer = Instant::now();
-                                                            }
-                                                            "mode_active" => {
-                                                                pet.behavior_mode = BehaviorMode::Active;
-                                                                menu_manager.active_mode = BehaviorMode::Active;
-                                                                pet.state = PetState::Move;
-                                                                pet.timer = Instant::now();
-                                                            }
-                                                            "mode_clingy" => {
-                                                                pet.behavior_mode = BehaviorMode::Clingy;
-                                                                menu_manager.active_mode = BehaviorMode::Clingy;
-                                                                pet.state = PetState::Clingy;
-                                                                // Use the calculated pet offsets
-                                                                if let Some(pos) = last_cursor_pos {
-                                                                    if let Ok(win_pos) = window.outer_position() {
-                                                                        let global_x = win_pos.x as f64 + pos.x - pet_off_x;
-                                                                        let global_y = win_pos.y as f64 + pos.y - pet_off_y;
-                                                                        pet.follow_mouse((global_x, global_y));
+                                                // Single Click handling for Menu
+                                                if menu_manager.visible {
+                                                    if let Some(pos) = last_cursor_pos {
+                                                        let (cur_pw, _cur_ph) =
+                                                            pet.get_scaled_size();
+                                                        let menu_x =
+                                                            (pet_off_x + cur_pw + 10.0) as i32;
+                                                        let menu_y = pet_off_y as i32;
+
+                                                        if let Some(action) = menu_manager
+                                                            .check_hit(pos.x, pos.y, menu_x, menu_y)
+                                                        {
+                                                            match action.as_str() {
+                                                                "chat" => {
+                                                                    bubble_manager.show(
+                                                                        "AI 对话功能即将上线！🤖",
+                                                                        Duration::from_secs(3),
+                                                                    );
+                                                                }
+                                                                "settings" => {
+                                                                    if settings_win.is_none() {
+                                                                        settings_win = Some(
+                                                                            SettingsWindow::new(
+                                                                                elwt,
+                                                                            ),
+                                                                        );
+                                                                    } else {
+                                                                        if let Some(sw) =
+                                                                            &settings_win
+                                                                        {
+                                                                            sw.focus();
+                                                                        }
                                                                     }
                                                                 }
-                                                            },
-                                                            "music" => {
-                                                                bubble_manager.show("音乐播放功能正在准备中... 🎵", Duration::from_secs(3));
+                                                                "pomodoro" => {
+                                                                    bubble_manager.show(
+                                                                        "开始 25 分钟专注！🍅",
+                                                                        Duration::from_secs(3),
+                                                                    );
+                                                                    // TODO: Start timer
+                                                                }
+                                                                "music" => {
+                                                                    bubble_manager.show(
+                                                                        "音乐播放中... 🎵",
+                                                                        Duration::from_secs(3),
+                                                                    );
+                                                                }
+                                                                "exit" => elwt.exit(),
+                                                                _ => {}
                                                             }
-                                                            "exit" => elwt.exit(),
-                                                            _ => {}
                                                         }
-                                                        // Close menu after action? 
-                                                        // menu_open = false; 
-                                                    } else {
-                                                        // Clicked outside menu, close it?
-                                                        menu_open = false;
+                                                    }
+                                                }
+
+                                                // Random Interaction
+                                                if !is_click {
+                                                    // Drag ended
+                                                    pet.end_drag();
+                                                } else {
+                                                    // If not clicking menu (and menu checking didn't consume it?), play quote
+                                                    // Logic: if menu hit, we handled it. If not, play quote?
+                                                    // Simplified:
+                                                    if let Some(&quote) =
+                                                        rand::seq::SliceRandom::choose(
+                                                            &quotes[..],
+                                                            &mut rand::thread_rng(),
+                                                        )
+                                                    {
+                                                        // Only show quote if we didn't just click a menu button?
+                                                        // For now, let's allow overlapping interactions or refine later.
+                                                        bubble_manager
+                                                            .show(quote, Duration::from_secs(4));
                                                     }
                                                 }
                                             } else {
-                                                if let Some(&quote) = rand::seq::SliceRandom::choose(
-                                                    &quotes[..],
-                                                    &mut rand::thread_rng(),
-                                                ) {
-                                                    bubble_manager.show(quote, Duration::from_secs(4));
-                                                }
-                                                pet.velocity = (0.0, 0.0);
+                                                pet.end_drag();
                                             }
-                                        } else {
-                                            pet.end_drag();
+                                            click_start_time = None;
+                                            click_start_pos = None;
                                         }
-                                        click_start_time = None;
-                                        click_start_pos = None;
                                     }
                                 }
                             }
-                        }
-                        WindowEvent::CursorMoved { position, .. } => {
-                            last_cursor_pos = Some(position);
-                            if let Ok(win_pos) = window.outer_position() {
-                                // Adjust global_x/y to be relative to the pet's top-left corner
-                                let global_x = win_pos.x as f64 + position.x - pet_off_x;
-                                let global_y = win_pos.y as f64 + position.y - pet_off_y;
+                            WindowEvent::CursorMoved { position, .. } => {
+                                last_cursor_pos = Some(position);
+                                if let Ok(win_pos) = window.outer_position() {
+                                    let global_x = win_pos.x as f64 + position.x - pet_off_x;
+                                    let global_y = win_pos.y as f64 + position.y - pet_off_y;
 
-                                if pet.state == PetState::Drag {
-                                    pet.update_drag((global_x, global_y));
-                                } else if pet.state == PetState::Clingy {
-                                    pet.follow_mouse((global_x, global_y));
-                                } else if let Some(start_pos) = click_start_pos {
-                                    // Potentially start drag if threshold exceeded
-                                    let dx = global_x - start_pos.0;
-                                    let dy = global_y - start_pos.1;
-                                    if (dx * dx + dy * dy).sqrt() > 5.0 {
-                                        pet.start_drag(start_pos);
+                                    if pet.state == PetState::Drag {
                                         pet.update_drag((global_x, global_y));
+                                    } else if pet.state == PetState::Clingy {
+                                        pet.follow_mouse((global_x, global_y));
+                                    } else if let Some(start_pos) = click_start_pos {
+                                        let dx = global_x - start_pos.0;
+                                        let dy = global_y - start_pos.1;
+                                        if (dx * dx + dy * dy).sqrt() > 5.0 {
+                                            pet.start_drag(start_pos);
+                                            pet.update_drag((global_x, global_y));
+                                        }
                                     }
                                 }
                             }
+                            _ => {}
                         }
-                        _ => {}
+                    } else if let Some(sw) = &mut settings_win {
+                        if window_id == sw.id() {
+                            match event {
+                                WindowEvent::CloseRequested => {
+                                    settings_win = None;
+                                }
+                                WindowEvent::RedrawRequested => {
+                                    sw.redraw();
+                                }
+                                _ => {}
+                            }
+                        }
                     }
                 }
                 Event::AboutToWait => {
+                    let mut is_hovered = false;
                     #[cfg(target_os = "windows")]
                     unsafe {
-                        use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
                         use windows::Win32::Foundation::POINT;
+                        use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
                         let mut pt = POINT::default();
                         if GetCursorPos(&mut pt).is_ok() {
-                            if pet.state == PetState::Clingy || pet.behavior_mode == BehaviorMode::Clingy {
-                                pet.follow_mouse((pt.x as f64, pt.y as f64));
+                            let mouse_x = pt.x as f64;
+                            let mouse_y = pt.y as f64;
+
+                            // Clingy Logic
+                            if pet.state == PetState::Clingy
+                                || pet.behavior_mode == BehaviorMode::Clingy
+                            {
+                                pet.follow_mouse((mouse_x, mouse_y));
+                            }
+
+                            // Hover Logic for Menu
+                            // Pet Rect on Screen
+                            let pet_screen_x = pet.position.0;
+                            let pet_screen_y = pet.position.1;
+                            let (sys_pw, sys_ph) = pet.get_scaled_size();
+
+                            // Menu Rect (Dynamic)
+                            let menu_on_right_x = pet_screen_x + sys_pw + 10.0;
+                            let menu_w = menu_manager.menu_width as f64;
+                            let menu_h = menu_manager.menu_height as f64;
+
+                            // Check if mouse is over pet OR menu area
+                            let over_pet = mouse_x >= pet_screen_x
+                                && mouse_x <= pet_screen_x + sys_pw
+                                && mouse_y >= pet_screen_y
+                                && mouse_y <= pet_screen_y + sys_ph;
+
+                            let over_menu = mouse_x >= menu_on_right_x
+                                && mouse_x <= menu_on_right_x + menu_w
+                                && mouse_y >= pet_screen_y
+                                && mouse_y <= pet_screen_y + menu_h;
+
+                            if over_pet || over_menu {
+                                is_hovered = true;
+                                menu_manager.visible = true;
+                                menu_manager.opacity = (menu_manager.opacity + 0.1).min(1.0);
+                                menu_visible_timer = Some(Instant::now());
+                            } else {
+                                let should_fade = match menu_visible_timer {
+                                    Some(t) => t.elapsed() > Duration::from_secs(5),
+                                    None => true,
+                                };
+
+                                if should_fade {
+                                    menu_manager.opacity = (menu_manager.opacity - 0.05).max(0.0);
+                                    if menu_manager.opacity <= 0.0 {
+                                        menu_manager.visible = false;
+                                        menu_visible_timer = None;
+                                    }
+                                }
                             }
                         }
                     }
 
                     if let Some(elapsed) = last_update.map(|t| t.elapsed().as_secs_f64()) {
-                        pet.update_state(elapsed);
+                        pet.update_state(elapsed, is_hovered);
                         window.set_outer_position(PhysicalPosition::new(
                             (pet.position.0 - pet_off_x) as i32,
                             (pet.position.1 - pet_off_y) as i32,

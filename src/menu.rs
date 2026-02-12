@@ -1,264 +1,221 @@
-// use std::time::{Duration, Instant}; // Removed unused
+use image::RgbaImage;
+use std::path::Path;
 
-#[cfg(target_os = "windows")]
-use windows::Win32::Foundation::{COLORREF, HWND, RECT};
-#[cfg(target_os = "windows")]
-use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, DrawTextW, GdiFlush,
-    GetDC, ReleaseDC, SelectObject, SetBkMode, SetTextColor, ANSI_CHARSET, BITMAPINFO,
-    BITMAPINFOHEADER, BI_RGB, CLIP_DEFAULT_PRECIS, DEFAULT_PITCH, DIB_RGB_COLORS, DT_CENTER,
-    DT_SINGLELINE, DT_VCENTER, FF_SWISS, FW_BOLD, HFONT, NONANTIALIASED_QUALITY,
-    OUT_DEFAULT_PRECIS, TRANSPARENT,
-};
-
-pub const MENU_W: i32 = 170;
-pub const MENU_H: i32 = 130;
+pub const BASE_BUTTON_SIZE: i32 = 40;
+pub const BASE_BUTTON_PADDING: i32 = 10;
+// Base width: size + 2*padding? No, centered.
+// Let's say menu width is button_size + 20 padding.
+pub const BASE_MENU_WIDTH: i32 = 60;
 
 pub struct MenuButton {
-    pub label: String,
-    pub rect: RECT,
     pub id: String,
+    pub base_icon: RgbaImage,
+}
+
+pub struct ScaledButton {
+    pub id: String,
+    pub rect: (i32, i32, i32, i32),
+    pub icon: RgbaImage,
 }
 
 pub struct QuickMenu {
-    pub buttons: Vec<MenuButton>,
-    pub font: Option<HFONT>,
-    pub active_mode: crate::types::BehaviorMode,
-    pub is_at_bottom: bool,
+    pub base_buttons: Vec<MenuButton>,
+    pub scaled_buttons: Vec<ScaledButton>,
+    pub visible: bool,
+    pub opacity: f32,
+    pub current_scale: f32,
+    pub menu_width: i32,
+    pub menu_height: i32,
 }
 
 impl QuickMenu {
     pub fn new() -> Self {
-        let mut buttons = Vec::new();
-        // Layout buttons in a grid
-        let labels = [
-            ("放大", "zoom_in"),
-            ("缩小", "zoom_out"),
-            ("安静", "mode_quiet"),
-            ("活泼", "mode_active"),
-            ("粘人", "mode_clingy"),
-            ("音乐", "music"),
-            ("退出", "exit"),
+        let mut base_buttons = Vec::new();
+        let icons = [
+            ("speech-bubble.png", "chat"),
+            ("music.png", "music"),
+            ("time-left.png", "pomodoro"),
+            ("gear.png", "settings"),
+            ("switch.png", "exit"),
         ];
 
-        let start_x = 15;
-        let start_y = 15;
-        let mut x = start_x;
-        let mut y = start_y;
-        let btn_w = 65;
-        let btn_h = 24;
-        let spacing_x = 75;
-        let spacing_y = 28;
+        for (filename, id) in icons {
+            let path = Path::new("assets/icons").join(filename);
+            let base_icon = match image::open(&path) {
+                Ok(img) => img.to_rgba8(), // Keep original resolution
+                Err(e) => {
+                    eprintln!("Failed to load icon {}: {}", path.display(), e);
+                    RgbaImage::from_fn(64, 64, |_, _| image::Rgba([255, 0, 255, 255]))
+                }
+            };
 
-        for (label, id) in labels {
-            buttons.push(MenuButton {
+            base_buttons.push(MenuButton {
                 id: id.to_string(),
-                label: label.to_string(),
-                rect: RECT {
-                    left: x,
-                    top: y,
-                    right: x + btn_w,
-                    bottom: y + btn_h,
-                },
+                base_icon,
             });
-            y += spacing_y;
-            if y + btn_h > MENU_H - 10 {
-                y = start_y;
-                x += spacing_x;
-            }
         }
 
-        Self {
-            buttons,
-            font: None,
-            active_mode: crate::types::BehaviorMode::Active,
-            is_at_bottom: false,
+        let mut menu = Self {
+            base_buttons,
+            scaled_buttons: Vec::new(),
+            visible: false,
+            opacity: 0.0,
+            current_scale: 1.0,
+            menu_width: 0,
+            menu_height: 0,
+        };
+
+        // Initialize with scale 1.0
+        menu.update_layout(1.0);
+        menu
+    }
+
+    pub fn update_layout(&mut self, scale: f32) {
+        // Clamp scale to reasonable limits to prevent tiny/huge menu
+        let s = scale.max(0.5).min(3.0);
+        if (self.current_scale - s).abs() < 0.01 && !self.scaled_buttons.is_empty() {
+            return;
+        }
+        self.current_scale = s;
+
+        let btn_size = (BASE_BUTTON_SIZE as f32 * s) as i32;
+        let padding = (BASE_BUTTON_PADDING as f32 * s) as i32;
+
+        self.menu_width = btn_size + padding * 2;
+        // recalculate height
+        let count = self.base_buttons.len() as i32;
+        self.menu_height = count * (btn_size + padding) + padding;
+
+        self.scaled_buttons.clear();
+
+        let mut y = padding;
+        let x = padding; // Centered? width = size + 2*padding. So x=padding centers it.
+
+        for btn in &self.base_buttons {
+            // Resize icon
+            let icon = image::DynamicImage::ImageRgba8(btn.base_icon.clone())
+                .resize(
+                    btn_size as u32,
+                    btn_size as u32,
+                    image::imageops::FilterType::Lanczos3,
+                )
+                .to_rgba8();
+
+            self.scaled_buttons.push(ScaledButton {
+                id: btn.id.clone(),
+                rect: (x, y, x + btn_size, y + btn_size),
+                icon,
+            });
+
+            y += btn_size + padding;
         }
     }
 
-    pub fn render_to_buffer(&mut self, buffer_ptr: *mut u8, win_w: u32, win_h: u32) {
-        #[cfg(target_os = "windows")]
-        unsafe {
-            let hdc_screen = GetDC(HWND(0));
+    pub fn render(&self, buffer: &mut [u8], win_w: i32, win_h: i32, menu_x: i32, menu_y: i32) {
+        if self.opacity <= 0.0 {
+            return;
+        }
 
-            // We draw menu at top or bottom center.
-            let start_x = (win_w as i32 - MENU_W) / 2;
-            let start_y = if self.is_at_bottom {
-                win_h as i32 - MENU_H
-            } else {
-                0
-            };
+        let alpha_mult = self.opacity;
 
-            // Palette (Refined for Premium Pixel Look)
-            let bg_color = [0xFA, 0xF5, 0xFF, 210]; // Very Light Lavender/White
-            let border_color = [0x41, 0x2C, 0x5E, 255]; // Deep Midnight Purple
-            let btn_bg = [0xE6, 0xD5, 0xF5, 255]; // Soft Muted Purple/Pink
-            let btn_active = [0xFF, 0xFF, 0xFF, 255];
-            let active_border = [0xA2, 0x81, 0xC7, 255]; // Medium Purple
+        // Draw Background
+        let bg_r = 0xFA;
+        let bg_g = 0xF5;
+        let bg_b = 0xFF;
+        let bg_a = (220.0 * alpha_mult) as u8;
 
-            // Fill background & draw border
-            for y in 0..MENU_H {
-                for x in 0..MENU_W {
-                    let dest_idx = ((start_y + y) * win_w as i32 + (start_x + x)) as usize * 4;
-                    // Note: buffer_ptr.len() check removed as it's not valid for raw pointers.
-                    // Assuming buffer_ptr points to a sufficiently large memory region.
+        for y in 0..self.menu_height {
+            let screen_y = menu_y + y;
+            if screen_y < 0 || screen_y >= win_h {
+                continue;
+            }
 
-                    if x == 0 || x == MENU_W - 1 || y == 0 || y == MENU_H - 1 {
-                        *buffer_ptr.add(dest_idx) = border_color[0];
-                        *buffer_ptr.add(dest_idx + 1) = border_color[1];
-                        *buffer_ptr.add(dest_idx + 2) = border_color[2];
-                        *buffer_ptr.add(dest_idx + 3) = border_color[3];
+            for x in 0..self.menu_width {
+                let screen_x = menu_x + x;
+                if screen_x < 0 || screen_x >= win_w {
+                    continue;
+                }
+
+                let idx = (screen_y * win_w + screen_x) as usize * 4;
+                if idx + 3 < buffer.len() {
+                    // Simple composite? Or fill?
+                    // Let's fill for now, assuming it's drawn on top
+                    if buffer[idx + 3] == 0 {
+                        // If transparent, just set
+                        buffer[idx] = bg_b;
+                        buffer[idx + 1] = bg_g;
+                        buffer[idx + 2] = bg_r;
+                        buffer[idx + 3] = bg_a;
                     } else {
-                        *buffer_ptr.add(dest_idx) = bg_color[0];
-                        *buffer_ptr.add(dest_idx + 1) = bg_color[1];
-                        *buffer_ptr.add(dest_idx + 2) = bg_color[2];
-                        *buffer_ptr.add(dest_idx + 3) = bg_color[3];
+                        // Blend
+                        let src_a = bg_a as u32;
+                        let inv_a = 255 - src_a;
+                        let dst_b = buffer[idx] as u32;
+                        let dst_g = buffer[idx + 1] as u32;
+                        let dst_r = buffer[idx + 2] as u32;
+
+                        buffer[idx] = ((bg_b as u32 * src_a + dst_b * inv_a) / 255) as u8;
+                        buffer[idx + 1] = ((bg_g as u32 * src_a + dst_g * inv_a) / 255) as u8;
+                        buffer[idx + 2] = ((bg_r as u32 * src_a + dst_r * inv_a) / 255) as u8;
+                        buffer[idx + 3] = 255.min(buffer[idx + 3] as u32 + src_a) as u8;
                     }
                 }
             }
+        }
 
-            // --- Draw Buttons to DC ---
-            for btn in &self.buttons {
-                let is_active = match btn.id.as_str() {
-                    "mode_quiet" => self.active_mode == crate::types::BehaviorMode::Quiet,
-                    "mode_active" => self.active_mode == crate::types::BehaviorMode::Active,
-                    "mode_clingy" => self.active_mode == crate::types::BehaviorMode::Clingy,
-                    _ => false,
-                };
+        // Draw Buttons
+        for btn in &self.scaled_buttons {
+            let w = btn.rect.2 - btn.rect.0;
+            let h = btn.rect.3 - btn.rect.1;
 
-                let color = if is_active { btn_active } else { btn_bg };
+            for y in 0..h {
+                let sy = btn.rect.1 + y;
+                let screen_y = menu_y + sy;
+                if screen_y < 0 || screen_y >= win_h {
+                    continue;
+                }
 
-                for y in btn.rect.top..btn.rect.bottom {
-                    for x in btn.rect.left..btn.rect.right {
-                        let dest_idx = ((start_y + y) * win_w as i32 + (start_x + x)) as usize * 4;
-                        // Note: buffer_ptr.len() check removed as it's not valid for raw pointers.
+                for x in 0..w {
+                    let sx = btn.rect.0 + x;
+                    let screen_x = menu_x + sx;
+                    if screen_x < 0 || screen_x >= win_w {
+                        continue;
+                    }
 
-                        let is_inner_border = is_active
-                            && (x == btn.rect.left
-                                || x == btn.rect.right - 1
-                                || y == btn.rect.top
-                                || y == btn.rect.bottom - 1);
+                    let pixel = btn.icon.get_pixel(x as u32, y as u32);
+                    let src_a = (pixel[3] as f32 * alpha_mult) as u8;
 
-                        if is_inner_border {
-                            *buffer_ptr.add(dest_idx) = active_border[0];
-                            *buffer_ptr.add(dest_idx + 1) = active_border[1];
-                            *buffer_ptr.add(dest_idx + 2) = active_border[2];
-                            *buffer_ptr.add(dest_idx + 3) = 255;
-                        } else {
-                            *buffer_ptr.add(dest_idx) = color[0];
-                            *buffer_ptr.add(dest_idx + 1) = color[1];
-                            *buffer_ptr.add(dest_idx + 2) = color[2];
-                            *buffer_ptr.add(dest_idx + 3) = color[3];
+                    if src_a > 0 {
+                        let idx = (screen_y * win_w + screen_x) as usize * 4;
+                        if idx + 3 < buffer.len() {
+                            buffer[idx] = pixel[2];
+                            buffer[idx + 1] = pixel[1];
+                            buffer[idx + 2] = pixel[0];
+                            buffer[idx + 3] = 255.min(buffer[idx + 3] as u16 + src_a as u16) as u8;
                         }
                     }
                 }
             }
-
-            // --- DC Text Rendering ---
-            // Create a temporary DC for text that we'll mask back
-            let hdc_mem = CreateCompatibleDC(hdc_screen);
-            let bmi = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: MENU_W,
-                    biHeight: -MENU_H,
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: BI_RGB.0,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-            let mut bits = std::ptr::null_mut();
-            let h_bitmap =
-                CreateDIBSection(hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).unwrap();
-            let old_bitmap = SelectObject(hdc_mem, h_bitmap);
-            let pixel_ptr = bits as *mut u8;
-            std::ptr::write_bytes(pixel_ptr, 0, (MENU_W * MENU_H * 4) as usize); // Clear the temporary buffer
-
-            SetBkMode(hdc_mem, TRANSPARENT);
-            SetTextColor(hdc_mem, COLORREF(0x004A3B5C)); // Deep Purple text
-
-            if self.font.is_none() {
-                use windows::core::PCWSTR;
-                let font_name: Vec<u16> = "SimSun".encode_utf16().chain(Some(0)).collect();
-                self.font = Some(CreateFontW(
-                    14,
-                    0,
-                    0,
-                    0,
-                    FW_BOLD.0 as i32,
-                    0,
-                    0,
-                    0,
-                    ANSI_CHARSET.0 as u32,
-                    OUT_DEFAULT_PRECIS.0 as u32,
-                    CLIP_DEFAULT_PRECIS.0 as u32,
-                    NONANTIALIASED_QUALITY.0 as u32,
-                    (DEFAULT_PITCH.0 | FF_SWISS.0) as u32,
-                    PCWSTR(font_name.as_ptr()),
-                ));
-            }
-            if let Some(font) = self.font {
-                SelectObject(hdc_mem, font);
-            }
-
-            for btn in &self.buttons {
-                let mut r = btn.rect;
-                let mut text: Vec<u16> = btn.label.encode_utf16().chain(Some(0)).collect();
-                DrawTextW(
-                    hdc_mem,
-                    text.as_mut_slice(),
-                    &mut r,
-                    DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-                );
-            }
-            GdiFlush();
-
-            // Mask text back to buffer with alpha fix
-            for y in 0..MENU_H {
-                for x in 0..MENU_W {
-                    let src_idx = (y * MENU_W + x) as usize * 4;
-                    let dest_idx = ((start_y + y) * win_w as i32 + (start_x + x)) as usize * 4;
-
-                    let b = *pixel_ptr.add(src_idx);
-                    let g = *pixel_ptr.add(src_idx + 1);
-                    let r = *pixel_ptr.add(src_idx + 2);
-
-                    // If the pixel in the temporary GDI buffer is not black (i.e., it's text)
-                    if b != 0 || g != 0 || r != 0 {
-                        // Overwrite the corresponding pixel in the main buffer with the text color
-                        *buffer_ptr.add(dest_idx) = b;
-                        *buffer_ptr.add(dest_idx + 1) = g;
-                        *buffer_ptr.add(dest_idx + 2) = r;
-                        *buffer_ptr.add(dest_idx + 3) = 255; // Set alpha to opaque for text
-                    }
-                }
-            }
-
-            SelectObject(hdc_mem, old_bitmap);
-            let _ = DeleteObject(h_bitmap);
-            let _ = DeleteDC(hdc_mem);
-            ReleaseDC(HWND(0), hdc_screen); // Release the screen DC
         }
     }
 
-    pub fn check_hit(&self, mx: f64, my: f64, win_w: u32, win_h: u32) -> Option<String> {
-        let menu_x = (win_w as i32 - MENU_W) / 2;
-        let menu_y = if self.is_at_bottom {
-            win_h as i32 - MENU_H
-        } else {
-            0
-        };
+    pub fn check_hit(&self, mx: f64, my: f64, menu_x: i32, menu_y: i32) -> Option<String> {
+        if !self.visible {
+            return None;
+        }
 
         let rel_x = mx as i32 - menu_x;
         let rel_y = my as i32 - menu_y;
 
-        for btn in &self.buttons {
-            if rel_x >= btn.rect.left
-                && rel_x <= btn.rect.right
-                && rel_y >= btn.rect.top
-                && rel_y <= btn.rect.bottom
+        if rel_x < 0 || rel_x >= self.menu_width || rel_y < 0 || rel_y >= self.menu_height {
+            return None;
+        }
+
+        for btn in &self.scaled_buttons {
+            if rel_x >= btn.rect.0
+                && rel_x < btn.rect.2
+                && rel_y >= btn.rect.1
+                && rel_y < btn.rect.3
             {
                 return Some(btn.id.clone());
             }

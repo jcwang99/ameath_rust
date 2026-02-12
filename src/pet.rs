@@ -1,4 +1,4 @@
-use crate::types::{PetState, PreprocessedFrame};
+use crate::types::{BehaviorMode, PetState, PreprocessedFrame};
 use rand::Rng;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -92,15 +92,20 @@ impl Pet {
         }
     }
 
-    pub fn update_state(&mut self, dt: f64) {
+    pub fn update_state(&mut self, dt: f64, is_paused: bool) {
         if self.state == PetState::Drag {
+            return;
+        }
+
+        if is_paused {
+            // Animation continues, but position/velocity logic is skipped
             return;
         }
 
         if self.timer.elapsed() >= self.state_duration {
             match self.state {
                 PetState::Idle => {
-                    if self.behavior_mode == crate::types::BehaviorMode::Clingy {
+                    if self.behavior_mode == BehaviorMode::Clingy {
                         self.state = PetState::Clingy;
                     } else {
                         self.state = PetState::Move;
@@ -109,13 +114,13 @@ impl Pet {
                     self.timer = Instant::now();
 
                     self.state_duration = match self.behavior_mode {
-                        crate::types::BehaviorMode::Quiet => {
+                        BehaviorMode::Quiet => {
                             Duration::from_secs(rand::thread_rng().gen_range(2..4))
                         }
-                        crate::types::BehaviorMode::Active => {
+                        BehaviorMode::Active => {
                             Duration::from_secs(rand::thread_rng().gen_range(5..10))
                         }
-                        crate::types::BehaviorMode::Clingy => Duration::from_secs(2),
+                        BehaviorMode::Clingy => Duration::from_secs(2),
                     };
 
                     let max_x = self.screen_size.0 - self.window_size.0;
@@ -140,13 +145,13 @@ impl Pet {
                     self.timer = Instant::now();
 
                     self.state_duration = match self.behavior_mode {
-                        crate::types::BehaviorMode::Quiet => {
+                        BehaviorMode::Quiet => {
                             Duration::from_secs(rand::thread_rng().gen_range(5..10))
                         }
-                        crate::types::BehaviorMode::Active => {
+                        BehaviorMode::Active => {
                             Duration::from_secs(rand::thread_rng().gen_range(1..3))
                         }
-                        crate::types::BehaviorMode::Clingy => Duration::from_secs(2),
+                        BehaviorMode::Clingy => Duration::from_secs(2),
                     };
 
                     self.velocity = (0.0, 0.0);

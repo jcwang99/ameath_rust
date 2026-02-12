@@ -43,7 +43,7 @@ version = "0.1.0"
 dependencies = [
  "image",
  "rand",
- "raw-window-handle 0.6.2",
+ "raw-window-handle 0.5.2",
  "softbuffer",
  "windows",
  "winit",
