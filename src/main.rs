@@ -1,6 +1,7 @@
 mod anim;
 mod bubble;
 mod menu;
+mod music_player;
 mod pet;
 mod pomodoro;
 mod render;
@@ -153,6 +154,11 @@ fn main() {
     let mut bubble_manager = bubble::SpeechBubble::new();
     let mut pomodoro_manager = pomodoro::Pomodoro::new();
     let mut menu_manager = menu::QuickMenu::new();
+    let mut music_player = music_player::MusicPlayer::new();
+    let music_dir = std::path::PathBuf::from("assets/music");
+    if music_dir.exists() {
+        music_player.set_path(music_dir);
+    }
     let quotes = vec![
         "哎呀，被发现了！😆",
         "别戳我啦~",
@@ -196,10 +202,8 @@ fn main() {
                                 menu_manager.update_layout(draw_scale);
 
                                 // Recalculate scaled dimensions for bubble and pomodoro
-                                let current_bubble_w =
-                                    (bubble::BASE_BUBBLE_WIDTH as f32 * pet.scale) as i32;
-                                let mut current_bubble_h =
-                                    (bubble::BASE_BUBBLE_HEIGHT as f32 * pet.scale) as i32;
+                                let current_bubble_w = bubble_manager.current_width;
+                                let mut current_bubble_h = bubble_manager.current_height;
                                 let current_pomodoro_w =
                                     (pomodoro::BASE_POMODORO_WIDTH as f32 * pet.scale) as i32;
                                 let mut current_pomodoro_h =
@@ -514,6 +518,7 @@ fn main() {
                                                                     bubble_manager.show(
                                                                         "AI 对话功能即将上线！🤖",
                                                                         Duration::from_secs(3),
+                                                                        pet.scale,
                                                                     );
                                                                 }
                                                                 "settings" => {
@@ -539,6 +544,7 @@ fn main() {
                                                                         bubble_manager.show(
                                                                             &msg,
                                                                             Duration::from_secs(4),
+                                                                            pet.scale,
                                                                         );
                                                                     }
 
@@ -546,19 +552,31 @@ fn main() {
                                                                         bubble_manager.show(
                                                                             "Pomodoro Started! 🍅",
                                                                             Duration::from_secs(2),
+                                                                            pet.scale,
                                                                         );
                                                                     } else {
                                                                         bubble_manager.show(
                                                                             "Pomodoro Stopped.",
                                                                             Duration::from_secs(2),
+                                                                            pet.scale,
                                                                         );
                                                                     }
                                                                 }
                                                                 "music" => {
-                                                                    bubble_manager.show(
-                                                                        "音乐播放中... 🎵",
-                                                                        Duration::from_secs(3),
-                                                                    );
+                                                                    music_player.toggle();
+                                                                    if music_player.is_playing() {
+                                                                        bubble_manager.show(
+                                                                            "Music Started! 🎵",
+                                                                            Duration::from_secs(2),
+                                                                            pet.scale,
+                                                                        );
+                                                                    } else {
+                                                                        bubble_manager.show(
+                                                                            "Music Paused ⏸️",
+                                                                            Duration::from_secs(2),
+                                                                            pet.scale,
+                                                                        );
+                                                                    }
                                                                 }
                                                                 "exit" => elwt.exit(),
                                                                 _ => {}
@@ -583,8 +601,11 @@ fn main() {
                                                     {
                                                         // Only show quote if we didn't just click a menu button?
                                                         // For now, let's allow overlapping interactions or refine later.
-                                                        bubble_manager
-                                                            .show(quote, Duration::from_secs(4));
+                                                        bubble_manager.show(
+                                                            quote,
+                                                            Duration::from_secs(4),
+                                                            pet.scale,
+                                                        );
                                                     }
                                                 }
                                             } else {
@@ -646,6 +667,10 @@ fn main() {
                                                 pet.behavior_mode = m;
                                                 sw.request_redraw();
                                             }
+                                            settings_window::SettingsAction::SetMusicPath(path) => {
+                                                music_player.set_path(path);
+                                                sw.request_redraw();
+                                            }
                                             settings_window::SettingsAction::None => {}
                                         }
                                     }
@@ -659,7 +684,11 @@ fn main() {
                                         BehaviorMode::Active => "Active",
                                         BehaviorMode::Clingy => "Clingy",
                                     };
-                                    sw.redraw(pet.scale, mode_str);
+                                    sw.redraw(
+                                        pet.scale,
+                                        mode_str,
+                                        music_player.music_path.as_deref(),
+                                    );
                                 }
                                 _ => {}
                             }
@@ -736,7 +765,11 @@ fn main() {
 
                         // Update Pomodoro State
                         if let Some(msg) = pomodoro_manager.update() {
-                            bubble_manager.show(&msg, Duration::from_secs(4));
+                            bubble_manager.show(&msg, Duration::from_secs(4), pet.scale);
+                        }
+
+                        if let Some(msg) = music_player.update() {
+                            bubble_manager.show(&msg, Duration::from_secs(4), pet.scale);
                         }
 
                         window.set_outer_position(PhysicalPosition::new(

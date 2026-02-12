@@ -13,11 +13,14 @@ use windows::Win32::Graphics::Gdi::{
 
 pub const BASE_BUBBLE_WIDTH: i32 = 180;
 pub const BASE_BUBBLE_HEIGHT: i32 = 90;
+pub const MAX_BUBBLE_WIDTH: i32 = 300;
 
 pub struct SpeechBubble {
     pub text: String,
     pub show_until: Option<Instant>,
     pub font: Option<HFONT>,
+    pub current_width: i32,
+    pub current_height: i32,
 }
 
 impl SpeechBubble {
@@ -26,12 +29,78 @@ impl SpeechBubble {
             text: String::new(),
             show_until: None,
             font: None,
+            current_width: BASE_BUBBLE_WIDTH,
+            current_height: BASE_BUBBLE_HEIGHT,
         }
     }
 
-    pub fn show(&mut self, text: &str, duration: Duration) {
+    pub fn show(&mut self, text: &str, duration: Duration, scale: f32) {
         self.text = text.to_string();
         self.show_until = Some(Instant::now() + duration);
+        self.calculate_size(scale);
+    }
+
+    fn calculate_size(&mut self, scale: f32) {
+        #[cfg(target_os = "windows")]
+        unsafe {
+            let hdc_screen = GetDC(HWND(0));
+            let hdc_mem = CreateCompatibleDC(hdc_screen);
+
+            let font_size = (14.0 * scale) as i32;
+            let font_name: Vec<u16> = "SimSun".encode_utf16().chain(Some(0)).collect();
+            use windows::core::PCWSTR;
+            let temp_font = CreateFontW(
+                font_size,
+                0,
+                0,
+                0,
+                FW_BOLD.0 as i32,
+                0,
+                0,
+                0,
+                ANSI_CHARSET.0 as u32,
+                OUT_DEFAULT_PRECIS.0 as u32,
+                CLIP_DEFAULT_PRECIS.0 as u32,
+                NONANTIALIASED_QUALITY.0 as u32,
+                (DEFAULT_PITCH.0 | FF_SWISS.0) as u32,
+                PCWSTR(font_name.as_ptr()),
+            );
+            let old_font = SelectObject(hdc_mem, temp_font);
+
+            let padding = (12.0 * scale) as i32;
+            let max_w = (MAX_BUBBLE_WIDTH as f32 * scale) as i32 - padding * 2;
+            let mut rect = RECT {
+                left: 0,
+                top: 0,
+                right: max_w,
+                bottom: 1000,
+            };
+
+            let mut wide_text: Vec<u16> = self.text.encode_utf16().chain(Some(0)).collect();
+            use windows::Win32::Graphics::Gdi::DT_CALCRECT;
+            DrawTextW(
+                hdc_mem,
+                &mut wide_text,
+                &mut rect,
+                DT_CENTER | DT_WORDBREAK | DT_CALCRECT,
+            );
+
+            let text_w = rect.right - rect.left;
+            let text_h = rect.bottom - rect.top;
+
+            let tail_h = (20.0 * scale) as i32;
+            let calc_w = (text_w + padding * 2).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
+            let calc_h =
+                (text_h + padding * 2 + tail_h).max((BASE_BUBBLE_HEIGHT as f32 * scale) as i32);
+
+            self.current_width = calc_w;
+            self.current_height = calc_h;
+
+            SelectObject(hdc_mem, old_font);
+            DeleteObject(temp_font);
+            DeleteDC(hdc_mem);
+            ReleaseDC(HWND(0), hdc_screen);
+        }
     }
 
     pub fn is_visible(&self) -> bool {
@@ -50,8 +119,8 @@ impl SpeechBubble {
             let hdc_screen = GetDC(HWND(0));
             let hdc_mem = CreateCompatibleDC(hdc_screen);
 
-            let width = (BASE_BUBBLE_WIDTH as f32 * scale) as i32;
-            let height = (BASE_BUBBLE_HEIGHT as f32 * scale) as i32;
+            let width = self.current_width;
+            let height = self.current_height;
 
             let bmi = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
@@ -158,7 +227,7 @@ impl SpeechBubble {
                 PCWSTR(font_name.as_ptr()),
             );
 
-            SelectObject(hdc_mem, temp_font);
+            let old_font = SelectObject(hdc_mem, temp_font);
 
             let padding = (12.0 * scale) as i32;
             let mut rect = RECT {
@@ -187,6 +256,7 @@ impl SpeechBubble {
             std::ptr::copy_nonoverlapping(pixel_ptr, buffer_ptr, w_usize * h_usize * 4);
 
             SelectObject(hdc_mem, old_bitmap);
+            SelectObject(hdc_mem, old_font);
             let _ = DeleteObject(temp_font);
             let _ = DeleteObject(h_bitmap);
             let _ = DeleteDC(hdc_mem);

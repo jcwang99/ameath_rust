@@ -13,11 +13,12 @@ pub struct SettingsWindow {
     font: Option<Font<'static>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SettingsAction {
     None,
     SetScale(f32),
     SetMode(crate::types::BehaviorMode),
+    SetMusicPath(std::path::PathBuf),
 }
 
 impl SettingsWindow {
@@ -72,6 +73,19 @@ impl SettingsWindow {
             }
         }
 
+        // Music Path Button: Card3 Y=380. Button Y=430.
+        let music_y_min = 430.0 * scale_y;
+        let music_y_max = 470.0 * scale_y;
+        if y >= music_y_min && y <= music_y_max {
+            let start_x = 140.0 * scale_x;
+            let btn_w = 400.0 * scale_x;
+            if x >= start_x && x <= start_x + btn_w {
+                if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                    return SettingsAction::SetMusicPath(path);
+                }
+            }
+        }
+
         SettingsAction::None
     }
 
@@ -79,7 +93,7 @@ impl SettingsWindow {
         let window = Rc::new(
             winit::window::WindowBuilder::new()
                 .with_title("Ameath Settings")
-                .with_inner_size(PhysicalSize::new(600, 450))
+                .with_inner_size(PhysicalSize::new(600, 600))
                 .with_resizable(true)
                 .build(event_loop)
                 .unwrap(),
@@ -256,7 +270,12 @@ impl SettingsWindow {
         }
     }
 
-    pub fn redraw(&mut self, current_scale: f32, current_mode: &str) {
+    pub fn redraw(
+        &mut self,
+        current_scale: f32,
+        current_mode: &str,
+        current_music_path: Option<&std::path::Path>,
+    ) {
         let size = self.window.inner_size();
         if let Some(width) = NonZeroU32::new(size.width) {
             if let Some(height) = NonZeroU32::new(size.height) {
@@ -267,9 +286,9 @@ impl SettingsWindow {
                 let w = width.get();
                 let h = height.get();
 
-                // Scaling Factors (Base 600x450)
+                // Scaling Factors (Base 600x550)
                 let sx = w as f32 / 600.0;
-                let sy = h as f32 / 450.0;
+                let sy = h as f32 / 550.0;
 
                 // Helper to scale coordinates
                 let s = |val: u32| -> u32 { (val as f32 * sx) as u32 };
@@ -540,6 +559,80 @@ impl SettingsWindow {
                             text_col,
                         );
                     }
+                }
+
+                // Card 3: Music Path
+                let card3_y = sy_val(380);
+                let card3_h = sy_val(120);
+                Self::draw_rounded_rect(
+                    &mut buffer,
+                    w,
+                    s(120),
+                    card3_y,
+                    card_w,
+                    card3_h,
+                    12,
+                    card_bg,
+                    w,
+                    h,
+                );
+                if let Some(font) = &self.font {
+                    Self::draw_text(
+                        &mut buffer,
+                        w,
+                        font,
+                        "Music Directory",
+                        s(140),
+                        card3_y + sy_val(20),
+                        16.0 * sx,
+                        text_main,
+                    );
+                }
+
+                // Path selection button
+                let p_btn_y = card3_y + sy_val(50);
+                let p_btn_w = s(400);
+                let p_btn_h = sy_val(40);
+                Self::draw_rounded_rect(
+                    &mut buffer,
+                    w,
+                    s(140),
+                    p_btn_y,
+                    p_btn_w,
+                    p_btn_h,
+                    8,
+                    0x00E3E5E7, // Slightly darker, more "clickable"
+                    w,
+                    h,
+                );
+                // Add border
+                Self::draw_rounded_rect(
+                    &mut buffer,
+                    w,
+                    s(140) + 1,
+                    p_btn_y + 1,
+                    p_btn_w - 2,
+                    p_btn_h - 2,
+                    7,
+                    card_bg,
+                    w,
+                    h,
+                );
+
+                let path_text = current_music_path
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Click to select a music folder...".to_string());
+                if let Some(font) = &self.font {
+                    Self::draw_text(
+                        &mut buffer,
+                        w,
+                        font,
+                        &path_text,
+                        s(155),
+                        p_btn_y + sy_val(10),
+                        12.0 * sx,
+                        text_sec,
+                    );
                 }
 
                 buffer.present().unwrap();
