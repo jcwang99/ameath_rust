@@ -11,6 +11,9 @@ pub struct SettingsWindow {
     context: Context<Rc<Window>>,
     surface: Surface<Rc<Window>, Rc<Window>>,
     font: Option<Font<'static>>,
+    current_tab: usize,               // 0: Home, 1: General, 2: AI, 3: About
+    pub focused_field: Option<usize>, // AI Tab focus: 0: Key, 1: URL, 2: Model
+    show_api_key: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -20,89 +23,154 @@ pub enum SettingsAction {
     SetMode(crate::types::BehaviorMode),
     SetMusicPath(std::path::PathBuf),
     SetLayer(crate::types::WindowLayer),
+    SetAiApiKey(String),
+    SetAiBaseUrl(String),
+    SetAiModel(String),
 }
 
 impl SettingsWindow {
-    pub fn handle_click(&self, x: f64, y: f64) -> SettingsAction {
+    pub fn handle_click(&mut self, x: f64, y: f64, is_right_click: bool) -> SettingsAction {
         let size = self.window.inner_size();
         let scale_x = size.width as f64 / 600.0;
         let scale_y = size.height as f64 / 700.0;
 
-        // Scale Buttons (Replacing Slider)
-        // Card1 Y=90. Buttons Y=140 (~90+50).
-        let scale_y_min = 150.0 * scale_y;
-        let scale_y_max = 190.0 * scale_y; // 40px height
-
-        if y >= scale_y_min && y <= scale_y_max {
-            let start_x = 120.0 * scale_x;
-            let btn_w = 60.0 * scale_x;
-            let gap = 10.0 * scale_x;
-
-            // 5 options: 0.5, 0.75, 1.0, 1.25, 1.5
-            let scales = vec![0.5, 0.75, 1.0, 1.25, 1.5];
-
-            for (i, &s) in scales.iter().enumerate() {
-                let btn_x = start_x + i as f64 * (btn_w + gap);
-                if x >= btn_x && x <= btn_x + btn_w {
-                    return SettingsAction::SetScale(s);
+        // Sidebar Tab Selection
+        let sb_w = 100.0 * scale_x;
+        if x < sb_w {
+            for i in 0..4 {
+                let my_min = (100.0 + i as f64 * 60.0 - 20.0) * scale_y;
+                let my_max = (100.0 + i as f64 * 60.0 + 20.0) * scale_y;
+                if y >= my_min && y <= my_max {
+                    self.current_tab = i;
+                    self.window.request_redraw();
+                    return SettingsAction::None;
                 }
             }
         }
 
-        // Mode Buttons: Card2 Y=210. Buttons Y=260.
-        let mode_y_min = 290.0 * scale_y;
-        let mode_y_max = 340.0 * scale_y;
-
-        if y >= mode_y_min && y <= mode_y_max {
-            let btn_w = 120.0 * scale_x;
-            let gap = 12.0 * scale_x;
-            let start_x = 140.0 * scale_x;
-
-            // Quiet
-            if x >= start_x && x <= start_x + btn_w {
-                return SettingsAction::SetMode(crate::types::BehaviorMode::Quiet);
-            }
-            // Active
-            let active_x = start_x + btn_w + gap;
-            if x >= active_x && x <= active_x + btn_w {
-                return SettingsAction::SetMode(crate::types::BehaviorMode::Active);
-            }
-            // Clingy
-            let clingy_x = active_x + btn_w + gap;
-            if x >= clingy_x && x <= clingy_x + btn_w {
-                return SettingsAction::SetMode(crate::types::BehaviorMode::Clingy);
-            }
-        }
-
-        // Music Path Button: Card3 Y=380. Button Y=430.
-        let music_y_min = 430.0 * scale_y;
-        let music_y_max = 470.0 * scale_y;
-        if y >= music_y_min && y <= music_y_max {
-            let start_x = 140.0 * scale_x;
-            let btn_w = 400.0 * scale_x;
-            if x >= start_x && x <= start_x + btn_w {
-                if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                    return SettingsAction::SetMusicPath(path);
+        if self.current_tab == 1 {
+            // General Tab (Existing Appearance Settings)
+            // Scale Buttons
+            let scale_y_min = 150.0 * scale_y;
+            let scale_y_max = 190.0 * scale_y;
+            if y >= scale_y_min && y <= scale_y_max {
+                let start_x = 120.0 * scale_x;
+                let btn_w = 60.0 * scale_x;
+                let gap = 10.0 * scale_x;
+                let scales = vec![0.5, 0.75, 1.0, 1.25, 1.5];
+                for (i, &s) in scales.iter().enumerate() {
+                    let btn_x = start_x + i as f64 * (btn_w + gap);
+                    if x >= btn_x && x <= btn_x + btn_w {
+                        return SettingsAction::SetScale(s);
+                    }
                 }
             }
-        }
 
-        // Layer Buttons: Card4 Y=520. Buttons Y=570.
-        let layer_y_min = 570.0 * scale_y;
-        let layer_y_max = 610.0 * scale_y;
-        if y >= layer_y_min && y <= layer_y_max {
-            let btn_w = 120.0 * scale_x;
-            let gap = 12.0 * scale_x;
-            let start_x = 140.0 * scale_x;
-
-            // Top
-            if x >= start_x && x <= start_x + btn_w {
-                return SettingsAction::SetLayer(crate::types::WindowLayer::Top);
+            // Mode Buttons
+            let mode_y_min = 290.0 * scale_y;
+            let mode_y_max = 340.0 * scale_y;
+            if y >= mode_y_min && y <= mode_y_max {
+                let btn_w = 120.0 * scale_x;
+                let gap = 12.0 * scale_x;
+                let start_x = 140.0 * scale_x;
+                if x >= start_x && x <= start_x + btn_w {
+                    return SettingsAction::SetMode(crate::types::BehaviorMode::Quiet);
+                }
+                let active_x = start_x + btn_w + gap;
+                if x >= active_x && x <= active_x + btn_w {
+                    return SettingsAction::SetMode(crate::types::BehaviorMode::Active);
+                }
+                let clingy_x = active_x + btn_w + gap;
+                if x >= clingy_x && x <= clingy_x + btn_w {
+                    return SettingsAction::SetMode(crate::types::BehaviorMode::Clingy);
+                }
             }
-            // Bottom
-            let bottom_x = start_x + btn_w + gap;
-            if x >= bottom_x && x <= bottom_x + btn_w {
-                return SettingsAction::SetLayer(crate::types::WindowLayer::Bottom);
+
+            // Music Path Button
+            let music_y_min = 430.0 * scale_y;
+            let music_y_max = 470.0 * scale_y;
+            if y >= music_y_min && y <= music_y_max {
+                let start_x = 140.0 * scale_x;
+                let btn_w = 400.0 * scale_x;
+                if x >= start_x && x <= start_x + btn_w {
+                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                        return SettingsAction::SetMusicPath(path);
+                    }
+                }
+            }
+
+            // Layer Buttons
+            let layer_y_min = 570.0 * scale_y;
+            let layer_y_max = 610.0 * scale_y;
+            if y >= layer_y_min && y <= layer_y_max {
+                let btn_w = 120.0 * scale_x;
+                let gap = 12.0 * scale_x;
+                let start_x = 140.0 * scale_x;
+                if x >= start_x && x <= start_x + btn_w {
+                    return SettingsAction::SetLayer(crate::types::WindowLayer::Top);
+                }
+                let bottom_x = start_x + btn_w + gap;
+                if x >= bottom_x && x <= bottom_x + btn_w {
+                    return SettingsAction::SetLayer(crate::types::WindowLayer::Bottom);
+                }
+            }
+        } else if self.current_tab == 2 {
+            // AI Tab
+            let ai_y_start = 100.0 * scale_y;
+            let field_gap = 90.0 * scale_y;
+            let input_x = 140.0 * scale_x;
+            let input_w = 400.0 * scale_x;
+
+            let mut found_field = false;
+            for i in 0..3 {
+                let fy = ai_y_start + 20.0 * scale_y + (i as f64 * field_gap);
+                let input_y = fy + 25.0 * scale_y;
+                let input_h = 40.0 * scale_y;
+
+                if x >= input_x && x <= input_x + input_w && y >= input_y && y <= input_y + input_h
+                {
+                    found_field = true;
+                    if is_right_click {
+                        match i {
+                            0 => return SettingsAction::SetAiApiKey("".to_string()),
+                            1 => return SettingsAction::SetAiBaseUrl("".to_string()),
+                            2 => return SettingsAction::SetAiModel("".to_string()),
+                            _ => {}
+                        }
+                    } else {
+                        // Check for eye toggle click (API Key field only)
+                        if i == 0 {
+                            let eye_x = input_x + input_w - 35.0 * scale_x;
+                            if x >= eye_x {
+                                self.show_api_key = !self.show_api_key;
+                                self.window.request_redraw();
+                                return SettingsAction::None;
+                            }
+                        }
+
+                        self.focused_field = Some(i);
+                        self.window.request_redraw();
+                        return SettingsAction::None;
+                    }
+                }
+            }
+
+            if !found_field {
+                // Check for Save button click
+                let btn_w = 100.0 * scale_x;
+                let btn_h = 30.0 * scale_y;
+                let btn_x = 120.0 * scale_x + 440.0 * scale_x - btn_w - 20.0 * scale_x;
+                let btn_y = ai_y_start + 360.0 * scale_y - btn_h - 15.0 * scale_y;
+
+                if x >= btn_x && x <= btn_x + btn_w && y >= btn_y && y <= btn_y + btn_h {
+                    // Manual save trigger (confirmation via redraw)
+                    self.focused_field = None;
+                    self.window.request_redraw();
+                    return SettingsAction::None;
+                }
+
+                self.focused_field = None;
+                self.window.request_redraw();
             }
         }
 
@@ -138,6 +206,9 @@ impl SettingsWindow {
             context,
             surface,
             font,
+            current_tab: 1, // Default to General (Appearance)
+            focused_field: None,
+            show_api_key: false,
         }
     }
 
@@ -156,6 +227,98 @@ impl SettingsWindow {
 
     pub fn request_redraw(&self) {
         self.window.request_redraw();
+    }
+
+    pub fn handle_key_input(
+        &mut self,
+        event: &winit::event::KeyEvent,
+        ai_config: &mut crate::types::AiConfig,
+        modifiers: winit::keyboard::ModifiersState,
+    ) -> bool {
+        if self.current_tab != 2 {
+            return false;
+        }
+
+        let field_idx = match self.focused_field {
+            Some(i) => i,
+            None => return false,
+        };
+
+        use winit::keyboard::{Key, NamedKey};
+        match &event.logical_key {
+            Key::Named(NamedKey::Backspace) => {
+                if event.state == winit::event::ElementState::Pressed {
+                    match field_idx {
+                        0 => {
+                            ai_config.api_key.pop();
+                        }
+                        1 => {
+                            ai_config.base_url.pop();
+                        }
+                        2 => {
+                            ai_config.model.pop();
+                        }
+                        _ => {}
+                    }
+                    ai_config.save();
+                    self.window.request_redraw();
+                    return true;
+                }
+            }
+            Key::Character(c) => {
+                if event.state == winit::event::ElementState::Pressed {
+                    // Check for CTRL+V
+                    let is_v = c == "v" || c == "V";
+                    let has_ctrl = modifiers.control_key() || modifiers.super_key();
+
+                    if is_v && has_ctrl {
+                        #[cfg(target_os = "windows")]
+                        {
+                            use arboard::Clipboard;
+                            if let Ok(mut clipboard) = Clipboard::new() {
+                                if let Ok(text) = clipboard.get_text() {
+                                    let mut trimmed = text.trim().to_string();
+                                    if trimmed.len() > 500 {
+                                        trimmed.truncate(500);
+                                    }
+                                    match field_idx {
+                                        0 => ai_config.api_key = trimmed,
+                                        1 => ai_config.base_url = trimmed,
+                                        2 => ai_config.model = trimmed,
+                                        _ => {}
+                                    }
+                                    ai_config.save();
+                                    self.window.request_redraw();
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+
+                    if !c.chars().any(|ch| ch.is_control()) {
+                        match field_idx {
+                            0 => ai_config.api_key.push_str(c),
+                            1 => ai_config.base_url.push_str(c),
+                            2 => ai_config.model.push_str(c),
+                            _ => {}
+                        }
+                        ai_config.save();
+                        self.window.request_redraw();
+                        return true;
+                    }
+                }
+            }
+            Key::Named(NamedKey::Tab) => {
+                if event.state == winit::event::ElementState::Pressed {
+                    self.focused_field = Some((field_idx + 1) % 3);
+                    self.window.request_redraw();
+                    return true;
+                }
+            }
+            _ => {}
+        }
+
+        false
     }
 
     fn draw_rect(
@@ -297,6 +460,7 @@ impl SettingsWindow {
         current_mode: &str,
         current_music_path: Option<&std::path::Path>,
         current_layer: crate::types::WindowLayer,
+        ai_config: &crate::types::AiConfig,
     ) {
         let size = self.window.inner_size();
         if let Some(width) = NonZeroU32::new(size.width) {
@@ -314,27 +478,24 @@ impl SettingsWindow {
 
                 // Helper to scale coordinates
                 let s = |val: u32| -> u32 { (val as f32 * sx) as u32 };
-                // Keep some vertical things proportional to height, but clamp aspect ratio distortion manually if needed
                 let sy_val = |val: u32| -> u32 { (val as f32 * sy) as u32 };
 
                 // Colors
-                let bg_color = 0x00F6F7F9; // Light Grey/Blue
+                let bg_color = 0x00F6F7F9;
                 let card_bg = 0x00FFFFFF;
-                let primary = 0x00FB7299; // Pink
+                let primary = 0x00FB7299;
                 let text_main = 0x0018191C;
                 let text_sec = 0x009499A0;
-                let sb_bg = 0x00FFFFFF; // Sidebar White
+                let sb_bg = 0x00FFFFFF;
 
                 // 1. Background
                 buffer.fill(bg_color);
 
-                // 2. Sidebar (Left 80px -> Scaled)
+                // 2. Sidebar
                 let sb_w = s(100);
                 Self::draw_rect(&mut buffer, w, 0, 0, sb_w, h, sb_bg, w, h);
 
-                // Sidebar Text Labels
                 if let Some(font) = &self.font {
-                    // Logo/Brand area
                     Self::draw_text(
                         &mut buffer,
                         w,
@@ -347,10 +508,11 @@ impl SettingsWindow {
                     );
 
                     // Menu Items
-                    let menu_items = vec!["Home", "General", "About"];
+                    let menu_items = vec!["Home", "General", "AI", "About"];
                     for (i, item) in menu_items.iter().enumerate() {
                         let my = sy_val(100 + i as u32 * 60);
-                        let col = if i == 1 { primary } else { text_sec }; // Mock active state
+                        let is_active = i == self.current_tab;
+                        let col = if is_active { primary } else { text_sec };
                         Self::draw_text(
                             &mut buffer,
                             w,
@@ -362,8 +524,7 @@ impl SettingsWindow {
                             col,
                         );
 
-                        if i == 1 {
-                            // Active indicator line
+                        if is_active {
                             Self::draw_rounded_rect(
                                 &mut buffer,
                                 w,
@@ -380,14 +541,19 @@ impl SettingsWindow {
                     }
                 }
 
-                // 3. Header (Top)
-                // Title
+                // 3. Tab Content
                 if let Some(font) = &self.font {
+                    let (title, sub) = match self.current_tab {
+                        0 => ("Home", "Welcome to Ameath!"),
+                        1 => ("Appearance", "Customize your pet's look"),
+                        2 => ("AI Brain", "Connect Ameath to the cloud"),
+                        _ => ("About", "Ameath v0.1.0"),
+                    };
                     Self::draw_text(
                         &mut buffer,
                         w,
                         font,
-                        "Appearance",
+                        title,
                         s(120),
                         sy_val(30),
                         24.0 * sx,
@@ -397,7 +563,7 @@ impl SettingsWindow {
                         &mut buffer,
                         w,
                         font,
-                        "Customize your pet's look",
+                        sub,
                         s(120),
                         sy_val(65),
                         14.0 * sx,
@@ -405,353 +571,513 @@ impl SettingsWindow {
                     );
                 }
 
-                // 4. Content Cards
-
-                // Card 1: Scale
-                let card1_y = sy_val(100);
-                let card_w = s(440);
-                let card_h = sy_val(120); // Height increased for buttons
-                Self::draw_rounded_rect(
-                    &mut buffer,
-                    w,
-                    s(120),
-                    card1_y,
-                    card_w,
-                    card_h,
-                    12,
-                    card_bg,
-                    w,
-                    h,
-                );
-                if let Some(font) = &self.font {
-                    Self::draw_text(
-                        &mut buffer,
-                        w,
-                        font,
-                        "Pet Scale",
-                        s(140),
-                        card1_y + sy_val(20),
-                        16.0 * sx,
-                        text_main,
-                    );
-                }
-
-                // Scale Options (Discrete Buttons)
-                let scales = vec![0.5, 0.75, 1.0, 1.25, 1.5];
-                let scale_labels = vec!["0.5x", "0.75x", "1.0x", "1.25x", "1.5x"];
-                // Align with hit testing logic: starts at 120 (scaled)
-                let s_btn_y = card1_y + sy_val(50);
-                let s_btn_w = s(60);
-                let s_btn_h = sy_val(40);
-                let s_gap = s(10);
-
-                for (i, &val) in scales.iter().enumerate() {
-                    let mx = s(120) + i as u32 * (s_btn_w + s_gap);
-                    let is_active = (current_scale - val).abs() < 0.01;
-
-                    let bg_col = if is_active { primary } else { 0x00F1F2F3 }; // Active pink, inactive light grey
-                    let text_col = if is_active { 0x00FFFFFF } else { text_main };
-
+                if self.current_tab == 1 {
+                    // --- General Tab: Same as before ---
+                    // Card 1: Scale
+                    let card1_y = sy_val(100);
+                    let card_w = s(440);
+                    let card_h = sy_val(120);
                     Self::draw_rounded_rect(
                         &mut buffer,
                         w,
-                        mx,
-                        s_btn_y,
-                        s_btn_w,
-                        s_btn_h,
-                        8,
-                        bg_col,
+                        s(120),
+                        card1_y,
+                        card_w,
+                        card_h,
+                        12,
+                        card_bg,
                         w,
                         h,
                     );
-
                     if let Some(font) = &self.font {
-                        // Center text roughly
-                        let label = scale_labels[i];
-                        let text_x = mx + (8.0 * sx) as u32; // manual tweak
-                        let text_y = s_btn_y + (10.0 * sy) as u32;
                         Self::draw_text(
                             &mut buffer,
                             w,
                             font,
-                            label,
-                            text_x,
-                            text_y,
-                            14.0 * sx,
-                            text_col,
+                            "Pet Scale",
+                            s(140),
+                            card1_y + sy_val(20),
+                            16.0 * sx,
+                            text_main,
                         );
                     }
-                }
+                    let scales = vec![0.5, 0.75, 1.0, 1.25, 1.5];
+                    let scale_labels = vec!["0.5x", "0.75x", "1.0x", "1.25x", "1.5x"];
+                    let s_btn_y = card1_y + sy_val(50);
+                    let s_btn_w = s(60);
+                    let s_btn_h = sy_val(40);
+                    let s_gap = s(10);
+                    for (i, &val) in scales.iter().enumerate() {
+                        let mx = s(120) + i as u32 * (s_btn_w + s_gap);
+                        let is_active = (current_scale - val).abs() < 0.01;
+                        let bg_col = if is_active { primary } else { 0x00F1F2F3 };
+                        let text_col = if is_active { 0x00FFFFFF } else { text_main };
+                        Self::draw_rounded_rect(
+                            &mut buffer,
+                            w,
+                            mx,
+                            s_btn_y,
+                            s_btn_w,
+                            s_btn_h,
+                            8,
+                            bg_col,
+                            w,
+                            h,
+                        );
+                        if let Some(font) = &self.font {
+                            Self::draw_text(
+                                &mut buffer,
+                                w,
+                                font,
+                                scale_labels[i],
+                                mx + (8.0 * sx) as u32,
+                                s_btn_y + (10.0 * sy) as u32,
+                                14.0 * sx,
+                                text_col,
+                            );
+                        }
+                    }
 
-                // Card 2: Behavior Mode
-                let card2_y = sy_val(240);
-                let card2_h = sy_val(120);
-                Self::draw_rounded_rect(
-                    &mut buffer,
-                    w,
-                    s(120),
-                    card2_y,
-                    card_w,
-                    card2_h,
-                    12,
-                    card_bg,
-                    w,
-                    h,
-                );
-                if let Some(font) = &self.font {
-                    Self::draw_text(
-                        &mut buffer,
-                        w,
-                        font,
-                        "Behavior Mode",
-                        s(140),
-                        card2_y + sy_val(20),
-                        16.0 * sx,
-                        text_main,
-                    );
-                }
-
-                // Mode Options
-                let modes = vec!["Quiet", "Active", "Clingy"];
-                let btn_w = s(120);
-                let btn_h = sy_val(50);
-                let gap = s(12);
-
-                for (i, mode) in modes.iter().enumerate() {
-                    let mx = s(140) + i as u32 * (btn_w + gap);
-                    let my = card2_y + sy_val(50);
-
-                    let is_active = *mode == current_mode;
-                    let border_col = if is_active { primary } else { 0x00E3E5E7 };
-
-                    // Border
+                    // Card 2: Behavior Mode
+                    let card2_y = sy_val(240);
                     Self::draw_rounded_rect(
                         &mut buffer,
                         w,
-                        mx,
-                        my,
-                        btn_w,
-                        btn_h,
-                        8,
-                        border_col,
+                        s(120),
+                        card2_y,
+                        card_w,
+                        sy_val(120),
+                        12,
+                        card_bg,
                         w,
                         h,
                     );
+                    if let Some(font) = &self.font {
+                        Self::draw_text(
+                            &mut buffer,
+                            w,
+                            font,
+                            "Behavior Mode",
+                            s(140),
+                            card2_y + sy_val(20),
+                            16.0 * sx,
+                            text_main,
+                        );
+                        let modes = vec!["Quiet", "Active", "Clingy"];
+                        for (i, mode) in modes.iter().enumerate() {
+                            let mx = s(140) + i as u32 * (s(120) + s(12));
+                            let my = card2_y + sy_val(50);
+                            let is_active = *mode == current_mode;
+                            let border_col = if is_active { primary } else { 0x00E3E5E7 };
+                            Self::draw_rounded_rect(
+                                &mut buffer,
+                                w,
+                                mx,
+                                my,
+                                s(120),
+                                sy_val(50),
+                                8,
+                                border_col,
+                                w,
+                                h,
+                            );
+                            Self::draw_rounded_rect(
+                                &mut buffer,
+                                w,
+                                mx + 2,
+                                my + 2,
+                                s(120) - 4,
+                                sy_val(50) - 4,
+                                6,
+                                card_bg,
+                                w,
+                                h,
+                            );
+                            if is_active {
+                                Self::draw_rounded_rect(
+                                    &mut buffer,
+                                    w,
+                                    mx + s(120) - 20,
+                                    my + 5,
+                                    12,
+                                    12,
+                                    6,
+                                    primary,
+                                    w,
+                                    h,
+                                );
+                            }
+                            Self::draw_text(
+                                &mut buffer,
+                                w,
+                                font,
+                                mode,
+                                mx + (20.0 * sx) as u32,
+                                my + (18.0 * sy) as u32,
+                                14.0 * sx,
+                                if is_active { primary } else { text_sec },
+                            );
+                        }
+                    }
+
+                    // Card 3: Music Path
+                    let card3_y = sy_val(380);
                     Self::draw_rounded_rect(
                         &mut buffer,
                         w,
-                        mx + 2,
-                        my + 2,
-                        btn_w - 4,
-                        btn_h - 4,
-                        6,
+                        s(120),
+                        card3_y,
+                        card_w,
+                        sy_val(120),
+                        12,
+                        card_bg,
+                        w,
+                        h,
+                    );
+                    if let Some(font) = &self.font {
+                        Self::draw_text(
+                            &mut buffer,
+                            w,
+                            font,
+                            "Music Directory",
+                            s(140),
+                            card3_y + sy_val(20),
+                            16.0 * sx,
+                            text_main,
+                        );
+                        let p_btn_y = card3_y + sy_val(50);
+                        Self::draw_rounded_rect(
+                            &mut buffer,
+                            w,
+                            s(140),
+                            p_btn_y,
+                            s(400),
+                            sy_val(40),
+                            8,
+                            0x00E3E5E7,
+                            w,
+                            h,
+                        );
+                        Self::draw_rounded_rect(
+                            &mut buffer,
+                            w,
+                            s(140) + 1,
+                            p_btn_y + 1,
+                            s(400) - 2,
+                            sy_val(40) - 2,
+                            7,
+                            card_bg,
+                            w,
+                            h,
+                        );
+                        let path_text = current_music_path
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "Click to select...".to_string());
+                        Self::draw_text(
+                            &mut buffer,
+                            w,
+                            font,
+                            &path_text,
+                            s(155),
+                            p_btn_y + sy_val(10),
+                            12.0 * sx,
+                            text_sec,
+                        );
+                    }
+
+                    // Card 4: Layer
+                    let card4_y = sy_val(520);
+                    Self::draw_rounded_rect(
+                        &mut buffer,
+                        w,
+                        s(120),
+                        card4_y,
+                        card_w,
+                        sy_val(120),
+                        12,
+                        card_bg,
+                        w,
+                        h,
+                    );
+                    if let Some(font) = &self.font {
+                        Self::draw_text(
+                            &mut buffer,
+                            w,
+                            font,
+                            "Window Layer",
+                            s(140),
+                            card4_y + sy_val(20),
+                            16.0 * sx,
+                            text_main,
+                        );
+                        let layers = vec![
+                            ("Always Top", crate::types::WindowLayer::Top),
+                            ("Desktop", crate::types::WindowLayer::Bottom),
+                        ];
+                        for (i, (label, layer)) in layers.iter().enumerate() {
+                            let mx = s(140) + i as u32 * (s(120) + s(12));
+                            let my = card4_y + sy_val(50);
+                            let is_active = *layer == current_layer;
+                            let border_col = if is_active { primary } else { 0x00E3E5E7 };
+                            Self::draw_rounded_rect(
+                                &mut buffer,
+                                w,
+                                mx,
+                                my,
+                                s(120),
+                                sy_val(50),
+                                8,
+                                border_col,
+                                w,
+                                h,
+                            );
+                            Self::draw_rounded_rect(
+                                &mut buffer,
+                                w,
+                                mx + 2,
+                                my + 2,
+                                s(120) - 4,
+                                sy_val(50) - 4,
+                                6,
+                                card_bg,
+                                w,
+                                h,
+                            );
+                            if is_active {
+                                Self::draw_rounded_rect(
+                                    &mut buffer,
+                                    w,
+                                    mx + s(120) - 20,
+                                    my + 5,
+                                    12,
+                                    12,
+                                    6,
+                                    primary,
+                                    w,
+                                    h,
+                                );
+                            }
+                            Self::draw_text(
+                                &mut buffer,
+                                w,
+                                font,
+                                label,
+                                mx + (20.0 * sx) as u32,
+                                my + (18.0 * sy) as u32,
+                                14.0 * sx,
+                                if is_active { primary } else { text_sec },
+                            );
+                        }
+                    }
+                } else if self.current_tab == 2 {
+                    // --- AI Tab ---
+                    let card_w = s(440);
+                    let card_h = sy_val(400);
+                    let card_start_y = sy_val(100);
+
+                    // Card: API Settings
+                    Self::draw_rounded_rect(
+                        &mut buffer,
+                        w,
+                        s(120),
+                        card_start_y,
+                        card_w,
+                        card_h,
+                        12,
                         card_bg,
                         w,
                         h,
                     );
 
-                    if is_active {
-                        // Checkmark
+                    if let Some(font) = &self.font {
+                        let fields = vec![
+                            ("API Key", &ai_config.api_key, "Enter your key..."),
+                            (
+                                "Base URL",
+                                &ai_config.base_url,
+                                "https://api.deepseek.com/v1",
+                            ),
+                            ("Model", &ai_config.model, "deepseek-chat"),
+                        ];
+
+                        for (i, (label, val, placeholder)) in fields.iter().enumerate() {
+                            let fy = card_start_y + sy_val(20 + i as u32 * 90);
+                            Self::draw_text(
+                                &mut buffer,
+                                w,
+                                font,
+                                label,
+                                s(140),
+                                fy,
+                                14.0 * sx,
+                                text_main,
+                            );
+                            let input_y = fy + sy_val(25);
+                            let input_w = s(400);
+                            let input_h = sy_val(40);
+
+                            let is_focused = self.focused_field == Some(i);
+                            let border_col = if is_focused { primary } else { 0x00F1F2F3 };
+
+                            // Draw input background/border
+                            Self::draw_rounded_rect(
+                                &mut buffer,
+                                w,
+                                s(140),
+                                input_y,
+                                input_w,
+                                input_h,
+                                8,
+                                border_col,
+                                w,
+                                h,
+                            );
+                            Self::draw_rounded_rect(
+                                &mut buffer,
+                                w,
+                                s(140) + 1,
+                                input_y + 1,
+                                input_w - 2,
+                                input_h - 2,
+                                7,
+                                if is_focused { card_bg } else { 0x00F1F2F3 },
+                                w,
+                                h,
+                            );
+
+                            let display_val = if val.is_empty() { *placeholder } else { val };
+                            let display_col = if val.is_empty() { text_sec } else { text_main };
+
+                            // Mask API key logic
+                            let mut final_text = if i == 0 && !val.is_empty() {
+                                if self.show_api_key {
+                                    val.to_string()
+                                } else {
+                                    let mask_char = if is_focused { "•" } else { "*" };
+                                    mask_char.repeat(val.len().min(24))
+                                }
+                            } else {
+                                display_val.to_string()
+                            };
+
+                            // Draw "Show/Hide" icon placeholder for API Key
+                            if i == 0 {
+                                let eye_x = s(140) + input_w - s(30);
+                                let eye_y = input_y + sy_val(10);
+                                let eye_col = if self.show_api_key { primary } else { text_sec };
+                                // Simple dot/square for icon for now
+                                Self::draw_rect(
+                                    &mut buffer,
+                                    w,
+                                    eye_x,
+                                    eye_y + 4,
+                                    12,
+                                    12,
+                                    eye_col,
+                                    w,
+                                    h,
+                                );
+                            }
+
+                            // --- Better "Scrolling" Truncation ---
+                            let max_chars = 40;
+                            if final_text.len() > max_chars {
+                                if is_focused && !val.is_empty() && i != 0 {
+                                    let mut start_offset = final_text.len() - max_chars + 3;
+                                    while !final_text.is_char_boundary(start_offset) {
+                                        start_offset += 1;
+                                    }
+                                    final_text = format!("...{}", &final_text[start_offset..]);
+                                } else {
+                                    let mut end_offset = max_chars - 3;
+                                    while !final_text.is_char_boundary(end_offset) {
+                                        end_offset -= 1;
+                                    }
+                                    final_text = format!("{}...", &final_text[..end_offset]);
+                                }
+                            }
+
+                            Self::draw_text(
+                                &mut buffer,
+                                w,
+                                font,
+                                &final_text,
+                                s(150),
+                                input_y + sy_val(10),
+                                12.0 * sx,
+                                display_col,
+                            );
+
+                            // Draw cursor if focused
+                            if is_focused {
+                                let font_size = 12.0 * sx;
+                                let glyphs: Vec<_> = font
+                                    .layout(&final_text, Scale::uniform(font_size), point(0.0, 0.0))
+                                    .collect();
+
+                                let text_w = if val.is_empty() {
+                                    0
+                                } else {
+                                    glyph_width(&glyphs)
+                                };
+
+                                let cursor_x = s(150) + text_w + 2;
+                                let cursor_y_top = input_y + sy_val(10);
+                                let cursor_h = sy_val(20);
+                                if cursor_x < s(150) + input_w - 5 {
+                                    Self::draw_rect(
+                                        &mut buffer,
+                                        w,
+                                        cursor_x,
+                                        cursor_y_top,
+                                        2,
+                                        cursor_h,
+                                        primary,
+                                        w,
+                                        h,
+                                    );
+                                }
+                            }
+                        }
+
+                        // --- Save Button at the Bottom ---
+                        let btn_w = s(100);
+                        let btn_h = sy_val(30);
+                        let btn_x = s(120) + card_w - btn_w - s(20);
+                        let btn_y = card_start_y + card_h - btn_h - sy_val(15);
+
                         Self::draw_rounded_rect(
                             &mut buffer,
                             w,
-                            mx + btn_w - 20,
-                            my + 5,
-                            12,
-                            12,
+                            btn_x,
+                            btn_y,
+                            btn_w,
+                            btn_h,
                             6,
                             primary,
                             w,
                             h,
                         );
-                    }
-
-                    let text_col = if is_active { primary } else { text_sec };
-                    if let Some(font) = &self.font {
-                        let text_x = mx + (20.0 * sx) as u32;
-                        let text_y = my + (18.0 * sy) as u32;
                         Self::draw_text(
                             &mut buffer,
                             w,
                             font,
-                            mode,
-                            text_x,
-                            text_y,
-                            14.0 * sx,
-                            text_col,
+                            "Save",
+                            btn_x + s(30),
+                            btn_y + sy_val(6),
+                            12.0 * sx,
+                            0xFFFFFFFF,
                         );
-                    }
-                }
 
-                // Card 3: Music Path
-                let card3_y = sy_val(380);
-                let card3_h = sy_val(120);
-                Self::draw_rounded_rect(
-                    &mut buffer,
-                    w,
-                    s(120),
-                    card3_y,
-                    card_w,
-                    card3_h,
-                    12,
-                    card_bg,
-                    w,
-                    h,
-                );
-                if let Some(font) = &self.font {
-                    Self::draw_text(
-                        &mut buffer,
-                        w,
-                        font,
-                        "Music Directory",
-                        s(140),
-                        card3_y + sy_val(20),
-                        16.0 * sx,
-                        text_main,
-                    );
-                }
-
-                // Path selection button
-                let p_btn_y = card3_y + sy_val(50);
-                let p_btn_w = s(400);
-                let p_btn_h = sy_val(40);
-                Self::draw_rounded_rect(
-                    &mut buffer,
-                    w,
-                    s(140),
-                    p_btn_y,
-                    p_btn_w,
-                    p_btn_h,
-                    8,
-                    0x00E3E5E7, // Slightly darker, more "clickable"
-                    w,
-                    h,
-                );
-                // Add border
-                Self::draw_rounded_rect(
-                    &mut buffer,
-                    w,
-                    s(140) + 1,
-                    p_btn_y + 1,
-                    p_btn_w - 2,
-                    p_btn_h - 2,
-                    7,
-                    card_bg,
-                    w,
-                    h,
-                );
-
-                let path_text = current_music_path
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "Click to select a music folder...".to_string());
-                if let Some(font) = &self.font {
-                    Self::draw_text(
-                        &mut buffer,
-                        w,
-                        font,
-                        &path_text,
-                        s(155),
-                        p_btn_y + sy_val(10),
-                        12.0 * sx,
-                        text_sec,
-                    );
-                }
-
-                // Card 4: Window Layer
-                let card4_y = sy_val(520);
-                let card4_h = sy_val(120);
-                Self::draw_rounded_rect(
-                    &mut buffer,
-                    w,
-                    s(120),
-                    card4_y,
-                    card_w,
-                    card4_h,
-                    12,
-                    card_bg,
-                    w,
-                    h,
-                );
-                if let Some(font) = &self.font {
-                    Self::draw_text(
-                        &mut buffer,
-                        w,
-                        font,
-                        "Window Layer",
-                        s(140),
-                        card4_y + sy_val(20),
-                        16.0 * sx,
-                        text_main,
-                    );
-                }
-
-                let layers = vec![
-                    ("Always Top", crate::types::WindowLayer::Top),
-                    ("Desktop", crate::types::WindowLayer::Bottom),
-                ];
-                let btn_w = s(120);
-                let btn_h = sy_val(50);
-                let gap = s(12);
-
-                for (i, (label, layer)) in layers.iter().enumerate() {
-                    let mx = s(140) + i as u32 * (btn_w + gap);
-                    let my = card4_y + sy_val(50);
-
-                    let is_active = *layer == current_layer;
-                    let border_col = if is_active { primary } else { 0x00E3E5E7 };
-
-                    // Border
-                    Self::draw_rounded_rect(
-                        &mut buffer,
-                        w,
-                        mx,
-                        my,
-                        btn_w,
-                        btn_h,
-                        8,
-                        border_col,
-                        w,
-                        h,
-                    );
-                    Self::draw_rounded_rect(
-                        &mut buffer,
-                        w,
-                        mx + 2,
-                        my + 2,
-                        btn_w - 4,
-                        btn_h - 4,
-                        6,
-                        card_bg,
-                        w,
-                        h,
-                    );
-
-                    if is_active {
-                        Self::draw_rounded_rect(
-                            &mut buffer,
-                            w,
-                            mx + btn_w - 20,
-                            my + 5,
-                            12,
-                            12,
-                            6,
-                            primary,
-                            w,
-                            h,
-                        );
-                    }
-
-                    let text_col = if is_active { primary } else { text_sec };
-                    if let Some(font) = &self.font {
                         Self::draw_text(
                             &mut buffer,
                             w,
                             font,
-                            label,
-                            mx + (20.0 * sx) as u32,
-                            my + (18.0 * sy) as u32,
-                            14.0 * sx,
-                            text_col,
+                            "Note: More AI features coming soon!",
+                            s(140),
+                            card_start_y + sy_val(280),
+                            12.0 * sx,
+                            text_sec,
                         );
                     }
                 }
@@ -759,5 +1085,18 @@ impl SettingsWindow {
                 buffer.present().unwrap();
             }
         }
+    }
+}
+
+fn glyph_width(glyphs: &[rusttype::PositionedGlyph]) -> u32 {
+    if glyphs.is_empty() {
+        return 0;
+    }
+    let last = &glyphs[glyphs.len() - 1];
+    let pos = last.pixel_bounding_box();
+    if let Some(bb) = pos {
+        bb.max.x as u32
+    } else {
+        last.position().x as u32
     }
 }

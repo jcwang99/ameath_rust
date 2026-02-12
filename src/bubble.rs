@@ -28,8 +28,8 @@ use windows::Win32::Graphics::Gdi::{
     FF_SWISS, FW_BOLD, HDC, NONANTIALIASED_QUALITY, OUT_DEFAULT_PRECIS,
 };
 
-pub const BASE_BUBBLE_WIDTH: i32 = 180;
-pub const BASE_BUBBLE_HEIGHT: i32 = 90;
+pub const BASE_BUBBLE_WIDTH: i32 = 220;
+pub const BASE_BUBBLE_HEIGHT: i32 = 110;
 pub const MAX_BUBBLE_WIDTH: i32 = 300;
 
 pub struct SpeechBubble {
@@ -69,7 +69,7 @@ impl SpeechBubble {
             let hdc_screen = GetDC(HWND(0));
             let hdc_mem = CreateCompatibleDC(hdc_screen);
 
-            let font_size = (14.0 * scale) as i32;
+            let font_size = (18.0 * scale) as i32;
             let font_name: Vec<u16> = "Segoe UI Emoji".encode_utf16().chain(Some(0)).collect();
             use windows::core::PCWSTR;
             let temp_font = CreateFontW(
@@ -250,7 +250,7 @@ impl SpeechBubble {
             let d2d_factory: ID2D1Factory =
                 D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).unwrap();
 
-            let font_size = 14.0 * scale;
+            let font_size = 18.0 * scale;
             let text_format = dwrite_factory
                 .CreateTextFormat(
                     windows::core::w!("Segoe UI Emoji"),

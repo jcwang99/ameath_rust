@@ -10,6 +10,7 @@ mod pomodoro;
 mod render;
 mod settings_window;
 mod types;
+mod ai;
 
 use chat_window::{ChatWindow, ChatAction};
 use settings_window::SettingsWindow;
@@ -137,6 +138,8 @@ fn main() {
     let mut pet = Pet::new(animation_map, (max_pw as f64, max_ph as f64));
     pet.state = PetState::Move;
 
+    let mut ai_config = types::AiConfig::load();
+    let mut modifier_state = winit::keyboard::ModifiersState::default();
     let mut chat_window = ChatWindow::new(&event_loop);
     let mut is_thinking = false;
     let mut thinking_start: Option<Instant> = None;
@@ -179,6 +182,10 @@ fn main() {
     let mut pomodoro_manager = pomodoro::Pomodoro::new();
     let mut menu_manager = menu::QuickMenu::new();
     let mut music_player = music_player::MusicPlayer::new();
+
+    // AI Kernel & Channel
+    let (ai_tx, ai_rx) = std::sync::mpsc::channel::<String>();
+    let _chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
     let music_dir = std::path::PathBuf::from("assets/music");
     if music_dir.exists() {
         music_player.set_path(music_dir);
@@ -260,6 +267,20 @@ fn main() {
                                  println!("User sent: {}", msg);
                                  is_thinking = true;
                                  thinking_start = Some(Instant::now());
+                                 
+                                 // Update kernel with current config if changed (re-create for now for simplicity)
+                                 let kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
+                                 let tx = ai_tx.clone();
+                                 let input = msg.clone();
+                                 
+                                 std::thread::spawn(move || {
+                                     let rt = tokio::runtime::Runtime::new().unwrap();
+                                     rt.block_on(async {
+                                         let response = kernel.handle(input).await;
+                                         let _ = tx.send(response);
+                                     });
+                                 });
+
                                  window.request_redraw();
                              }
                              ChatAction::Close => {
@@ -275,15 +296,9 @@ fn main() {
                                 let (cur_pw, cur_ph) = pet.get_scaled_size();
                                 menu_manager.update_layout(draw_scale);
 
-                                // Update Thinking State (Temporary Simulation)
+                                // Update Thinking State (Polling)
                                 if is_thinking {
-                                    if let Some(start) = thinking_start {
-                                        if start.elapsed() > Duration::from_secs(3) {
-                                            is_thinking = false;
-                                            thinking_start = None;
-                                            bubble_manager.show("AI Response Simulation", Duration::from_secs(3), pet.scale);
-                                        }
-                                    }
+                                    // Just keep it true until channel receives response
                                 }
 
                                 // Calc Loading GIF dimensions
@@ -826,11 +841,12 @@ fn main() {
                                 }
                                 WindowEvent::MouseInput {
                                     state: ElementState::Pressed,
-                                    button: MouseButton::Left,
+                                    button: btn,
                                     ..
                                 } => {
                                     if let Some(pos) = settings_cursor_pos {
-                                        let action = sw.handle_click(pos.x, pos.y);
+                                        let is_right_click = btn == MouseButton::Right;
+                                        let action = sw.handle_click(pos.x, pos.y, is_right_click);
                                         match action {
                                             settings_window::SettingsAction::SetScale(s) => {
                                                 pet.scale = s;
@@ -893,8 +909,28 @@ fn main() {
 
                                                 sw.request_redraw();
                                             }
+                                            settings_window::SettingsAction::SetAiApiKey(key) => {
+                                                ai_config.api_key = key;
+                                                sw.request_redraw();
+                                            }
+                                            settings_window::SettingsAction::SetAiBaseUrl(url) => {
+                                                ai_config.base_url = url;
+                                                sw.request_redraw();
+                                            }
+                                            settings_window::SettingsAction::SetAiModel(model) => {
+                                                ai_config.model = model;
+                                                sw.request_redraw();
+                                            }
                                             settings_window::SettingsAction::None => {}
                                         }
+                                    }
+                                }
+                                WindowEvent::ModifiersChanged(modifiers) => {
+                                    modifier_state = modifiers.state();
+                                }
+                                WindowEvent::KeyboardInput { event: key_event, .. } => {
+                                    if sw.handle_key_input(&key_event, &mut ai_config, modifier_state) {
+                                        // Redraw happens inside handle_key_input
                                     }
                                 }
                                 WindowEvent::CursorMoved { position, .. } => {
@@ -911,6 +947,7 @@ fn main() {
                                         mode_str,
                                         music_player.music_path.as_deref(),
                                         current_layer,
+                                        &ai_config,
                                     );
                                 }
                                 _ => {}
@@ -919,6 +956,14 @@ fn main() {
                     }
                 }
                 Event::AboutToWait => {
+                    // Handle AI responses
+                    if let Ok(response) = ai_rx.try_recv() {
+                        is_thinking = false;
+                        thinking_start = None;
+                        bubble_manager.show(&response, Duration::from_secs(6), pet.scale);
+                        window.request_redraw();
+                    }
+
                     // Handle Tray Menu Events
                     if let Ok(event) = MenuEvent::receiver().try_recv() {
                         if event.id == settings_id {
