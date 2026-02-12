@@ -3,7 +3,7 @@ use softbuffer::{Context, Surface};
 use std::fs;
 use std::num::NonZeroU32;
 use std::rc::Rc;
-use winit::{dpi::PhysicalSize, event_loop::EventLoopWindowTarget, window::Window};
+use winit::{event_loop::EventLoopWindowTarget, window::Window};
 
 pub struct SettingsWindow {
     window: Rc<Window>,
@@ -31,17 +31,26 @@ pub enum SettingsAction {
 impl SettingsWindow {
     pub fn handle_click(&mut self, x: f64, y: f64, is_right_click: bool) -> SettingsAction {
         let size = self.window.inner_size();
-        let scale_x = size.width as f64 / 600.0;
-        let scale_y = size.height as f64 / 700.0;
+        let w = size.width as f64;
+        let h = size.height as f64;
+
+        // Unified scaling and centering (Target: 800x750)
+        let scale = (w / 800.0).min(h / 750.0);
+        let off_x = (w - 800.0 * scale) / 2.0;
+        let off_y = (h - 750.0 * scale) / 2.0;
+
+        // Map screen coordinates to logical 800x750 coordinates
+        let lx = (x - off_x) / scale;
+        let ly = (y - off_y) / scale;
 
         // Sidebar Tab Selection
-        let sb_w = 100.0 * scale_x;
-        if x < sb_w {
+        if lx >= 0.0 && lx < 180.0 {
             for i in 0..4 {
-                let my_min = (100.0 + i as f64 * 60.0 - 20.0) * scale_y;
-                let my_max = (100.0 + i as f64 * 60.0 + 20.0) * scale_y;
-                if y >= my_min && y <= my_max {
+                let my_min = 160.0 + i as f64 * 70.0 - 25.0;
+                let my_max = 160.0 + i as f64 * 70.0 + 25.0;
+                if ly >= my_min && ly <= my_max {
                     self.current_tab = i;
+                    self.focused_field = None;
                     self.window.request_redraw();
                     return SettingsAction::None;
                 }
@@ -49,85 +58,87 @@ impl SettingsWindow {
         }
 
         if self.current_tab == 1 {
-            // General Tab (Existing Appearance Settings)
-            // Scale Buttons
-            let scale_y_min = 150.0 * scale_y;
-            let scale_y_max = 190.0 * scale_y;
-            if y >= scale_y_min && y <= scale_y_max {
-                let start_x = 120.0 * scale_x;
-                let btn_w = 60.0 * scale_x;
-                let gap = 10.0 * scale_x;
+            // General Tab (Appearance)
+            // Pet Scale Buttons (Visual: card1_y=120, buttons at 180)
+            if ly >= 180.0 && ly <= 230.0 {
+                let start_x = 220.0;
+                let btn_w = 75.0;
+                let gap = 10.0;
                 let scales = vec![0.5, 0.75, 1.0, 1.25, 1.5];
                 for (i, &s) in scales.iter().enumerate() {
                     let btn_x = start_x + i as f64 * (btn_w + gap);
-                    if x >= btn_x && x <= btn_x + btn_w {
+                    if lx >= btn_x && lx <= btn_x + btn_w {
                         return SettingsAction::SetScale(s);
                     }
                 }
             }
 
-            // Mode Buttons
-            let mode_y_min = 290.0 * scale_y;
-            let mode_y_max = 340.0 * scale_y;
-            if y >= mode_y_min && y <= mode_y_max {
-                let btn_w = 120.0 * scale_x;
-                let gap = 12.0 * scale_x;
-                let start_x = 140.0 * scale_x;
-                if x >= start_x && x <= start_x + btn_w {
+            // Mode Buttons (Visual: card2_y=280, buttons at 340)
+            if ly >= 340.0 && ly <= 400.0 {
+                let btn_w = 150.0;
+                let gap = 15.0;
+                let start_x = 230.0;
+                if lx >= start_x && lx <= start_x + btn_w {
                     return SettingsAction::SetMode(crate::types::BehaviorMode::Quiet);
                 }
                 let active_x = start_x + btn_w + gap;
-                if x >= active_x && x <= active_x + btn_w {
+                if lx >= active_x && lx <= active_x + btn_w {
                     return SettingsAction::SetMode(crate::types::BehaviorMode::Active);
                 }
                 let clingy_x = active_x + btn_w + gap;
-                if x >= clingy_x && x <= clingy_x + btn_w {
+                if lx >= clingy_x && lx <= clingy_x + btn_w {
                     return SettingsAction::SetMode(crate::types::BehaviorMode::Clingy);
                 }
             }
 
-            // Music Path Button
-            let music_y_min = 430.0 * scale_y;
-            let music_y_max = 470.0 * scale_y;
-            if y >= music_y_min && y <= music_y_max {
-                let start_x = 140.0 * scale_x;
-                let btn_w = 400.0 * scale_x;
-                if x >= start_x && x <= start_x + btn_w {
-                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
+            // Music Path Button (Visual: card3_y=440, buttons at 500)
+            if ly >= 500.0 && ly <= 550.0 {
+                let start_x = 230.0;
+                let btn_w = 500.0;
+                if lx >= start_x && lx <= start_x + btn_w {
+                    // Temporarily disable AlwaysOnTop so the native dialog isn't hidden
+                    self.window
+                        .set_window_level(winit::window::WindowLevel::Normal);
+                    let picked = rfd::FileDialog::new().pick_folder();
+                    self.window
+                        .set_window_level(winit::window::WindowLevel::AlwaysOnTop);
+
+                    if let Some(path) = picked {
                         return SettingsAction::SetMusicPath(path);
                     }
                 }
             }
 
-            // Layer Buttons
-            let layer_y_min = 570.0 * scale_y;
-            let layer_y_max = 610.0 * scale_y;
-            if y >= layer_y_min && y <= layer_y_max {
-                let btn_w = 120.0 * scale_x;
-                let gap = 12.0 * scale_x;
-                let start_x = 140.0 * scale_x;
-                if x >= start_x && x <= start_x + btn_w {
+            // Layer Buttons (Visual: card4_y=600, buttons at 660)
+            if ly >= 660.0 && ly <= 720.0 {
+                let btn_w = 150.0;
+                let gap = 15.0;
+                let start_x = 230.0;
+                if lx >= start_x && lx <= start_x + btn_w {
                     return SettingsAction::SetLayer(crate::types::WindowLayer::Top);
                 }
                 let bottom_x = start_x + btn_w + gap;
-                if x >= bottom_x && x <= bottom_x + btn_w {
+                if lx >= bottom_x && lx <= bottom_x + btn_w {
                     return SettingsAction::SetLayer(crate::types::WindowLayer::Bottom);
                 }
             }
         } else if self.current_tab == 2 {
             // AI Tab
-            let ai_y_start = 100.0 * scale_y;
-            let field_gap = 90.0 * scale_y;
-            let input_x = 140.0 * scale_x;
-            let input_w = 400.0 * scale_x;
+            let ai_y_start = 120.0;
+            let field_gap = 100.0;
+            let input_x = 230.0;
+            let input_w = 500.0;
 
             let mut found_field = false;
             for i in 0..3 {
-                let fy = ai_y_start + 20.0 * scale_y + (i as f64 * field_gap);
-                let input_y = fy + 25.0 * scale_y;
-                let input_h = 40.0 * scale_y;
+                let fy = ai_y_start + 30.0 + (i as f64 * field_gap);
+                let input_y = fy + 25.0;
+                let input_h = 45.0;
 
-                if x >= input_x && x <= input_x + input_w && y >= input_y && y <= input_y + input_h
+                if lx >= input_x
+                    && lx <= input_x + input_w
+                    && ly >= input_y
+                    && ly <= input_y + input_h
                 {
                     found_field = true;
                     if is_right_click {
@@ -138,14 +149,11 @@ impl SettingsWindow {
                             _ => {}
                         }
                     } else {
-                        // Check for eye toggle click (API Key field only)
-                        if i == 0 {
-                            let eye_x = input_x + input_w - 35.0 * scale_x;
-                            if x >= eye_x {
-                                self.show_api_key = !self.show_api_key;
-                                self.window.request_redraw();
-                                return SettingsAction::None;
-                            }
+                        // Eye icon toggle for API Key (i == 0)
+                        if i == 0 && lx >= input_x + input_w - 45.0 {
+                            self.show_api_key = !self.show_api_key;
+                            self.window.request_redraw();
+                            return SettingsAction::None;
                         }
 
                         self.focused_field = Some(i);
@@ -156,14 +164,12 @@ impl SettingsWindow {
             }
 
             if !found_field {
-                // Check for Save button click
-                let btn_w = 100.0 * scale_x;
-                let btn_h = 30.0 * scale_y;
-                let btn_x = 120.0 * scale_x + 440.0 * scale_x - btn_w - 20.0 * scale_x;
-                let btn_y = ai_y_start + 360.0 * scale_y - btn_h - 15.0 * scale_y;
+                let btn_w = 120.0;
+                let btn_h = 35.0;
+                let btn_x = 210.0 + 560.0 - btn_w - 20.0;
+                let btn_y = ai_y_start + 400.0 - btn_h - 15.0;
 
-                if x >= btn_x && x <= btn_x + btn_w && y >= btn_y && y <= btn_y + btn_h {
-                    // Manual save trigger (confirmation via redraw)
+                if lx >= btn_x && lx <= btn_x + btn_w && ly >= btn_y && ly <= btn_y + btn_h {
                     self.focused_field = None;
                     self.window.request_redraw();
                     return SettingsAction::None;
@@ -181,7 +187,7 @@ impl SettingsWindow {
         let window = Rc::new(
             winit::window::WindowBuilder::new()
                 .with_title("Ameath Settings")
-                .with_inner_size(PhysicalSize::new(600, 700))
+                .with_inner_size(winit::dpi::LogicalSize::new(800, 750))
                 .with_resizable(true)
                 .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
                 .build(event_loop)
@@ -267,11 +273,8 @@ impl SettingsWindow {
             }
             Key::Character(c) => {
                 if event.state == winit::event::ElementState::Pressed {
-                    // Check for CTRL+V
-                    let is_v = c == "v" || c == "V";
                     let has_ctrl = modifiers.control_key() || modifiers.super_key();
-
-                    if is_v && has_ctrl {
+                    if c == "v" && has_ctrl {
                         #[cfg(target_os = "windows")]
                         {
                             use arboard::Clipboard;
@@ -334,7 +337,6 @@ impl SettingsWindow {
     ) {
         let max_y = (y + height).min(max_h);
         let max_x = (x + width).min(max_w);
-
         for cy in y..max_y {
             for cx in x..max_x {
                 let idx = (cy * surface_w + cx) as usize;
@@ -363,10 +365,9 @@ impl SettingsWindow {
 
         for cy in y..max_y {
             for cx in x..max_x {
-                // Check corners
                 let mut in_corner = false;
-                let dx;
-                let dy;
+                let mut dx = 0;
+                let mut dy = 0;
 
                 if cx < x + radius && cy < y + radius {
                     dx = (x + radius) as i32 - cx as i32;
@@ -384,22 +385,14 @@ impl SettingsWindow {
                     dx = cx as i32 - (x + width - radius) as i32;
                     dy = cy as i32 - (y + height - radius) as i32;
                     in_corner = true;
-                } else {
-                    dx = 0;
-                    dy = 0;
                 }
 
-                if in_corner {
-                    if dx * dx + dy * dy > r_sq {
-                        continue;
-                    }
+                if in_corner && dx * dx + dy * dy > r_sq {
+                    continue;
                 }
 
                 let idx = (cy * surface_w + cx) as usize;
                 if idx < buffer.len() {
-                    // Simple alpha blending if color has alpha (not implemented fully here, assumes opaque rect for now)
-                    // But our color format is 0x00RRGGBB usually for softbuffer on windows?
-                    // Actually softbuffer expects 00RRGGBB where top byte is ignored or 0.
                     buffer[idx] = color;
                 }
             }
@@ -418,33 +411,26 @@ impl SettingsWindow {
     ) {
         let scale = Scale::uniform(scale);
         let v_metrics = font.v_metrics(scale);
-
-        // Loop through glyphs
         for glyph in font.layout(text, scale, point(x as f32, y as f32 + v_metrics.ascent)) {
             if let Some(bounding_box) = glyph.pixel_bounding_box() {
                 glyph.draw(|gx, gy, v| {
                     let px = gx + bounding_box.min.x as u32;
                     let py = gy + bounding_box.min.y as u32;
-
                     if px < surface_w {
                         let idx = (py * surface_w + px) as usize;
                         if idx < buffer.len() {
-                            // Alpha blending
                             let alpha = v;
                             if alpha > 0.0 {
                                 let bg = buffer[idx];
                                 let mut r = ((bg >> 16) & 0xFF) as f32;
                                 let mut g = ((bg >> 8) & 0xFF) as f32;
                                 let mut b = (bg & 0xFF) as f32;
-
                                 let fg_r = ((color >> 16) & 0xFF) as f32;
                                 let fg_g = ((color >> 8) & 0xFF) as f32;
                                 let fg_b = (color & 0xFF) as f32;
-
                                 r = r * (1.0 - alpha) + fg_r * alpha;
                                 g = g * (1.0 - alpha) + fg_g * alpha;
                                 b = b * (1.0 - alpha) + fg_b * alpha;
-
                                 buffer[idx] = ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
                             }
                         }
@@ -465,35 +451,42 @@ impl SettingsWindow {
         let size = self.window.inner_size();
         if let Some(width) = NonZeroU32::new(size.width) {
             if let Some(height) = NonZeroU32::new(size.height) {
-                // Resize surface if needed
                 let _ = self.surface.resize(width, height);
-
                 let mut buffer = self.surface.buffer_mut().unwrap();
                 let w = width.get();
                 let h = height.get();
 
-                // Scaling Factors (Base 600x700)
-                let sx = w as f32 / 600.0;
-                let sy = h as f32 / 700.0;
-
-                // Helper to scale coordinates
-                let s = |val: u32| -> u32 { (val as f32 * sx) as u32 };
-                let sy_val = |val: u32| -> u32 { (val as f32 * sy) as u32 };
-
-                // Colors
+                // 1. Background
                 let bg_color = 0x00F6F7F9;
+                buffer.fill(bg_color);
+
+                // Unified Scaling (Target: 800x750)
+                let scale = (w as f32 / 800.0).min(h as f32 / 750.0);
+                let off_x = (w as f32 - 800.0 * scale) / 2.0;
+                let off_y = (h as f32 - 750.0 * scale) / 2.0;
+
+                let s = |val: u32| -> u32 { (val as f32 * scale + off_x) as u32 };
+                let sy_val = |val: u32| -> u32 { (val as f32 * scale + off_y) as u32 };
+                let sc = |val: f32| -> f32 { val * scale };
+
                 let card_bg = 0x00FFFFFF;
                 let primary = 0x00FB7299;
                 let text_main = 0x0018191C;
                 let text_sec = 0x009499A0;
-                let sb_bg = 0x00FFFFFF;
-
-                // 1. Background
-                buffer.fill(bg_color);
 
                 // 2. Sidebar
-                let sb_w = s(100);
-                Self::draw_rect(&mut buffer, w, 0, 0, sb_w, h, sb_bg, w, h);
+                let sb_w = (180.0 * scale) as u32;
+                Self::draw_rect(
+                    &mut buffer,
+                    w,
+                    off_x as u32,
+                    off_y as u32,
+                    sb_w,
+                    (750.0 * scale) as u32,
+                    0xFFFFFFFF,
+                    w,
+                    h,
+                );
 
                 if let Some(font) = &self.font {
                     Self::draw_text(
@@ -501,38 +494,26 @@ impl SettingsWindow {
                         w,
                         font,
                         "Ame",
-                        (100.0 * sx * 0.3) as u32,
-                        sy_val(30),
-                        24.0 * sx,
+                        s(40),
+                        sy_val(40),
+                        sc(32.0),
                         primary,
                     );
-
-                    // Menu Items
                     let menu_items = vec!["Home", "General", "AI", "About"];
                     for (i, item) in menu_items.iter().enumerate() {
-                        let my = sy_val(100 + i as u32 * 60);
+                        let my = sy_val(160 + i as u32 * 70);
                         let is_active = i == self.current_tab;
                         let col = if is_active { primary } else { text_sec };
-                        Self::draw_text(
-                            &mut buffer,
-                            w,
-                            font,
-                            item,
-                            (100.0 * sx * 0.2) as u32,
-                            my,
-                            16.0 * sx,
-                            col,
-                        );
-
+                        Self::draw_text(&mut buffer, w, font, item, s(40), my, sc(20.0), col);
                         if is_active {
                             Self::draw_rounded_rect(
                                 &mut buffer,
                                 w,
-                                0,
-                                my - 5,
-                                4,
-                                (30.0 * sy) as u32,
-                                2,
+                                (off_x) as u32,
+                                my - sc(8.0) as u32,
+                                sc(6.0) as u32,
+                                sc(36.0) as u32,
+                                sc(3.0) as u32,
                                 primary,
                                 w,
                                 h,
@@ -554,9 +535,9 @@ impl SettingsWindow {
                         w,
                         font,
                         title,
-                        s(120),
-                        sy_val(30),
-                        24.0 * sx,
+                        s(220),
+                        sy_val(40),
+                        sc(32.0),
                         text_main,
                     );
                     Self::draw_text(
@@ -564,26 +545,24 @@ impl SettingsWindow {
                         w,
                         font,
                         sub,
-                        s(120),
-                        sy_val(65),
-                        14.0 * sx,
+                        s(220),
+                        sy_val(85),
+                        sc(16.0),
                         text_sec,
                     );
                 }
 
                 if self.current_tab == 1 {
-                    // --- General Tab: Same as before ---
-                    // Card 1: Scale
-                    let card1_y = sy_val(100);
-                    let card_w = s(440);
-                    let card_h = sy_val(120);
+                    // --- General Tab ---
+                    let card_w = (560.0 * scale) as u32;
+                    let card1_y = sy_val(120);
                     Self::draw_rounded_rect(
                         &mut buffer,
                         w,
-                        s(120),
+                        s(210),
                         card1_y,
                         card_w,
-                        card_h,
+                        (140.0 * scale) as u32,
                         12,
                         card_bg,
                         w,
@@ -595,20 +574,17 @@ impl SettingsWindow {
                             w,
                             font,
                             "Pet Scale",
-                            s(140),
-                            card1_y + sy_val(20),
-                            16.0 * sx,
+                            s(230),
+                            card1_y + sc(20.0) as u32,
+                            sc(18.0),
                             text_main,
                         );
                     }
                     let scales = vec![0.5, 0.75, 1.0, 1.25, 1.5];
-                    let scale_labels = vec!["0.5x", "0.75x", "1.0x", "1.25x", "1.5x"];
-                    let s_btn_y = card1_y + sy_val(50);
-                    let s_btn_w = s(60);
-                    let s_btn_h = sy_val(40);
-                    let s_gap = s(10);
+                    let labels = vec!["0.5x", "0.75x", "1.0x", "1.25x", "1.5x"];
                     for (i, &val) in scales.iter().enumerate() {
-                        let mx = s(120) + i as u32 * (s_btn_w + s_gap);
+                        let mx = s(220 + i as u32 * 85);
+                        let my = card1_y + sc(60.0) as u32;
                         let is_active = (current_scale - val).abs() < 0.01;
                         let bg_col = if is_active { primary } else { 0x00F1F2F3 };
                         let text_col = if is_active { 0x00FFFFFF } else { text_main };
@@ -616,9 +592,9 @@ impl SettingsWindow {
                             &mut buffer,
                             w,
                             mx,
-                            s_btn_y,
-                            s_btn_w,
-                            s_btn_h,
+                            my,
+                            sc(75.0) as u32,
+                            sc(45.0) as u32,
                             8,
                             bg_col,
                             w,
@@ -629,24 +605,23 @@ impl SettingsWindow {
                                 &mut buffer,
                                 w,
                                 font,
-                                scale_labels[i],
-                                mx + (8.0 * sx) as u32,
-                                s_btn_y + (10.0 * sy) as u32,
-                                14.0 * sx,
+                                labels[i],
+                                mx + sc(12.0) as u32,
+                                my + sc(12.0) as u32,
+                                sc(14.0),
                                 text_col,
                             );
                         }
                     }
 
-                    // Card 2: Behavior Mode
-                    let card2_y = sy_val(240);
+                    let card2_y = sy_val(280);
                     Self::draw_rounded_rect(
                         &mut buffer,
                         w,
-                        s(120),
+                        s(210),
                         card2_y,
                         card_w,
-                        sy_val(120),
+                        (140.0 * scale) as u32,
                         12,
                         card_bg,
                         w,
@@ -658,26 +633,26 @@ impl SettingsWindow {
                             w,
                             font,
                             "Behavior Mode",
-                            s(140),
-                            card2_y + sy_val(20),
-                            16.0 * sx,
+                            s(230),
+                            card2_y + sc(20.0) as u32,
+                            sc(18.0),
                             text_main,
                         );
                         let modes = vec!["Quiet", "Active", "Clingy"];
                         for (i, mode) in modes.iter().enumerate() {
-                            let mx = s(140) + i as u32 * (s(120) + s(12));
-                            let my = card2_y + sy_val(50);
+                            let mx = s(230 + i as u32 * 165);
+                            let my = card2_y + sc(60.0) as u32;
                             let is_active = *mode == current_mode;
-                            let border_col = if is_active { primary } else { 0x00E3E5E7 };
+                            let b_col = if is_active { primary } else { 0x00E3E5E7 };
                             Self::draw_rounded_rect(
                                 &mut buffer,
                                 w,
                                 mx,
                                 my,
-                                s(120),
-                                sy_val(50),
+                                sc(150.0) as u32,
+                                sc(55.0) as u32,
                                 8,
-                                border_col,
+                                b_col,
                                 w,
                                 h,
                             );
@@ -686,8 +661,8 @@ impl SettingsWindow {
                                 w,
                                 mx + 2,
                                 my + 2,
-                                s(120) - 4,
-                                sy_val(50) - 4,
+                                sc(150.0) as u32 - 4,
+                                sc(55.0) as u32 - 4,
                                 6,
                                 card_bg,
                                 w,
@@ -697,11 +672,11 @@ impl SettingsWindow {
                                 Self::draw_rounded_rect(
                                     &mut buffer,
                                     w,
-                                    mx + s(120) - 20,
-                                    my + 5,
-                                    12,
-                                    12,
-                                    6,
+                                    mx + sc(125.0) as u32,
+                                    my + 6,
+                                    14,
+                                    14,
+                                    7,
                                     primary,
                                     w,
                                     h,
@@ -712,23 +687,22 @@ impl SettingsWindow {
                                 w,
                                 font,
                                 mode,
-                                mx + (20.0 * sx) as u32,
-                                my + (18.0 * sy) as u32,
-                                14.0 * sx,
+                                mx + sc(25.0) as u32,
+                                my + sc(18.0) as u32,
+                                sc(15.0),
                                 if is_active { primary } else { text_sec },
                             );
                         }
                     }
 
-                    // Card 3: Music Path
-                    let card3_y = sy_val(380);
+                    let card3_y = sy_val(440);
                     Self::draw_rounded_rect(
                         &mut buffer,
                         w,
-                        s(120),
+                        s(210),
                         card3_y,
                         card_w,
-                        sy_val(120),
+                        (140.0 * scale) as u32,
                         12,
                         card_bg,
                         w,
@@ -740,19 +714,19 @@ impl SettingsWindow {
                             w,
                             font,
                             "Music Directory",
-                            s(140),
-                            card3_y + sy_val(20),
-                            16.0 * sx,
+                            s(230),
+                            card3_y + sc(20.0) as u32,
+                            sc(18.0),
                             text_main,
                         );
-                        let p_btn_y = card3_y + sy_val(50);
+                        let p_btn_y = card3_y + sc(60.0) as u32;
                         Self::draw_rounded_rect(
                             &mut buffer,
                             w,
-                            s(140),
+                            s(230),
                             p_btn_y,
-                            s(400),
-                            sy_val(40),
+                            sc(500.0) as u32,
+                            sc(45.0) as u32,
                             8,
                             0x00E3E5E7,
                             w,
@@ -761,39 +735,38 @@ impl SettingsWindow {
                         Self::draw_rounded_rect(
                             &mut buffer,
                             w,
-                            s(140) + 1,
+                            s(230) + 1,
                             p_btn_y + 1,
-                            s(400) - 2,
-                            sy_val(40) - 2,
+                            sc(500.0) as u32 - 2,
+                            sc(45.0) as u32 - 2,
                             7,
                             card_bg,
                             w,
                             h,
                         );
-                        let path_text = current_music_path
+                        let path = current_music_path
                             .map(|p| p.to_string_lossy().to_string())
                             .unwrap_or_else(|| "Click to select...".to_string());
                         Self::draw_text(
                             &mut buffer,
                             w,
                             font,
-                            &path_text,
-                            s(155),
-                            p_btn_y + sy_val(10),
-                            12.0 * sx,
+                            &path,
+                            s(245),
+                            p_btn_y + sc(12.0) as u32,
+                            sc(14.0),
                             text_sec,
                         );
                     }
 
-                    // Card 4: Layer
-                    let card4_y = sy_val(520);
+                    let card4_y = sy_val(600);
                     Self::draw_rounded_rect(
                         &mut buffer,
                         w,
-                        s(120),
+                        s(210),
                         card4_y,
                         card_w,
-                        sy_val(120),
+                        (140.0 * scale) as u32,
                         12,
                         card_bg,
                         w,
@@ -805,9 +778,9 @@ impl SettingsWindow {
                             w,
                             font,
                             "Window Layer",
-                            s(140),
-                            card4_y + sy_val(20),
-                            16.0 * sx,
+                            s(230),
+                            card4_y + sc(20.0) as u32,
+                            sc(18.0),
                             text_main,
                         );
                         let layers = vec![
@@ -815,19 +788,19 @@ impl SettingsWindow {
                             ("Desktop", crate::types::WindowLayer::Bottom),
                         ];
                         for (i, (label, layer)) in layers.iter().enumerate() {
-                            let mx = s(140) + i as u32 * (s(120) + s(12));
-                            let my = card4_y + sy_val(50);
+                            let mx = s(230 + i as u32 * 165);
+                            let my = card4_y + sc(60.0) as u32;
                             let is_active = *layer == current_layer;
-                            let border_col = if is_active { primary } else { 0x00E3E5E7 };
+                            let b_col = if is_active { primary } else { 0x00E3E5E7 };
                             Self::draw_rounded_rect(
                                 &mut buffer,
                                 w,
                                 mx,
                                 my,
-                                s(120),
-                                sy_val(50),
+                                sc(150.0) as u32,
+                                sc(55.0) as u32,
                                 8,
-                                border_col,
+                                b_col,
                                 w,
                                 h,
                             );
@@ -836,8 +809,8 @@ impl SettingsWindow {
                                 w,
                                 mx + 2,
                                 my + 2,
-                                s(120) - 4,
-                                sy_val(50) - 4,
+                                sc(150.0) as u32 - 4,
+                                sc(55.0) as u32 - 4,
                                 6,
                                 card_bg,
                                 w,
@@ -847,11 +820,11 @@ impl SettingsWindow {
                                 Self::draw_rounded_rect(
                                     &mut buffer,
                                     w,
-                                    mx + s(120) - 20,
-                                    my + 5,
-                                    12,
-                                    12,
-                                    6,
+                                    mx + sc(125.0) as u32,
+                                    my + 6,
+                                    14,
+                                    14,
+                                    7,
                                     primary,
                                     w,
                                     h,
@@ -862,25 +835,23 @@ impl SettingsWindow {
                                 w,
                                 font,
                                 label,
-                                mx + (20.0 * sx) as u32,
-                                my + (18.0 * sy) as u32,
-                                14.0 * sx,
+                                mx + sc(20.0) as u32,
+                                my + sc(18.0) as u32,
+                                sc(15.0),
                                 if is_active { primary } else { text_sec },
                             );
                         }
                     }
                 } else if self.current_tab == 2 {
                     // --- AI Tab ---
-                    let card_w = s(440);
-                    let card_h = sy_val(400);
-                    let card_start_y = sy_val(100);
-
-                    // Card: API Settings
+                    let card_w = (560.0 * scale) as u32;
+                    let card_h = (400.0 * scale) as u32;
+                    let card_y = sy_val(120);
                     Self::draw_rounded_rect(
                         &mut buffer,
                         w,
-                        s(120),
-                        card_start_y,
+                        s(210),
+                        card_y,
                         card_w,
                         card_h,
                         12,
@@ -888,113 +859,100 @@ impl SettingsWindow {
                         w,
                         h,
                     );
-
-                    if let Some(font) = &self.font {
-                        let fields = vec![
-                            ("API Key", &ai_config.api_key, "Enter your key..."),
-                            (
-                                "Base URL",
-                                &ai_config.base_url,
-                                "https://api.deepseek.com/v1",
-                            ),
-                            ("Model", &ai_config.model, "deepseek-chat"),
-                        ];
-
-                        for (i, (label, val, placeholder)) in fields.iter().enumerate() {
-                            let fy = card_start_y + sy_val(20 + i as u32 * 90);
+                    let fields = vec![
+                        ("API Key", &ai_config.api_key),
+                        ("Base URL", &ai_config.base_url),
+                        ("Model", &ai_config.model),
+                    ];
+                    for (i, (label, val)) in fields.iter().enumerate() {
+                        let fy =
+                            card_y + (30.0 * scale) as u32 + (i as u32 * (100.0 * scale) as u32);
+                        if let Some(font) = &self.font {
                             Self::draw_text(
                                 &mut buffer,
                                 w,
                                 font,
                                 label,
-                                s(140),
+                                s(230),
                                 fy,
-                                14.0 * sx,
-                                text_main,
+                                sc(14.0),
+                                text_sec,
                             );
-                            let input_y = fy + sy_val(25);
-                            let input_w = s(400);
-                            let input_h = sy_val(40);
+                        }
+                        let input_y = fy + (25.0 * scale) as u32;
+                        let input_w = (500.0 * scale) as u32;
+                        let input_h = (45.0 * scale) as u32;
+                        let is_focused = self.focused_field == Some(i);
+                        let border_col = if is_focused { primary } else { 0x00E3E5E7 };
+                        Self::draw_rounded_rect(
+                            &mut buffer,
+                            w,
+                            s(230),
+                            input_y,
+                            input_w,
+                            input_h,
+                            8,
+                            border_col,
+                            w,
+                            h,
+                        );
+                        Self::draw_rounded_rect(
+                            &mut buffer,
+                            w,
+                            s(230) + 1,
+                            input_y + 1,
+                            input_w - 2,
+                            input_h - 2,
+                            7,
+                            card_bg,
+                            w,
+                            h,
+                        );
 
-                            let is_focused = self.focused_field == Some(i);
-                            let border_col = if is_focused { primary } else { 0x00F1F2F3 };
-
-                            // Draw input background/border
-                            Self::draw_rounded_rect(
-                                &mut buffer,
-                                w,
-                                s(140),
-                                input_y,
-                                input_w,
-                                input_h,
-                                8,
-                                border_col,
-                                w,
-                                h,
-                            );
-                            Self::draw_rounded_rect(
-                                &mut buffer,
-                                w,
-                                s(140) + 1,
-                                input_y + 1,
-                                input_w - 2,
-                                input_h - 2,
-                                7,
-                                if is_focused { card_bg } else { 0x00F1F2F3 },
-                                w,
-                                h,
-                            );
-
-                            let display_val = if val.is_empty() { *placeholder } else { val };
-                            let display_col = if val.is_empty() { text_sec } else { text_main };
-
-                            // Mask API key logic
-                            let mut final_text = if i == 0 && !val.is_empty() {
-                                if self.show_api_key {
-                                    val.to_string()
+                        if let Some(font) = &self.font {
+                            let display_val = if val.is_empty() {
+                                if is_focused {
+                                    ""
                                 } else {
-                                    let mask_char = if is_focused { "•" } else { "*" };
-                                    mask_char.repeat(val.len().min(24))
+                                    "None"
                                 }
+                            } else {
+                                val
+                            };
+                            let display_col = if val.is_empty() {
+                                0x00CCCCCC
+                            } else {
+                                text_main
+                            };
+                            let mut final_text = if i == 0 && !val.is_empty() && !self.show_api_key
+                            {
+                                let mask_char = if is_focused { "•" } else { "*" };
+                                mask_char.repeat(val.len().min(32))
                             } else {
                                 display_val.to_string()
                             };
 
-                            // Draw "Show/Hide" icon placeholder for API Key
                             if i == 0 {
-                                let eye_x = s(140) + input_w - s(30);
-                                let eye_y = input_y + sy_val(10);
+                                let eye_x = s(230 + 500 - 45);
+                                let eye_y = input_y + (12.0 * scale) as u32;
                                 let eye_col = if self.show_api_key { primary } else { text_sec };
-                                // Simple dot/square for icon for now
                                 Self::draw_rect(
                                     &mut buffer,
                                     w,
                                     eye_x,
                                     eye_y + 4,
-                                    12,
-                                    12,
+                                    16,
+                                    16,
                                     eye_col,
                                     w,
                                     h,
                                 );
                             }
 
-                            // --- Better "Scrolling" Truncation ---
-                            let max_chars = 40;
-                            if final_text.len() > max_chars {
-                                if is_focused && !val.is_empty() && i != 0 {
-                                    let mut start_offset = final_text.len() - max_chars + 3;
-                                    while !final_text.is_char_boundary(start_offset) {
-                                        start_offset += 1;
-                                    }
-                                    final_text = format!("...{}", &final_text[start_offset..]);
-                                } else {
-                                    let mut end_offset = max_chars - 3;
-                                    while !final_text.is_char_boundary(end_offset) {
-                                        end_offset -= 1;
-                                    }
-                                    final_text = format!("{}...", &final_text[..end_offset]);
-                                }
+                            // SAFE TRUNCATION (Fixes panic)
+                            if final_text.chars().count() > 50 {
+                                final_text =
+                                    final_text.chars().take(47).collect::<String>() + "...";
                             }
 
                             Self::draw_text(
@@ -1002,36 +960,29 @@ impl SettingsWindow {
                                 w,
                                 font,
                                 &final_text,
-                                s(150),
-                                input_y + sy_val(10),
-                                12.0 * sx,
+                                s(245),
+                                input_y + sc(12.0) as u32,
+                                sc(14.0),
                                 display_col,
                             );
-
-                            // Draw cursor if focused
                             if is_focused {
-                                let font_size = 12.0 * sx;
                                 let glyphs: Vec<_> = font
-                                    .layout(&final_text, Scale::uniform(font_size), point(0.0, 0.0))
+                                    .layout(&final_text, Scale::uniform(sc(14.0)), point(0.0, 0.0))
                                     .collect();
-
-                                let text_w = if val.is_empty() {
+                                let tw = if val.is_empty() {
                                     0
                                 } else {
                                     glyph_width(&glyphs)
                                 };
-
-                                let cursor_x = s(150) + text_w + 2;
-                                let cursor_y_top = input_y + sy_val(10);
-                                let cursor_h = sy_val(20);
-                                if cursor_x < s(150) + input_w - 5 {
+                                let cursor_x = s(245) + tw + 2;
+                                if cursor_x < s(245 + 500) {
                                     Self::draw_rect(
                                         &mut buffer,
                                         w,
                                         cursor_x,
-                                        cursor_y_top,
+                                        input_y + sc(12.0) as u32,
                                         2,
-                                        cursor_h,
+                                        sc(22.0) as u32,
                                         primary,
                                         w,
                                         h,
@@ -1039,49 +990,35 @@ impl SettingsWindow {
                                 }
                             }
                         }
-
-                        // --- Save Button at the Bottom ---
-                        let btn_w = s(100);
-                        let btn_h = sy_val(30);
-                        let btn_x = s(120) + card_w - btn_w - s(20);
-                        let btn_y = card_start_y + card_h - btn_h - sy_val(15);
-
-                        Self::draw_rounded_rect(
-                            &mut buffer,
-                            w,
-                            btn_x,
-                            btn_y,
-                            btn_w,
-                            btn_h,
-                            6,
-                            primary,
-                            w,
-                            h,
-                        );
+                    }
+                    if let Some(font) = &self.font {
+                        let bw = sc(120.0) as u32;
+                        let bh = sc(35.0) as u32;
+                        let bx = s(210 + 560 - 120 - 20);
+                        let by = card_y + (400.0 * scale) as u32 - bh - sc(15.0) as u32;
+                        Self::draw_rounded_rect(&mut buffer, w, bx, by, bw, bh, 6, primary, w, h);
                         Self::draw_text(
                             &mut buffer,
                             w,
                             font,
                             "Save",
-                            btn_x + s(30),
-                            btn_y + sy_val(6),
-                            12.0 * sx,
+                            bx + sc(35.0) as u32,
+                            by + sc(8.0) as u32,
+                            sc(14.0),
                             0xFFFFFFFF,
                         );
-
                         Self::draw_text(
                             &mut buffer,
                             w,
                             font,
                             "Note: More AI features coming soon!",
-                            s(140),
-                            card_start_y + sy_val(280),
-                            12.0 * sx,
+                            s(230),
+                            card_y + sc(340.0) as u32,
+                            sc(11.0),
                             text_sec,
                         );
                     }
                 }
-
                 buffer.present().unwrap();
             }
         }
