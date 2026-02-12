@@ -94,7 +94,7 @@ cargo run --bin ameath-rust
 
 *   **特别感谢**:
     *   **原版桌宠作者**: 感谢大佬制作的精美像素素材和原始创意，让大家有机会在桌面上见到爱弥斯。
-        *   [Bilibili 原项目参考](https://www.bilibili.com/video/BV12rcMznEcG/) 
+        *   [Bilibili 原项目参考](https://www.bilibili.com/video/BV12rcMznEcG/)
     *   **《鸣潮》 (Kuro Games)**: 感谢创造了爱弥斯这个令人难忘的角色。
 
 *   **技术支持**:
