@@ -36,18 +36,14 @@ pub struct Pet {
 impl Pet {
     pub fn new(
         animations: HashMap<PetState, (Vec<Vec<PreprocessedFrame>>, Vec<Vec<PreprocessedFrame>>)>,
-        screen_size: (f64, f64),
+        max_size: (f64, f64),
     ) -> Self {
-        // Use the first variant of Idle for initial size
-        let first_frame = &animations[&PetState::Idle].0[0][0];
-        let window_size = (first_frame.width as f64, first_frame.height as f64);
-
         Self {
             position: (200.0, 200.0),
             velocity: (0.0, 0.0),
             state: PetState::Idle,
-            window_size,
-            screen_size,
+            window_size: max_size,
+            screen_size: (1920.0, 1080.0), // Default, will be updated
             animations,
             current_anim_variant: 0,
             current_frame_idx: 0,

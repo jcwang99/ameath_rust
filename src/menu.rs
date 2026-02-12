@@ -3,9 +3,6 @@ use std::path::Path;
 
 pub const BASE_BUTTON_SIZE: i32 = 40;
 pub const BASE_BUTTON_PADDING: i32 = 10;
-// Base width: size + 2*padding? No, centered.
-// Let's say menu width is button_size + 20 padding.
-pub const BASE_MENU_WIDTH: i32 = 60;
 
 pub struct MenuButton {
     pub id: String,

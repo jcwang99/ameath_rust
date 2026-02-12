@@ -94,9 +94,8 @@ fn main() {
         }
     }
 
-    let win_w = (max_pw as u32 + 40).max(bubble::BUBBLE_WIDTH as u32);
-    let win_h = max_ph as u32 + bubble::BUBBLE_HEIGHT as u32 + 60; // More vertical space
-    let pet_off_y = (win_h - max_ph as u32) as f64 - 15.0; // Stay slightly above bottom
+    let win_w = (max_pw as u32 + 40).max(bubble::BASE_BUBBLE_WIDTH as u32);
+    let win_h = max_ph as u32 + bubble::BASE_BUBBLE_HEIGHT as u32 + 60; // More vertical space
 
     let mut pet = Pet::new(animation_map, (max_pw as f64, max_ph as f64));
     pet.state = PetState::Move;
@@ -137,13 +136,16 @@ fn main() {
                     hwnd,
                     GWL_EXSTYLE,
                     ex_style
-                        | (WS_EX_LAYERED.0 as i32)
-                        | (WS_EX_TOOLWINDOW.0 as i32)
-                        | (WS_EX_TOPMOST.0 as i32),
+                        | WS_EX_LAYERED.0 as i32
+                        | WS_EX_TOOLWINDOW.0 as i32
+                        | WS_EX_TOPMOST.0 as i32,
                 );
-                let style = windows::Win32::UI::WindowsAndMessaging::WS_POPUP.0
-                    | windows::Win32::UI::WindowsAndMessaging::WS_VISIBLE.0;
-                let _ = SetWindowLongW(hwnd, GWL_STYLE, style as i32);
+                let _ = SetWindowLongW(
+                    hwnd,
+                    GWL_STYLE,
+                    windows::Win32::UI::WindowsAndMessaging::WS_POPUP.0 as i32
+                        | windows::Win32::UI::WindowsAndMessaging::WS_VISIBLE.0 as i32,
+                );
             }
         }
     }
@@ -164,7 +166,8 @@ fn main() {
         "在努力工作吗？加油！💪",
     ];
 
-    let pet_off_x = 20.0; // Fixed left offset
+    let mut pet_off_x = 20.0;
+    let mut pet_off_y = 50.0;
     let mut last_update = Some(Instant::now());
     let mut last_cursor_pos: Option<PhysicalPosition<f64>> = None;
 
@@ -175,8 +178,6 @@ fn main() {
 
     let mut settings_win: Option<SettingsWindow> = None;
     let mut menu_visible_timer: Option<Instant> = None;
-    let mut pet_off_x = 20.0;
-    let mut pet_off_y = 50.0;
 
     event_loop
         .run(move |event, elwt| {
@@ -194,6 +195,16 @@ fn main() {
                                 // Update Menu Layout
                                 menu_manager.update_layout(draw_scale);
 
+                                // Recalculate scaled dimensions for bubble and pomodoro
+                                let current_bubble_w =
+                                    (bubble::BASE_BUBBLE_WIDTH as f32 * pet.scale) as i32;
+                                let mut current_bubble_h =
+                                    (bubble::BASE_BUBBLE_HEIGHT as f32 * pet.scale) as i32;
+                                let current_pomodoro_w =
+                                    (pomodoro::BASE_POMODORO_WIDTH as f32 * pet.scale) as i32;
+                                let mut current_pomodoro_h =
+                                    (pomodoro::BASE_POMODORO_HEIGHT as f32 * pet.scale) as i32;
+
                                 // Menu visibility logic
                                 let menu_w = if menu_manager.visible || menu_manager.opacity > 0.0 {
                                     menu_manager.menu_width as u32
@@ -201,105 +212,92 @@ fn main() {
                                     0
                                 };
 
-                                let bubble_w = if bubble_manager.is_visible() {
-                                    bubble::BUBBLE_WIDTH as u32
+                                if bubble_manager.is_visible() {
+                                    // already calculated
                                 } else {
-                                    0
-                                };
-                                let bubble_h = if bubble_manager.is_visible() {
-                                    bubble::BUBBLE_HEIGHT as u32
-                                } else {
-                                    0
+                                    current_bubble_h = 0;
                                 };
 
-                                let pomodoro_h = if pomodoro_manager.visible {
-                                    pomodoro::POMODORO_HEIGHT as u32
-                                } else {
-                                    0
+                                if !pomodoro_manager.visible {
+                                    current_pomodoro_h = 0;
                                 };
 
-                                // Layout Strategy: Stack from Bottom
-                                let base_padding_bottom = 20u32;
-                                let padding_gap = 10u32;
+                                // Layout Strategy: Robust Relative Positioning
+                                // 1. Determine local pet-centric layout
+                                let padding_edge = 40.0;
+                                let gap_between = 10.0 * pet.scale as f64;
 
-                                let menu_h = if menu_w > 0 {
-                                    menu_manager.menu_height as u32
+                                // Centers are relative to pet x=0
+                                let pet_cx = cur_pw / 2.0;
+                                let b_left = pet_cx - current_bubble_w as f64 / 2.0;
+                                let p_left = pet_cx - current_pomodoro_w as f64 / 2.0;
+
+                                // Find minimum left to avoid clipping
+                                let min_left = 0.0f64.min(b_left).min(p_left);
+                                let pet_x = padding_edge - min_left;
+
+                                // Calculate total width
+                                let pet_right = pet_x + cur_pw;
+                                let menu_area_right = pet_right
+                                    + gap_between
+                                    + menu_w as f64
+                                    + (20.0 * pet.scale as f64);
+                                let bubble_right =
+                                    pet_x + b_left + current_bubble_w as f64 + padding_edge;
+                                let pomodoro_right =
+                                    pet_x + p_left + current_pomodoro_w as f64 + padding_edge;
+
+                                let win_w = (menu_area_right.max(bubble_right).max(pomodoro_right)
+                                    + 20.0) as u32;
+
+                                // Determine space needed above pet
+                                let padding_top = 40.0;
+                                let extras_h = if bubble_manager.is_visible() {
+                                    current_bubble_h as f64 + gap_between
                                 } else {
-                                    0
+                                    0.0
+                                } + if pomodoro_manager.visible {
+                                    current_pomodoro_h as f64 + gap_between
+                                } else {
+                                    0.0
                                 };
 
-                                // Calculate the padding needed at the bottom to fit the menu
-                                // The menu starts at pet_off_y (pet top) and goes DOWN.
-                                // We need (cur_ph + padding_bottom) >= menu_h to avoid truncation.
-                                let padding_bottom = if menu_h > cur_ph as u32 {
-                                    base_padding_bottom.max(menu_h - cur_ph as u32)
+                                pet_off_x = pet_x;
+                                pet_off_y = padding_top + extras_h;
+
+                                // win_h must fit the pet + padding_bottom
+                                // padding_bottom must fit the menu
+                                let base_padding_bottom = 20.0 * pet.scale as f64;
+                                let menu_h = if menu_manager.visible || menu_manager.opacity > 0.0 {
+                                    menu_manager.menu_height as f64
                                 } else {
-                                    base_padding_bottom
+                                    0.0
+                                };
+                                let padding_bottom = base_padding_bottom.max(menu_h - cur_ph);
+
+                                let win_h = (pet_off_y + cur_ph + padding_bottom + 40.0) as u32;
+
+                                // Update window size
+                                let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(
+                                    win_w, win_h,
+                                ));
+
+                                let bubble_y = if bubble_manager.is_visible() {
+                                    pet_off_y - gap_between - current_bubble_h as f64
+                                } else {
+                                    pet_off_y
                                 };
 
-                                // Total content height in the pet column
-                                let pet_col_h = cur_ph as u32
-                                    + padding_bottom
-                                    + if bubble_h > 0 {
-                                        bubble_h + padding_gap
-                                    } else {
-                                        0
-                                    }
-                                    + if pomodoro_h > 0 {
-                                        pomodoro_h + padding_gap
-                                    } else {
-                                        0
-                                    };
-
-                                let total_h = pet_col_h + 40;
-                                let win_h = total_h;
-                                let win_w = (cur_pw as u32 + 20 + menu_w + 40)
-                                    .max(bubble_w + 40)
-                                    .max(pomodoro::POMODORO_WIDTH as u32 + 40);
-
-                                // Update window size if changed
-                                let current_size = window.inner_size();
-                                if current_size.width != win_w || current_size.height != win_h {
-                                    // PREVENT JUMP: Maintain pet screen position
-                                    let old_off_x = pet_off_x;
-                                    let old_off_y = pet_off_y;
-
-                                    let new_off_x = 20.0;
-                                    let new_off_y = (win_h as f64 - cur_ph - padding_bottom as f64);
-
-                                    if let Ok(win_pos) = window.outer_position() {
-                                        let screen_x = win_pos.x as f64 + old_off_x;
-                                        let screen_y = win_pos.y as f64 + old_off_y;
-
-                                        let _ = window.request_inner_size(
-                                            winit::dpi::PhysicalSize::new(win_w, win_h),
-                                        );
-                                        // Update position to keep pet at same screen coordinates
-                                        window.set_outer_position(PhysicalPosition::new(
-                                            (screen_x - new_off_x) as i32,
-                                            (screen_y - new_off_y) as i32,
-                                        ));
-                                    }
-
-                                    pet_off_x = new_off_x;
-                                    pet_off_y = new_off_y;
+                                let pomodoro_y = if bubble_manager.is_visible() {
+                                    bubble_y - gap_between - current_pomodoro_h as f64
                                 } else {
-                                    pet_off_x = 20.0;
-                                    pet_off_y = (win_h as f64 - cur_ph - padding_bottom as f64);
-                                }
-
-                                // Bubble is above pet
-                                let bubble_y = pet_off_y - padding_gap as f64 - bubble_h as f64;
-
-                                // Pomodoro is above Bubble (or above Pet if no Bubble)
-                                let pomodoro_y = if bubble_h > 0 {
-                                    bubble_y - padding_gap as f64 - pomodoro_h as f64
-                                } else {
-                                    pet_off_y - padding_gap as f64 - pomodoro_h as f64
+                                    pet_off_y - gap_between - current_pomodoro_h as f64
                                 };
 
-                                // Menu is to right of pet, aligned with pet top
-                                let menu_x = (pet_off_x + cur_pw + 10.0) as i32;
+                                // Alignment coordinates
+                                let bx = (pet_off_x + b_left) as i32;
+                                let px = (pet_off_x + p_left) as i32;
+                                let menu_x = (pet_off_x + cur_pw + gap_between) as i32;
                                 let menu_y = pet_off_y as i32;
 
                                 let mut composite_data =
@@ -342,40 +340,39 @@ fn main() {
 
                                 // 2. Draw Bubble
                                 if bubble_manager.is_visible() {
-                                    let mut bubble_buf = vec![
+                                    let mut b_buf = vec![
                                         0u8;
-                                        (bubble::BUBBLE_WIDTH * bubble::BUBBLE_HEIGHT * 4)
+                                        (current_bubble_w * current_bubble_h * 4)
                                             as usize
                                     ];
-                                    bubble_manager.render_to_buffer(bubble_buf.as_mut_ptr());
+                                    bubble_manager.render_to_buffer(b_buf.as_mut_ptr(), pet.scale);
 
-                                    let bx = (win_w as i32 - bubble::BUBBLE_WIDTH) / 2;
                                     let by = bubble_y as i32;
 
                                     if by >= 0 {
-                                        for y in 0..bubble::BUBBLE_HEIGHT as usize {
-                                            for x in 0..bubble::BUBBLE_WIDTH as usize {
-                                                let src_idx = (y * bubble::BUBBLE_WIDTH as usize
-                                                    + x)
-                                                    * 4usize;
+                                        for y in 0..current_bubble_h as usize {
+                                            for x in 0..current_bubble_w as usize {
+                                                let src_idx =
+                                                    (y * current_bubble_w as usize + x) * 4;
                                                 let dest_x = bx as usize + x;
                                                 let dest_y = by as usize + y;
                                                 if dest_x < win_w as usize
                                                     && dest_y < win_h as usize
                                                 {
                                                     let dest_idx =
-                                                        (dest_y * win_w as usize + dest_x) * 4usize;
-                                                    let alpha =
-                                                        bubble_buf[src_idx + 3] as f32 / 255.0;
+                                                        (dest_y * win_w as usize + dest_x) * 4;
+                                                    let alpha = b_buf[src_idx + 3] as f32 / 255.0;
                                                     if alpha > 0.0 {
-                                                        composite_data[dest_idx] =
-                                                            bubble_buf[src_idx];
+                                                        composite_data[dest_idx] = b_buf[src_idx];
                                                         composite_data[dest_idx + 1] =
-                                                            bubble_buf[src_idx + 1];
+                                                            b_buf[src_idx + 1];
                                                         composite_data[dest_idx + 2] =
-                                                            bubble_buf[src_idx + 2];
-                                                        composite_data[dest_idx + 3] =
-                                                            bubble_buf[src_idx + 3];
+                                                            b_buf[src_idx + 2];
+                                                        composite_data[dest_idx + 3] = 255.min(
+                                                            composite_data[dest_idx + 3] as u16
+                                                                + b_buf[src_idx + 3] as u16,
+                                                        )
+                                                            as u8;
                                                     }
                                                 }
                                             }
@@ -387,52 +384,27 @@ fn main() {
                                 if pomodoro_manager.visible {
                                     let mut p_buf = vec![
                                         0u8;
-                                        (pomodoro::POMODORO_WIDTH * pomodoro::POMODORO_HEIGHT * 4)
+                                        (current_pomodoro_w * current_pomodoro_h * 4)
                                             as usize
                                     ];
-                                    // pomodoro_manager.update(); // Already updated in input loop? No, input loop only updates on click.
-                                    // Actually we need to update potentially every frame for timer countdown?
-                                    // But input handling is event based. Redraw is... distinct.
-                                    // Logic correction: Timer should update on time, so putting update() here in redraw or top of event loop is consistent.
-                                    // But wait, update() returns a message Option.
-                                    // If we call it here, we might miss the message if we don't handle it.
-                                    // Better to verify where update() is called.
-                                    // In my previous code I called update() in input loop for "pomodoro" action? No, that was just to check message.
-                                    // Real update should happen periodically.
-                                    // Let's look at `pet.update_state`.
-                                    // For now, I will just call render logic here.
-                                    // But the timer needs to tick. `update()` handles the tick.
-                                    // If I call `update()` here, and it returns Some(msg), I can't easily pass it to bubble_manager because I'm deep in redraw.
-                                    // Ideally update logic happens in Event::AboutToWait or similar.
-                                    // However, for now, let's just make it visible.
-                                    // The `update` method updates `remaining`.
-                                    // Let's call `pomodoro_manager.update()` at the top of the loop (AboutToWait) or handle it here but ignore msg?
-                                    // No, missing "Work finished" msg is bad.
-                                    // Let's just put `render_to_buffer` here.
-                                    // And move the `update()` call to `AboutToWait` later if needed.
-                                    // For now, I'll put `update()` here to ensure it ticks, and if message is lost, I'll fix that next step.
-                                    // Actually, if I just want to see it, I don't strictly need `update()` for the *first* frame.
-                                    // But for countdown, yes.
-                                    // I'll call `pomodoro_manager.update()` here and ignore the result for this step, just to get it on screen.
                                     // let _ = pomodoro_manager.update(); // MOVED TO AboutToWait
-                                    pomodoro_manager.render_to_buffer(p_buf.as_mut_ptr());
+                                    pomodoro_manager
+                                        .render_to_buffer(p_buf.as_mut_ptr(), pet.scale);
 
-                                    let px = (win_w as i32 - pomodoro::POMODORO_WIDTH) / 2;
                                     let py = pomodoro_y as i32;
 
                                     if py >= 0 {
-                                        for y in 0..pomodoro::POMODORO_HEIGHT as usize {
-                                            for x in 0..pomodoro::POMODORO_WIDTH as usize {
+                                        for y in 0..current_pomodoro_h as usize {
+                                            for x in 0..current_pomodoro_w as usize {
                                                 let src_idx =
-                                                    (y * pomodoro::POMODORO_WIDTH as usize + x)
-                                                        * 4usize;
+                                                    (y * current_pomodoro_w as usize + x) * 4;
                                                 let dest_x = px as usize + x;
                                                 let dest_y = py as usize + y;
                                                 if dest_x < win_w as usize
                                                     && dest_y < win_h as usize
                                                 {
                                                     let dest_idx =
-                                                        (dest_y * win_w as usize + dest_x) * 4usize;
+                                                        (dest_y * win_w as usize + dest_x) * 4;
                                                     let alpha = p_buf[src_idx + 3] as f32 / 255.0;
                                                     if alpha > 0.0 {
                                                         composite_data[dest_idx] = p_buf[src_idx];
@@ -532,8 +504,6 @@ fn main() {
                                                             pet.get_scaled_size();
                                                         let menu_x =
                                                             (pet_off_x + cur_pw + 10.0) as i32;
-                                                        let menu_y = pet_off_y as i32;
-
                                                         let menu_y = pet_off_y as i32;
 
                                                         if let Some(action) = menu_manager

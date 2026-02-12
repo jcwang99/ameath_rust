@@ -11,14 +11,13 @@ use windows::Win32::Graphics::Gdi::{
     TRANSPARENT,
 };
 
-pub const BUBBLE_WIDTH: i32 = 180;
-pub const BUBBLE_HEIGHT: i32 = 80;
+pub const BASE_BUBBLE_WIDTH: i32 = 180;
+pub const BASE_BUBBLE_HEIGHT: i32 = 90;
 
 pub struct SpeechBubble {
     pub text: String,
     pub show_until: Option<Instant>,
     pub font: Option<HFONT>,
-    pub is_at_bottom: bool,
 }
 
 impl SpeechBubble {
@@ -27,7 +26,6 @@ impl SpeechBubble {
             text: String::new(),
             show_until: None,
             font: None,
-            is_at_bottom: false,
         }
     }
 
@@ -46,17 +44,20 @@ impl SpeechBubble {
 
     /// Renders the bubble into a provided BGRA buffer (stride must be width * 4).
     /// Target buffer should be BUBBLE_WIDTH * BUBBLE_HEIGHT * 4.
-    pub fn render_to_buffer(&mut self, buffer_ptr: *mut u8) {
+    pub fn render_to_buffer(&mut self, buffer_ptr: *mut u8, scale: f32) {
         #[cfg(target_os = "windows")]
         unsafe {
             let hdc_screen = GetDC(HWND(0));
             let hdc_mem = CreateCompatibleDC(hdc_screen);
 
+            let width = (BASE_BUBBLE_WIDTH as f32 * scale) as i32;
+            let height = (BASE_BUBBLE_HEIGHT as f32 * scale) as i32;
+
             let bmi = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: BUBBLE_WIDTH,
-                    biHeight: 0 - BUBBLE_HEIGHT,
+                    biWidth: width,
+                    biHeight: 0 - height,
                     biPlanes: 1,
                     biBitCount: 32,
                     biCompression: BI_RGB.0,
@@ -72,27 +73,30 @@ impl SpeechBubble {
 
             // --- Manual Pixel Art Drawing ---
             let pixel_ptr = bits as *mut u8;
-            let width = BUBBLE_WIDTH as usize;
-            let height = BUBBLE_HEIGHT as usize;
+            let w_usize = width as usize;
+            let h_usize = height as usize;
 
-            let bg_color = [0xE9, 0xDE, 0xFF, 0xFF]; // Soft Pink matching hair
-            let border_color = [0x69, 0x4B, 0x8A, 0xFF]; // Darker Rose border
+            let bg_color = [0xE9, 0xDE, 0xFF, 0xFF]; // Soft Purple
+            let border_color = [0x69, 0x4B, 0x8A, 0xFF]; // Darker Purple border
             let white_color = [0xFF, 0xFF, 0xFF, 0xFF];
 
-            std::ptr::write_bytes(pixel_ptr, 0, width * height * 4);
+            std::ptr::write_bytes(pixel_ptr, 0, w_usize * h_usize * 4);
+
+            let tail_h = (20.0 * scale) as i32;
+            let main_h = height - tail_h;
 
             for y in 0..height {
                 for x in 0..width {
-                    let idx = (y * width + x) * 4;
-                    let in_rect = x < width && y < (height - 20);
+                    let idx = (y * width + x) as usize * 4;
+                    let in_rect = x < width && y < main_h;
 
                     if in_rect {
-                        if x == 0 || x == width - 1 || y == 0 || y == height - 21 {
+                        if x == 0 || x == width - 1 || y == 0 || y == main_h - 1 {
                             *pixel_ptr.add(idx) = border_color[0];
                             *pixel_ptr.add(idx + 1) = border_color[1];
                             *pixel_ptr.add(idx + 2) = border_color[2];
                             *pixel_ptr.add(idx + 3) = 255;
-                        } else if x == 1 || x == width - 2 || y == 1 || y == height - 22 {
+                        } else if x == 1 || x == width - 2 || y == 1 || y == main_h - 2 {
                             *pixel_ptr.add(idx) = white_color[0];
                             *pixel_ptr.add(idx + 1) = white_color[1];
                             *pixel_ptr.add(idx + 2) = white_color[2];
@@ -103,14 +107,15 @@ impl SpeechBubble {
                             *pixel_ptr.add(idx + 2) = bg_color[2];
                             *pixel_ptr.add(idx + 3) = 255;
                         }
-                    } else if y >= (height - 20) {
+                    } else if y >= main_h {
                         let center_x = width / 2;
-                        let ty = y as i32 - (height as i32 - 20);
-                        if ty < 15 {
-                            let half_w = 8 - (ty / 2);
-                            let rel_x = x as i32 - center_x as i32;
+                        let ty = y - main_h;
+                        if ty < (15.0 * scale) as i32 {
+                            let hw_val = (8.0 * scale) as i32;
+                            let half_w = hw_val - (ty / 2);
+                            let rel_x = x - center_x;
                             if rel_x.abs() <= half_w {
-                                if rel_x.abs() == half_w || ty == 14 {
+                                if rel_x.abs() == half_w || ty == ((15.0 * scale) as i32 - 1) {
                                     *pixel_ptr.add(idx) = border_color[0];
                                     *pixel_ptr.add(idx + 1) = border_color[1];
                                     *pixel_ptr.add(idx + 2) = border_color[2];
@@ -129,38 +134,38 @@ impl SpeechBubble {
 
             // --- Text Rendering ---
             SetBkMode(hdc_mem, TRANSPARENT);
-            SetTextColor(hdc_mem, COLORREF(0x004A3B5C)); // Deep Brown/Purple
+            SetTextColor(hdc_mem, COLORREF(0x004A3B5C));
 
-            if self.font.is_none() {
-                use windows::core::PCWSTR;
-                let font_name: Vec<u16> = "SimSun".encode_utf16().chain(Some(0)).collect();
-                self.font = Some(CreateFontW(
-                    14,
-                    0,
-                    0,
-                    0,
-                    FW_BOLD.0 as i32,
-                    0,
-                    0,
-                    0,
-                    ANSI_CHARSET.0 as u32,
-                    OUT_DEFAULT_PRECIS.0 as u32,
-                    CLIP_DEFAULT_PRECIS.0 as u32,
-                    NONANTIALIASED_QUALITY.0 as u32,
-                    (DEFAULT_PITCH.0 | FF_SWISS.0) as u32,
-                    PCWSTR(font_name.as_ptr()),
-                ));
-            }
+            let font_size = (14.0 * scale) as i32;
+            let _ = self.font; // Silence unused warning if needed, or just remove
 
-            if let Some(font) = self.font {
-                SelectObject(hdc_mem, font);
-            }
+            use windows::core::PCWSTR;
+            let font_name: Vec<u16> = "SimSun".encode_utf16().chain(Some(0)).collect();
+            let temp_font = CreateFontW(
+                font_size,
+                0,
+                0,
+                0,
+                FW_BOLD.0 as i32,
+                0,
+                0,
+                0,
+                ANSI_CHARSET.0 as u32,
+                OUT_DEFAULT_PRECIS.0 as u32,
+                CLIP_DEFAULT_PRECIS.0 as u32,
+                NONANTIALIASED_QUALITY.0 as u32,
+                (DEFAULT_PITCH.0 | FF_SWISS.0) as u32,
+                PCWSTR(font_name.as_ptr()),
+            );
 
+            SelectObject(hdc_mem, temp_font);
+
+            let padding = (12.0 * scale) as i32;
             let mut rect = RECT {
-                left: 12,
-                top: 12,
-                right: BUBBLE_WIDTH - 12,
-                bottom: BUBBLE_HEIGHT - 30,
+                left: padding,
+                top: padding,
+                right: width - padding,
+                bottom: main_h - padding,
             };
 
             let mut wide_text: Vec<u16> = self.text.encode_utf16().chain(Some(0)).collect();
@@ -168,8 +173,8 @@ impl SpeechBubble {
 
             GdiFlush();
 
-            // --- Final Alpha Correctness ---
-            for i in 0..(BUBBLE_WIDTH * BUBBLE_HEIGHT) as usize {
+            // --- Alpha Fix ---
+            for i in 0..(w_usize * h_usize) {
                 let base = i * 4;
                 let b = *pixel_ptr.add(base);
                 let g = *pixel_ptr.add(base + 1);
@@ -179,10 +184,10 @@ impl SpeechBubble {
                 }
             }
 
-            // Copy to target buffer
-            std::ptr::copy_nonoverlapping(pixel_ptr, buffer_ptr, width * height * 4);
+            std::ptr::copy_nonoverlapping(pixel_ptr, buffer_ptr, w_usize * h_usize * 4);
 
             SelectObject(hdc_mem, old_bitmap);
+            let _ = DeleteObject(temp_font);
             let _ = DeleteObject(h_bitmap);
             let _ = DeleteDC(hdc_mem);
             ReleaseDC(HWND(0), hdc_screen);
