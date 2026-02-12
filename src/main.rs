@@ -2,6 +2,7 @@ mod anim;
 mod bubble;
 mod menu;
 mod pet;
+mod pomodoro;
 mod render;
 mod settings_window;
 mod types;
@@ -148,6 +149,7 @@ fn main() {
     }
 
     let mut bubble_manager = bubble::SpeechBubble::new();
+    let mut pomodoro_manager = pomodoro::Pomodoro::new();
     let mut menu_manager = menu::QuickMenu::new();
     let quotes = vec![
         "哎呀，被发现了！😆",
@@ -210,6 +212,12 @@ fn main() {
                                     0
                                 };
 
+                                let pomodoro_h = if pomodoro_manager.visible {
+                                    pomodoro::POMODORO_HEIGHT as u32
+                                } else {
+                                    0
+                                };
+
                                 // Layout Strategy: Stack from Bottom
                                 let base_padding_bottom = 20u32;
                                 let padding_gap = 10u32;
@@ -236,11 +244,18 @@ fn main() {
                                         bubble_h + padding_gap
                                     } else {
                                         0
+                                    }
+                                    + if pomodoro_h > 0 {
+                                        pomodoro_h + padding_gap
+                                    } else {
+                                        0
                                     };
 
                                 let total_h = pet_col_h + 40;
                                 let win_h = total_h;
-                                let win_w = (cur_pw as u32 + 20 + menu_w + 40).max(bubble_w + 40);
+                                let win_w = (cur_pw as u32 + 20 + menu_w + 40)
+                                    .max(bubble_w + 40)
+                                    .max(pomodoro::POMODORO_WIDTH as u32 + 40);
 
                                 // Update window size if changed
                                 let current_size = window.inner_size();
@@ -275,6 +290,13 @@ fn main() {
 
                                 // Bubble is above pet
                                 let bubble_y = pet_off_y - padding_gap as f64 - bubble_h as f64;
+
+                                // Pomodoro is above Bubble (or above Pet if no Bubble)
+                                let pomodoro_y = if bubble_h > 0 {
+                                    bubble_y - padding_gap as f64 - pomodoro_h as f64
+                                } else {
+                                    pet_off_y - padding_gap as f64 - pomodoro_h as f64
+                                };
 
                                 // Menu is to right of pet, aligned with pet top
                                 let menu_x = (pet_off_x + cur_pw + 10.0) as i32;
@@ -354,6 +376,75 @@ fn main() {
                                                             bubble_buf[src_idx + 2];
                                                         composite_data[dest_idx + 3] =
                                                             bubble_buf[src_idx + 3];
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // 2.5 Draw Pomodoro
+                                if pomodoro_manager.visible {
+                                    let mut p_buf = vec![
+                                        0u8;
+                                        (pomodoro::POMODORO_WIDTH * pomodoro::POMODORO_HEIGHT * 4)
+                                            as usize
+                                    ];
+                                    // pomodoro_manager.update(); // Already updated in input loop? No, input loop only updates on click.
+                                    // Actually we need to update potentially every frame for timer countdown?
+                                    // But input handling is event based. Redraw is... distinct.
+                                    // Logic correction: Timer should update on time, so putting update() here in redraw or top of event loop is consistent.
+                                    // But wait, update() returns a message Option.
+                                    // If we call it here, we might miss the message if we don't handle it.
+                                    // Better to verify where update() is called.
+                                    // In my previous code I called update() in input loop for "pomodoro" action? No, that was just to check message.
+                                    // Real update should happen periodically.
+                                    // Let's look at `pet.update_state`.
+                                    // For now, I will just call render logic here.
+                                    // But the timer needs to tick. `update()` handles the tick.
+                                    // If I call `update()` here, and it returns Some(msg), I can't easily pass it to bubble_manager because I'm deep in redraw.
+                                    // Ideally update logic happens in Event::AboutToWait or similar.
+                                    // However, for now, let's just make it visible.
+                                    // The `update` method updates `remaining`.
+                                    // Let's call `pomodoro_manager.update()` at the top of the loop (AboutToWait) or handle it here but ignore msg?
+                                    // No, missing "Work finished" msg is bad.
+                                    // Let's just put `render_to_buffer` here.
+                                    // And move the `update()` call to `AboutToWait` later if needed.
+                                    // For now, I'll put `update()` here to ensure it ticks, and if message is lost, I'll fix that next step.
+                                    // Actually, if I just want to see it, I don't strictly need `update()` for the *first* frame.
+                                    // But for countdown, yes.
+                                    // I'll call `pomodoro_manager.update()` here and ignore the result for this step, just to get it on screen.
+                                    // let _ = pomodoro_manager.update(); // MOVED TO AboutToWait
+                                    pomodoro_manager.render_to_buffer(p_buf.as_mut_ptr());
+
+                                    let px = (win_w as i32 - pomodoro::POMODORO_WIDTH) / 2;
+                                    let py = pomodoro_y as i32;
+
+                                    if py >= 0 {
+                                        for y in 0..pomodoro::POMODORO_HEIGHT as usize {
+                                            for x in 0..pomodoro::POMODORO_WIDTH as usize {
+                                                let src_idx =
+                                                    (y * pomodoro::POMODORO_WIDTH as usize + x)
+                                                        * 4usize;
+                                                let dest_x = px as usize + x;
+                                                let dest_y = py as usize + y;
+                                                if dest_x < win_w as usize
+                                                    && dest_y < win_h as usize
+                                                {
+                                                    let dest_idx =
+                                                        (dest_y * win_w as usize + dest_x) * 4usize;
+                                                    let alpha = p_buf[src_idx + 3] as f32 / 255.0;
+                                                    if alpha > 0.0 {
+                                                        composite_data[dest_idx] = p_buf[src_idx];
+                                                        composite_data[dest_idx + 1] =
+                                                            p_buf[src_idx + 1];
+                                                        composite_data[dest_idx + 2] =
+                                                            p_buf[src_idx + 2];
+                                                        composite_data[dest_idx + 3] = 255.min(
+                                                            composite_data[dest_idx + 3] as u16
+                                                                + p_buf[src_idx + 3] as u16,
+                                                        )
+                                                            as u8;
                                                     }
                                                 }
                                             }
@@ -443,6 +534,8 @@ fn main() {
                                                             (pet_off_x + cur_pw + 10.0) as i32;
                                                         let menu_y = pet_off_y as i32;
 
+                                                        let menu_y = pet_off_y as i32;
+
                                                         if let Some(action) = menu_manager
                                                             .check_hit(pos.x, pos.y, menu_x, menu_y)
                                                         {
@@ -470,11 +563,26 @@ fn main() {
                                                                     }
                                                                 }
                                                                 "pomodoro" => {
-                                                                    bubble_manager.show(
-                                                                        "开始 25 分钟专注！🍅",
-                                                                        Duration::from_secs(3),
-                                                                    );
-                                                                    // TODO: Start timer
+                                                                    if let Some(msg) =
+                                                                        pomodoro_manager.update()
+                                                                    {
+                                                                        bubble_manager.show(
+                                                                            &msg,
+                                                                            Duration::from_secs(4),
+                                                                        );
+                                                                    }
+
+                                                                    if pomodoro_manager.toggle() {
+                                                                        bubble_manager.show(
+                                                                            "Pomodoro Started! 🍅",
+                                                                            Duration::from_secs(2),
+                                                                        );
+                                                                    } else {
+                                                                        bubble_manager.show(
+                                                                            "Pomodoro Stopped.",
+                                                                            Duration::from_secs(2),
+                                                                        );
+                                                                    }
                                                                 }
                                                                 "music" => {
                                                                     bubble_manager.show(
@@ -655,6 +763,12 @@ fn main() {
                         // Clamp dt to max 0.05s (20fps min) to prevent huge jumps after loop blocking (e.g. window dragging)
                         let dt = elapsed.min(0.05);
                         pet.update_state(dt, is_hovered);
+
+                        // Update Pomodoro State
+                        if let Some(msg) = pomodoro_manager.update() {
+                            bubble_manager.show(&msg, Duration::from_secs(4));
+                        }
+
                         window.set_outer_position(PhysicalPosition::new(
                             (pet.position.0 - pet_off_x) as i32,
                             (pet.position.1 - pet_off_y) as i32,
