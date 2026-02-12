@@ -651,7 +651,10 @@ fn main() {
                     }
 
                     if let Some(elapsed) = last_update.map(|t| t.elapsed().as_secs_f64()) {
-                        pet.update_state(elapsed, is_hovered);
+                        // Fix user reported teleportation bug:
+                        // Clamp dt to max 0.05s (20fps min) to prevent huge jumps after loop blocking (e.g. window dragging)
+                        let dt = elapsed.min(0.05);
+                        pet.update_state(dt, is_hovered);
                         window.set_outer_position(PhysicalPosition::new(
                             (pet.position.0 - pet_off_x) as i32,
                             (pet.position.1 - pet_off_y) as i32,

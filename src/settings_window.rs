@@ -26,17 +26,25 @@ impl SettingsWindow {
         let scale_x = size.width as f64 / 600.0;
         let scale_y = size.height as f64 / 450.0;
 
-        // Scale Bar: Card1 Y=90. Slider Y=150. Track X=120. W=300
-        let s_slider_y_min = 140.0 * scale_y;
-        let s_slider_y_max = 170.0 * scale_y;
-        let s_track_x = 110.0 * scale_x;
-        let s_track_max_x = 430.0 * scale_x;
+        // Scale Buttons (Replacing Slider)
+        // Card1 Y=90. Buttons Y=140 (~90+50).
+        let scale_y_min = 140.0 * scale_y;
+        let scale_y_max = 180.0 * scale_y; // 40px height
 
-        if x >= s_track_x && x <= s_track_max_x && y >= s_slider_y_min && y <= s_slider_y_max {
-            let track_w = 300.0 * scale_x;
-            let track_start = 120.0 * scale_x;
-            let pct = ((x - track_start) / track_w).clamp(0.0, 1.0) as f32;
-            return SettingsAction::SetScale(0.5 + pct * 0.5);
+        if y >= scale_y_min && y <= scale_y_max {
+            let start_x = 120.0 * scale_x;
+            let btn_w = 60.0 * scale_x;
+            let gap = 10.0 * scale_x;
+
+            // 5 options: 0.5, 0.75, 1.0, 1.25, 1.5
+            let scales = vec![0.5, 0.75, 1.0, 1.25, 1.5];
+
+            for (i, &s) in scales.iter().enumerate() {
+                let btn_x = start_x + i as f64 * (btn_w + gap);
+                if x >= btn_x && x <= btn_x + btn_w {
+                    return SettingsAction::SetScale(s);
+                }
+            }
         }
 
         // Mode Buttons: Card2 Y=210. Buttons Y=260.
@@ -46,7 +54,7 @@ impl SettingsWindow {
         if y >= mode_y_min && y <= mode_y_max {
             let btn_w = 100.0 * scale_x;
             let gap = 12.0 * scale_x;
-            let start_x = 140.0 * scale_x; // Matches redraw logic
+            let start_x = 140.0 * scale_x;
 
             // Quiet
             if x >= start_x && x <= start_x + btn_w {
@@ -361,7 +369,7 @@ impl SettingsWindow {
                 // Card 1: Scale
                 let card1_y = sy_val(100);
                 let card_w = s(440);
-                let card_h = sy_val(100);
+                let card_h = sy_val(120); // Height increased for buttons
                 Self::draw_rounded_rect(
                     &mut buffer,
                     w,
@@ -387,53 +395,55 @@ impl SettingsWindow {
                     );
                 }
 
-                // Slider
-                let slider_y = card1_y + sy_val(60);
-                let slider_track_w = s(360);
-                Self::draw_rounded_rect(
-                    &mut buffer,
-                    w,
-                    s(140),
-                    slider_y,
-                    slider_track_w,
-                    (6.0 * sy) as u32,
-                    3,
-                    0x00E3E5E7,
-                    w,
-                    h,
-                ); // Track
+                // Scale Options (Discrete Buttons)
+                let scales = vec![0.5, 0.75, 1.0, 1.25, 1.5];
+                let scale_labels = vec!["0.5x", "0.75x", "1.0x", "1.25x", "1.5x"];
+                // Align with hit testing logic: starts at 120 (scaled)
+                let s_btn_y = card1_y + sy_val(50);
+                let s_btn_w = s(60);
+                let s_btn_h = sy_val(40);
+                let s_gap = s(10);
 
-                let fill_w = ((current_scale - 0.5) * 2.0 * slider_track_w as f32) as u32;
-                Self::draw_rounded_rect(
-                    &mut buffer,
-                    w,
-                    s(140),
-                    slider_y,
-                    fill_w,
-                    (6.0 * sy) as u32,
-                    3,
-                    primary,
-                    w,
-                    h,
-                ); // Fill
+                for (i, &val) in scales.iter().enumerate() {
+                    let mx = s(120) + i as u32 * (s_btn_w + s_gap);
+                    let is_active = (current_scale - val).abs() < 0.01;
 
-                let thumb_x = s(140) + fill_w;
-                let thumb_size = (16.0 * sx) as u32;
-                Self::draw_rounded_rect(
-                    &mut buffer,
-                    w,
-                    thumb_x.saturating_sub(thumb_size / 2),
-                    slider_y.saturating_sub(5),
-                    thumb_size,
-                    thumb_size,
-                    thumb_size / 2,
-                    primary,
-                    w,
-                    h,
-                ); // Thumb
+                    let bg_col = if is_active { primary } else { 0x00F1F2F3 }; // Active pink, inactive light grey
+                    let text_col = if is_active { 0x00FFFFFF } else { text_main };
+
+                    Self::draw_rounded_rect(
+                        &mut buffer,
+                        w,
+                        mx,
+                        s_btn_y,
+                        s_btn_w,
+                        s_btn_h,
+                        8,
+                        bg_col,
+                        w,
+                        h,
+                    );
+
+                    if let Some(font) = &self.font {
+                        // Center text roughly
+                        let label = scale_labels[i];
+                        let text_x = mx + (8.0 * sx) as u32; // manual tweak
+                        let text_y = s_btn_y + (10.0 * sy) as u32;
+                        Self::draw_text(
+                            &mut buffer,
+                            w,
+                            font,
+                            label,
+                            text_x,
+                            text_y,
+                            14.0 * sx,
+                            text_col,
+                        );
+                    }
+                }
 
                 // Card 2: Behavior Mode
-                let card2_y = sy_val(220);
+                let card2_y = sy_val(240);
                 let card2_h = sy_val(120);
                 Self::draw_rounded_rect(
                     &mut buffer,
