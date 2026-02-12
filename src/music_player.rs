@@ -35,6 +35,9 @@ impl MusicPlayer {
     pub fn set_path<P: AsRef<Path>>(&mut self, path: P) {
         let path = path.as_ref().to_path_buf();
         self.music_path = Some(path.clone());
+        if let Some(sink) = &self.sink {
+            sink.stop();
+        }
         self.load_songs(&path);
     }
 

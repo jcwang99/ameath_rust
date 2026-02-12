@@ -25,12 +25,12 @@ impl SettingsWindow {
     pub fn handle_click(&self, x: f64, y: f64) -> SettingsAction {
         let size = self.window.inner_size();
         let scale_x = size.width as f64 / 600.0;
-        let scale_y = size.height as f64 / 450.0;
+        let scale_y = size.height as f64 / 550.0;
 
         // Scale Buttons (Replacing Slider)
         // Card1 Y=90. Buttons Y=140 (~90+50).
-        let scale_y_min = 140.0 * scale_y;
-        let scale_y_max = 180.0 * scale_y; // 40px height
+        let scale_y_min = 150.0 * scale_y;
+        let scale_y_max = 190.0 * scale_y; // 40px height
 
         if y >= scale_y_min && y <= scale_y_max {
             let start_x = 120.0 * scale_x;
@@ -49,11 +49,11 @@ impl SettingsWindow {
         }
 
         // Mode Buttons: Card2 Y=210. Buttons Y=260.
-        let mode_y_min = 260.0 * scale_y;
-        let mode_y_max = 310.0 * scale_y;
+        let mode_y_min = 290.0 * scale_y;
+        let mode_y_max = 340.0 * scale_y;
 
         if y >= mode_y_min && y <= mode_y_max {
-            let btn_w = 100.0 * scale_x;
+            let btn_w = 120.0 * scale_x;
             let gap = 12.0 * scale_x;
             let start_x = 140.0 * scale_x;
 
