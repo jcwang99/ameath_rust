@@ -18,6 +18,10 @@ use pet::Pet;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
+use global_hotkey::{
+    hotkey::{Code, HotKey, Modifiers},
+    GlobalHotKeyEvent, GlobalHotKeyManager,
+};
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem},
     TrayIconBuilder,
@@ -38,6 +42,12 @@ use windows::Win32::Foundation::HWND;
 
 fn main() {
     let event_loop = EventLoop::new().unwrap();
+
+    // Global Hotkey Setup
+    let hotkey_manager = GlobalHotKeyManager::new().unwrap();
+    let hotkey = HotKey::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyM);
+    hotkey_manager.register(hotkey).unwrap();
+    let hotkey_channel = GlobalHotKeyEvent::receiver();
 
     // Load assets (Right-facing by default)
     let idle_frames_right = vec![
@@ -222,6 +232,25 @@ fn main() {
     event_loop
         .run(move |event, elwt| {
             elwt.set_control_flow(ControlFlow::Poll);
+
+            // Global Hotkey Trigger
+            if let Ok(_hotkey_event) = hotkey_channel.try_recv() {
+                // Center on current monitor
+                if let Some(monitor) = window.current_monitor() {
+                    let scale_factor = monitor.scale_factor();
+                    let m_size = monitor.size();
+                    let m_pos = monitor.position();
+                    let chat_w = 300.0;
+                    let chat_h = 60.0;
+                    let m_w_logical = m_size.width as f64 / scale_factor;
+                    let m_h_logical = m_size.height as f64 / scale_factor;
+                    let m_x_logical = m_pos.x as f64 / scale_factor;
+                    let m_y_logical = m_pos.y as f64 / scale_factor;
+                    let center_x = m_x_logical + (m_w_logical / 2.0) - (chat_w / 2.0);
+                    let center_y = m_y_logical + (m_h_logical / 2.0) - (chat_h / 2.0);
+                    chat_window.show(winit::dpi::LogicalPosition::new(center_x, center_y));
+                }
+            }
 
             match event {
                 Event::WindowEvent { event, window_id } => {
