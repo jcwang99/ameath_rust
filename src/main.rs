@@ -169,6 +169,7 @@ fn main() {
     // Click detection
     let mut click_start_time: Option<Instant> = None;
     let mut click_start_pos: Option<(f64, f64)> = None;
+    let mut settings_cursor_pos: Option<PhysicalPosition<f64>> = None;
 
     let mut settings_win: Option<SettingsWindow> = None;
     let mut menu_visible_timer: Option<Instant> = None;
@@ -454,11 +455,12 @@ fn main() {
                                                                 }
                                                                 "settings" => {
                                                                     if settings_win.is_none() {
-                                                                        settings_win = Some(
+                                                                        let sw =
                                                                             SettingsWindow::new(
                                                                                 elwt,
-                                                                            ),
-                                                                        );
+                                                                            );
+                                                                        sw.request_redraw();
+                                                                        settings_win = Some(sw);
                                                                     } else {
                                                                         if let Some(sw) =
                                                                             &settings_win
@@ -544,8 +546,42 @@ fn main() {
                                 WindowEvent::CloseRequested => {
                                     settings_win = None;
                                 }
+                                WindowEvent::MouseInput {
+                                    state: ElementState::Pressed,
+                                    button: MouseButton::Left,
+                                    ..
+                                } => {
+                                    if let Some(pos) = settings_cursor_pos {
+                                        let action = sw.handle_click(pos.x, pos.y);
+                                        match action {
+                                            settings_window::SettingsAction::SetScale(s) => {
+                                                pet.scale = s;
+                                                sw.request_redraw();
+                                                window.request_redraw();
+                                            }
+                                            settings_window::SettingsAction::SetMode(m) => {
+                                                if pet.behavior_mode == BehaviorMode::Clingy
+                                                    && m != BehaviorMode::Clingy
+                                                {
+                                                    pet.state = PetState::Idle;
+                                                }
+                                                pet.behavior_mode = m;
+                                                sw.request_redraw();
+                                            }
+                                            settings_window::SettingsAction::None => {}
+                                        }
+                                    }
+                                }
+                                WindowEvent::CursorMoved { position, .. } => {
+                                    settings_cursor_pos = Some(position);
+                                }
                                 WindowEvent::RedrawRequested => {
-                                    sw.redraw();
+                                    let mode_str = match pet.behavior_mode {
+                                        BehaviorMode::Quiet => "Quiet",
+                                        BehaviorMode::Active => "Active",
+                                        BehaviorMode::Clingy => "Clingy",
+                                    };
+                                    sw.redraw(pet.scale, mode_str);
                                 }
                                 _ => {}
                             }
