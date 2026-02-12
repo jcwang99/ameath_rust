@@ -22,3 +22,9 @@ pub enum BehaviorMode {
     Active,
     Clingy,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowLayer {
+    Top,
+    Bottom,
+}

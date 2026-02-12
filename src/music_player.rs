@@ -17,6 +17,9 @@ impl MusicPlayer {
         let (sink, stream, stream_handle) = match OutputStream::try_default() {
             Ok((s, h)) => {
                 let sink = Sink::try_new(&h).ok();
+                if let Some(sink) = &sink {
+                    sink.pause();
+                }
                 (sink, Some(s), Some(h))
             }
             Err(_) => (None, None, None),
@@ -37,6 +40,7 @@ impl MusicPlayer {
         self.music_path = Some(path.clone());
         if let Some(sink) = &self.sink {
             sink.stop();
+            sink.pause();
         }
         self.load_songs(&path);
     }

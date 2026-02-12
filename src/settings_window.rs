@@ -19,13 +19,14 @@ pub enum SettingsAction {
     SetScale(f32),
     SetMode(crate::types::BehaviorMode),
     SetMusicPath(std::path::PathBuf),
+    SetLayer(crate::types::WindowLayer),
 }
 
 impl SettingsWindow {
     pub fn handle_click(&self, x: f64, y: f64) -> SettingsAction {
         let size = self.window.inner_size();
         let scale_x = size.width as f64 / 600.0;
-        let scale_y = size.height as f64 / 550.0;
+        let scale_y = size.height as f64 / 700.0;
 
         // Scale Buttons (Replacing Slider)
         // Card1 Y=90. Buttons Y=140 (~90+50).
@@ -86,6 +87,25 @@ impl SettingsWindow {
             }
         }
 
+        // Layer Buttons: Card4 Y=520. Buttons Y=570.
+        let layer_y_min = 570.0 * scale_y;
+        let layer_y_max = 610.0 * scale_y;
+        if y >= layer_y_min && y <= layer_y_max {
+            let btn_w = 120.0 * scale_x;
+            let gap = 12.0 * scale_x;
+            let start_x = 140.0 * scale_x;
+
+            // Top
+            if x >= start_x && x <= start_x + btn_w {
+                return SettingsAction::SetLayer(crate::types::WindowLayer::Top);
+            }
+            // Bottom
+            let bottom_x = start_x + btn_w + gap;
+            if x >= bottom_x && x <= bottom_x + btn_w {
+                return SettingsAction::SetLayer(crate::types::WindowLayer::Bottom);
+            }
+        }
+
         SettingsAction::None
     }
 
@@ -93,8 +113,9 @@ impl SettingsWindow {
         let window = Rc::new(
             winit::window::WindowBuilder::new()
                 .with_title("Ameath Settings")
-                .with_inner_size(PhysicalSize::new(600, 600))
+                .with_inner_size(PhysicalSize::new(600, 700))
                 .with_resizable(true)
+                .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
                 .build(event_loop)
                 .unwrap(),
         );
@@ -275,6 +296,7 @@ impl SettingsWindow {
         current_scale: f32,
         current_mode: &str,
         current_music_path: Option<&std::path::Path>,
+        current_layer: crate::types::WindowLayer,
     ) {
         let size = self.window.inner_size();
         if let Some(width) = NonZeroU32::new(size.width) {
@@ -286,9 +308,9 @@ impl SettingsWindow {
                 let w = width.get();
                 let h = height.get();
 
-                // Scaling Factors (Base 600x550)
+                // Scaling Factors (Base 600x700)
                 let sx = w as f32 / 600.0;
-                let sy = h as f32 / 550.0;
+                let sy = h as f32 / 700.0;
 
                 // Helper to scale coordinates
                 let s = |val: u32| -> u32 { (val as f32 * sx) as u32 };
@@ -633,6 +655,105 @@ impl SettingsWindow {
                         12.0 * sx,
                         text_sec,
                     );
+                }
+
+                // Card 4: Window Layer
+                let card4_y = sy_val(520);
+                let card4_h = sy_val(120);
+                Self::draw_rounded_rect(
+                    &mut buffer,
+                    w,
+                    s(120),
+                    card4_y,
+                    card_w,
+                    card4_h,
+                    12,
+                    card_bg,
+                    w,
+                    h,
+                );
+                if let Some(font) = &self.font {
+                    Self::draw_text(
+                        &mut buffer,
+                        w,
+                        font,
+                        "Window Layer",
+                        s(140),
+                        card4_y + sy_val(20),
+                        16.0 * sx,
+                        text_main,
+                    );
+                }
+
+                let layers = vec![
+                    ("Always Top", crate::types::WindowLayer::Top),
+                    ("Desktop", crate::types::WindowLayer::Bottom),
+                ];
+                let btn_w = s(120);
+                let btn_h = sy_val(50);
+                let gap = s(12);
+
+                for (i, (label, layer)) in layers.iter().enumerate() {
+                    let mx = s(140) + i as u32 * (btn_w + gap);
+                    let my = card4_y + sy_val(50);
+
+                    let is_active = *layer == current_layer;
+                    let border_col = if is_active { primary } else { 0x00E3E5E7 };
+
+                    // Border
+                    Self::draw_rounded_rect(
+                        &mut buffer,
+                        w,
+                        mx,
+                        my,
+                        btn_w,
+                        btn_h,
+                        8,
+                        border_col,
+                        w,
+                        h,
+                    );
+                    Self::draw_rounded_rect(
+                        &mut buffer,
+                        w,
+                        mx + 2,
+                        my + 2,
+                        btn_w - 4,
+                        btn_h - 4,
+                        6,
+                        card_bg,
+                        w,
+                        h,
+                    );
+
+                    if is_active {
+                        Self::draw_rounded_rect(
+                            &mut buffer,
+                            w,
+                            mx + btn_w - 20,
+                            my + 5,
+                            12,
+                            12,
+                            6,
+                            primary,
+                            w,
+                            h,
+                        );
+                    }
+
+                    let text_col = if is_active { primary } else { text_sec };
+                    if let Some(font) = &self.font {
+                        Self::draw_text(
+                            &mut buffer,
+                            w,
+                            font,
+                            label,
+                            mx + (20.0 * sx) as u32,
+                            my + (18.0 * sy) as u32,
+                            14.0 * sx,
+                            text_col,
+                        );
+                    }
                 }
 
                 buffer.present().unwrap();

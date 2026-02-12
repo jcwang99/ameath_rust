@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod anim;
 mod bubble;
 mod menu;
@@ -14,6 +16,10 @@ use pet::Pet;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
+use tray_icon::{
+    menu::{Menu, MenuEvent, MenuItem},
+    TrayIconBuilder,
+};
 use types::{BehaviorMode, PetState, PreprocessedFrame};
 use winit::{
     dpi::PhysicalPosition,
@@ -27,11 +33,6 @@ use winit::platform::windows::WindowBuilderExtWindows;
 
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::HWND;
-#[cfg(target_os = "windows")]
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, GWL_STYLE, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST,
-};
 
 fn main() {
     let event_loop = EventLoop::new().unwrap();
@@ -98,6 +99,26 @@ fn main() {
     let win_w = (max_pw as u32 + 40).max(bubble::BASE_BUBBLE_WIDTH as u32);
     let win_h = max_ph as u32 + bubble::BASE_BUBBLE_HEIGHT as u32 + 60; // More vertical space
 
+    // Extract Icon before animation_map is moved into Pet
+    let icon = if let Some((right_variants, _)) = animation_map.get(&PetState::Idle) {
+        if let Some(frames) = right_variants.first() {
+            if let Some(frame) = frames.first() {
+                tray_icon::Icon::from_rgba(
+                    frame.data.clone(),
+                    frame.width as u32,
+                    frame.height as u32,
+                )
+                .ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let mut pet = Pet::new(animation_map, (max_pw as f64, max_ph as f64));
     pet.state = PetState::Move;
 
@@ -131,23 +152,7 @@ fn main() {
         use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
         if let RawWindowHandle::Win32(handle) = window.raw_window_handle() {
             let hwnd = HWND(handle.hwnd as isize);
-            unsafe {
-                let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
-                let _ = SetWindowLongW(
-                    hwnd,
-                    GWL_EXSTYLE,
-                    ex_style
-                        | WS_EX_LAYERED.0 as i32
-                        | WS_EX_TOOLWINDOW.0 as i32
-                        | WS_EX_TOPMOST.0 as i32,
-                );
-                let _ = SetWindowLongW(
-                    hwnd,
-                    GWL_STYLE,
-                    windows::Win32::UI::WindowsAndMessaging::WS_POPUP.0 as i32
-                        | windows::Win32::UI::WindowsAndMessaging::WS_VISIBLE.0 as i32,
-                );
-            }
+            apply_window_styles(hwnd, true); // Initial application
         }
     }
 
@@ -172,6 +177,25 @@ fn main() {
         "在努力工作吗？加油！💪",
     ];
 
+    // Tray Icon Setup
+    let tray_menu = Menu::new();
+    let settings_item = MenuItem::new("Settings", true, None);
+    let quit_item = MenuItem::new("Quit", true, None);
+    let settings_id = settings_item.id();
+    let quit_id = quit_item.id();
+    let _ = tray_menu.append_items(&[&settings_item, &quit_item]);
+
+    // Use the first frame of idle as icon if available (MOVED UP)
+
+    let mut _tray_icon = icon.map(|i| {
+        TrayIconBuilder::new()
+            .with_menu(Box::new(tray_menu))
+            .with_tooltip("Ameath")
+            .with_icon(i)
+            .build()
+            .unwrap()
+    });
+
     let mut pet_off_x = 20.0;
     let mut pet_off_y = 50.0;
     let mut last_update = Some(Instant::now());
@@ -184,6 +208,7 @@ fn main() {
 
     let mut settings_win: Option<SettingsWindow> = None;
     let mut menu_visible_timer: Option<Instant> = None;
+    let mut current_layer = types::WindowLayer::Top;
 
     event_loop
         .run(move |event, elwt| {
@@ -453,6 +478,9 @@ fn main() {
                                                 win_w as i32,
                                                 win_h as i32,
                                             );
+
+                                            // Re-assert TopMost if needed
+                                            // Removed SetWindowPos from here, moving to AboutToWait for resilience
                                         }
                                     }
                                 }
@@ -671,6 +699,49 @@ fn main() {
                                                 music_player.set_path(path);
                                                 sw.request_redraw();
                                             }
+                                            settings_window::SettingsAction::SetLayer(layer) => {
+                                                current_layer = layer;
+                                                let level = match layer {
+                                                    types::WindowLayer::Top => {
+                                                        WindowLevel::AlwaysOnTop
+                                                    }
+                                                    types::WindowLayer::Bottom => {
+                                                        WindowLevel::Normal // Changed from AlwaysOnBottom
+                                                    }
+                                                };
+                                                window.set_window_level(level);
+
+                                                #[cfg(target_os = "windows")]
+                                                {
+                                                    use raw_window_handle::{
+                                                        HasRawWindowHandle, RawWindowHandle,
+                                                    };
+                                                    if let RawWindowHandle::Win32(handle) =
+                                                        window.raw_window_handle()
+                                                    {
+                                                        let hwnd = HWND(handle.hwnd as isize);
+                                                        let is_top =
+                                                            layer == types::WindowLayer::Top;
+                                                        apply_window_styles(hwnd, is_top);
+                                                        
+                                                        if !is_top {
+                                                            use windows::Win32::UI::WindowsAndMessaging::{
+                                                                SetWindowPos, HWND_BOTTOM, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE
+                                                            };
+                                                            unsafe {
+                                                                let _ = SetWindowPos(
+                                                                    hwnd,
+                                                                    HWND_BOTTOM,
+                                                                    0, 0, 0, 0,
+                                                                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                sw.request_redraw();
+                                            }
                                             settings_window::SettingsAction::None => {}
                                         }
                                     }
@@ -688,6 +759,7 @@ fn main() {
                                         pet.scale,
                                         mode_str,
                                         music_player.music_path.as_deref(),
+                                        current_layer,
                                     );
                                 }
                                 _ => {}
@@ -696,6 +768,21 @@ fn main() {
                     }
                 }
                 Event::AboutToWait => {
+                    // Handle Tray Menu Events
+                    if let Ok(event) = MenuEvent::receiver().try_recv() {
+                        if event.id == settings_id {
+                            if settings_win.is_none() {
+                                let sw = SettingsWindow::new(elwt);
+                                sw.request_redraw();
+                                settings_win = Some(sw);
+                            } else if let Some(sw) = &settings_win {
+                                sw.focus();
+                            }
+                        } else if event.id == quit_id {
+                            elwt.exit();
+                        }
+                    }
+
                     let mut is_hovered = false;
                     #[cfg(target_os = "windows")]
                     unsafe {
@@ -784,4 +871,34 @@ fn main() {
             }
         })
         .unwrap();
+}
+
+#[cfg(target_os = "windows")]
+fn apply_window_styles(hwnd: HWND, top_most: bool) {
+    unsafe {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, GWL_STYLE, WS_CAPTION, WS_EX_LAYERED,
+            WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_THICKFRAME, WS_VISIBLE,
+        };
+        // STYLE: Remove Caption/ThickFrame, Force Popup + Visible
+        let style = GetWindowLongW(hwnd, GWL_STYLE);
+        let new_style = (style & !(WS_CAPTION.0 as i32 | WS_THICKFRAME.0 as i32))
+            | WS_POPUP.0 as i32
+            | WS_VISIBLE.0 as i32;
+        SetWindowLongW(hwnd, GWL_STYLE, new_style);
+
+        // EX_STYLE: Layered + ToolWindow + (Optional) TopMost
+        let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        let mut new_ex_style = ex_style | WS_EX_LAYERED.0 as i32 | WS_EX_TOOLWINDOW.0 as i32;
+
+        if top_most {
+            new_ex_style |= WS_EX_TOPMOST.0 as i32;
+        } else {
+            // If strictly needed to remove topmost, verify if winit handles it.
+            // winit's set_window_level might toggle this bit.
+            // We enforce it just in case.
+            new_ex_style &= !(WS_EX_TOPMOST.0 as i32);
+        }
+        SetWindowLongW(hwnd, GWL_EXSTYLE, new_ex_style);
+    }
 }

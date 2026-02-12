@@ -1,14 +1,31 @@
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::{COLORREF, HWND, RECT};
+use windows::core::ComInterface;
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::{HANDLE, HWND, RECT};
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Direct2D::Common::{
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Direct2D::{
+    D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1DeviceContext, ID2D1Factory,
+    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+    D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::DirectWrite::{
+    DWriteCreateFactory, IDWriteFactory, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL,
+    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_BOLD, DWRITE_MEASURING_MODE_NATURAL,
+    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
+};
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, DrawTextW, GdiFlush,
-    GetDC, ReleaseDC, SelectObject, SetBkMode, SetTextColor, ANSI_CHARSET, BITMAPINFO,
-    BITMAPINFOHEADER, BI_RGB, CLIP_DEFAULT_PRECIS, DEFAULT_PITCH, DIB_RGB_COLORS, DT_CENTER,
-    DT_WORDBREAK, FF_SWISS, FW_BOLD, HFONT, NONANTIALIASED_QUALITY, OUT_DEFAULT_PRECIS,
-    TRANSPARENT,
+    GetDC, ReleaseDC, SelectObject, ANSI_CHARSET, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+    CLIP_DEFAULT_PRECIS, DEFAULT_PITCH, DIB_RGB_COLORS, DT_CALCRECT, DT_CENTER, DT_WORDBREAK,
+    FF_SWISS, FW_BOLD, HDC, NONANTIALIASED_QUALITY, OUT_DEFAULT_PRECIS,
 };
 
 pub const BASE_BUBBLE_WIDTH: i32 = 180;
@@ -18,7 +35,6 @@ pub const MAX_BUBBLE_WIDTH: i32 = 300;
 pub struct SpeechBubble {
     pub text: String,
     pub show_until: Option<Instant>,
-    pub font: Option<HFONT>,
     pub current_width: i32,
     pub current_height: i32,
 }
@@ -28,7 +44,6 @@ impl SpeechBubble {
         Self {
             text: String::new(),
             show_until: None,
-            font: None,
             current_width: BASE_BUBBLE_WIDTH,
             current_height: BASE_BUBBLE_HEIGHT,
         }
@@ -47,7 +62,7 @@ impl SpeechBubble {
             let hdc_mem = CreateCompatibleDC(hdc_screen);
 
             let font_size = (14.0 * scale) as i32;
-            let font_name: Vec<u16> = "SimSun".encode_utf16().chain(Some(0)).collect();
+            let font_name: Vec<u16> = "Segoe UI Emoji".encode_utf16().chain(Some(0)).collect();
             use windows::core::PCWSTR;
             let temp_font = CreateFontW(
                 font_size,
@@ -77,7 +92,6 @@ impl SpeechBubble {
             };
 
             let mut wide_text: Vec<u16> = self.text.encode_utf16().chain(Some(0)).collect();
-            use windows::Win32::Graphics::Gdi::DT_CALCRECT;
             DrawTextW(
                 hdc_mem,
                 &mut wide_text,
@@ -97,8 +111,8 @@ impl SpeechBubble {
             self.current_height = calc_h;
 
             SelectObject(hdc_mem, old_font);
-            DeleteObject(temp_font);
-            DeleteDC(hdc_mem);
+            let _ = DeleteObject(temp_font);
+            let _ = DeleteDC(hdc_mem);
             ReleaseDC(HWND(0), hdc_screen);
         }
     }
@@ -111,8 +125,6 @@ impl SpeechBubble {
         }
     }
 
-    /// Renders the bubble into a provided BGRA buffer (stride must be width * 4).
-    /// Target buffer should be BUBBLE_WIDTH * BUBBLE_HEIGHT * 4.
     pub fn render_to_buffer(&mut self, buffer_ptr: *mut u8, scale: f32) {
         #[cfg(target_os = "windows")]
         unsafe {
@@ -137,7 +149,7 @@ impl SpeechBubble {
 
             let mut bits = std::ptr::null_mut();
             let h_bitmap =
-                CreateDIBSection(hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).unwrap();
+                CreateDIBSection(hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, HANDLE(0), 0).unwrap();
             let old_bitmap = SelectObject(hdc_mem, h_bitmap);
 
             // --- Manual Pixel Art Drawing ---
@@ -154,21 +166,45 @@ impl SpeechBubble {
             let tail_h = (20.0 * scale) as i32;
             let main_h = height - tail_h;
 
-            for y in 0..height {
+            for y in 0..main_h {
                 for x in 0..width {
                     let idx = (y * width + x) as usize * 4;
-                    let in_rect = x < width && y < main_h;
+                    if x == 0 || x == width - 1 || y == 0 || y == main_h - 1 {
+                        *pixel_ptr.add(idx) = border_color[0];
+                        *pixel_ptr.add(idx + 1) = border_color[1];
+                        *pixel_ptr.add(idx + 2) = border_color[2];
+                        *pixel_ptr.add(idx + 3) = 255;
+                    } else if x == 1 || x == width - 2 || y == 1 || y == main_h - 2 {
+                        *pixel_ptr.add(idx) = white_color[0];
+                        *pixel_ptr.add(idx + 1) = white_color[1];
+                        *pixel_ptr.add(idx + 2) = white_color[2];
+                        *pixel_ptr.add(idx + 3) = 255;
+                    } else {
+                        *pixel_ptr.add(idx) = bg_color[0];
+                        *pixel_ptr.add(idx + 1) = bg_color[1];
+                        *pixel_ptr.add(idx + 2) = bg_color[2];
+                        *pixel_ptr.add(idx + 3) = 255;
+                    }
+                }
+            }
 
-                    if in_rect {
-                        if x == 0 || x == width - 1 || y == 0 || y == main_h - 1 {
+            // Tail
+            let center_x = width / 2;
+            for y in main_h..height {
+                let ty = y - main_h;
+                if ty < (15.0 * scale) as i32 {
+                    let hw_val = (8.0 * scale) as i32;
+                    let half_w = hw_val - (ty / 2);
+                    for x in (center_x - half_w)..(center_x + half_w + 1) {
+                        if x < 0 || x >= width {
+                            continue;
+                        }
+                        let idx = (y * width + x) as usize * 4;
+                        let rel_x = x - center_x;
+                        if rel_x.abs() == half_w || ty == ((15.0 * scale) as i32 - 1) {
                             *pixel_ptr.add(idx) = border_color[0];
                             *pixel_ptr.add(idx + 1) = border_color[1];
                             *pixel_ptr.add(idx + 2) = border_color[2];
-                            *pixel_ptr.add(idx + 3) = 255;
-                        } else if x == 1 || x == width - 2 || y == 1 || y == main_h - 2 {
-                            *pixel_ptr.add(idx) = white_color[0];
-                            *pixel_ptr.add(idx + 1) = white_color[1];
-                            *pixel_ptr.add(idx + 2) = white_color[2];
                             *pixel_ptr.add(idx + 3) = 255;
                         } else {
                             *pixel_ptr.add(idx) = bg_color[0];
@@ -176,88 +212,102 @@ impl SpeechBubble {
                             *pixel_ptr.add(idx + 2) = bg_color[2];
                             *pixel_ptr.add(idx + 3) = 255;
                         }
-                    } else if y >= main_h {
-                        let center_x = width / 2;
-                        let ty = y - main_h;
-                        if ty < (15.0 * scale) as i32 {
-                            let hw_val = (8.0 * scale) as i32;
-                            let half_w = hw_val - (ty / 2);
-                            let rel_x = x - center_x;
-                            if rel_x.abs() <= half_w {
-                                if rel_x.abs() == half_w || ty == ((15.0 * scale) as i32 - 1) {
-                                    *pixel_ptr.add(idx) = border_color[0];
-                                    *pixel_ptr.add(idx + 1) = border_color[1];
-                                    *pixel_ptr.add(idx + 2) = border_color[2];
-                                    *pixel_ptr.add(idx + 3) = 255;
-                                } else {
-                                    *pixel_ptr.add(idx) = bg_color[0];
-                                    *pixel_ptr.add(idx + 1) = bg_color[1];
-                                    *pixel_ptr.add(idx + 2) = bg_color[2];
-                                    *pixel_ptr.add(idx + 3) = 255;
-                                }
-                            }
-                        }
                     }
                 }
             }
 
-            // --- Text Rendering ---
-            SetBkMode(hdc_mem, TRANSPARENT);
-            SetTextColor(hdc_mem, COLORREF(0x004A3B5C));
+            // --- Text Rendering (v3: DirectWrite/Direct2D for Color Emoji) ---
+            let dwrite_factory: IDWriteFactory =
+                DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).unwrap();
+            let d2d_factory: ID2D1Factory =
+                D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).unwrap();
 
-            let font_size = (14.0 * scale) as i32;
-            let _ = self.font; // Silence unused warning if needed, or just remove
+            let font_size = 14.0 * scale;
+            let text_format = dwrite_factory
+                .CreateTextFormat(
+                    windows::core::w!("Segoe UI Emoji"),
+                    None,
+                    DWRITE_FONT_WEIGHT_BOLD,
+                    DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    font_size,
+                    windows::core::w!(""),
+                )
+                .unwrap();
 
-            use windows::core::PCWSTR;
-            let font_name: Vec<u16> = "SimSun".encode_utf16().chain(Some(0)).collect();
-            let temp_font = CreateFontW(
-                font_size,
-                0,
-                0,
-                0,
-                FW_BOLD.0 as i32,
-                0,
-                0,
-                0,
-                ANSI_CHARSET.0 as u32,
-                OUT_DEFAULT_PRECIS.0 as u32,
-                CLIP_DEFAULT_PRECIS.0 as u32,
-                NONANTIALIASED_QUALITY.0 as u32,
-                (DEFAULT_PITCH.0 | FF_SWISS.0) as u32,
-                PCWSTR(font_name.as_ptr()),
-            );
+            text_format
+                .SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)
+                .unwrap();
+            text_format
+                .SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)
+                .unwrap();
 
-            let old_font = SelectObject(hdc_mem, temp_font);
+            let props = D2D1_RENDER_TARGET_PROPERTIES {
+                r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                ..Default::default()
+            };
 
+            let dc_rt: ID2D1DCRenderTarget = d2d_factory.CreateDCRenderTarget(&props).unwrap();
+
+            // In windows-rs 0.52.0, ID2D1DCRenderTarget inherits from ID2D1RenderTarget methods.
+            // If CreateSolidColorBrush isn't found, try ID2D1DeviceContext or call it directly.
             let padding = (12.0 * scale) as i32;
-            let mut rect = RECT {
+            let rect_gdi = RECT {
                 left: padding,
                 top: padding,
                 right: width - padding,
                 bottom: main_h - padding,
             };
 
-            let mut wide_text: Vec<u16> = self.text.encode_utf16().chain(Some(0)).collect();
-            DrawTextW(hdc_mem, &mut wide_text, &mut rect, DT_CENTER | DT_WORDBREAK);
+            dc_rt.BindDC(HDC(hdc_mem.0), &rect_gdi).unwrap();
+
+            // Direct2D methods in windows-rs are sometimes provided via traits if not on the struct.
+            // But usually they are on the struct. Let's try to cast to ID2D1DeviceContext which is more robust.
+            if let Ok(rt) = dc_rt.cast::<ID2D1DeviceContext>() {
+                rt.BeginDraw();
+
+                let text_rect = D2D_RECT_F {
+                    left: 0.0,
+                    top: 0.0,
+                    right: (width - padding * 2) as f32,
+                    bottom: (main_h - padding * 2) as f32,
+                };
+
+                let brush = rt
+                    .CreateSolidColorBrush(
+                        &D2D1_COLOR_F {
+                            r: 74.0 / 255.0,
+                            g: 59.0 / 255.0,
+                            b: 92.0 / 255.0,
+                            a: 1.0,
+                        },
+                        None,
+                    )
+                    .unwrap();
+
+                let wide_text: Vec<u16> = self.text.encode_utf16().collect();
+                rt.DrawText(
+                    &wide_text,
+                    &text_format,
+                    &text_rect,
+                    &brush,
+                    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                );
+
+                rt.EndDraw(None, None).unwrap();
+            }
 
             GdiFlush();
 
-            // --- Alpha Fix ---
-            for i in 0..(w_usize * h_usize) {
-                let base = i * 4;
-                let b = *pixel_ptr.add(base);
-                let g = *pixel_ptr.add(base + 1);
-                let r = *pixel_ptr.add(base + 2);
-                if (b != 0 || g != 0 || r != 0) && *pixel_ptr.add(base + 3) == 0 {
-                    *pixel_ptr.add(base + 3) = 255;
-                }
-            }
-
+            // --- Copy out ---
             std::ptr::copy_nonoverlapping(pixel_ptr, buffer_ptr, w_usize * h_usize * 4);
 
             SelectObject(hdc_mem, old_bitmap);
-            SelectObject(hdc_mem, old_font);
-            let _ = DeleteObject(temp_font);
             let _ = DeleteObject(h_bitmap);
             let _ = DeleteDC(hdc_mem);
             ReleaseDC(HWND(0), hdc_screen);
