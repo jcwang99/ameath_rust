@@ -37,6 +37,8 @@ pub struct SpeechBubble {
     pub show_until: Option<Instant>,
     pub current_width: i32,
     pub current_height: i32,
+    // Add cache: (pixel_data, width, height, scale)
+    cached_bitmap: Option<(Vec<u8>, i32, i32, f32)>,
 }
 
 impl SpeechBubble {
@@ -46,11 +48,16 @@ impl SpeechBubble {
             show_until: None,
             current_width: BASE_BUBBLE_WIDTH,
             current_height: BASE_BUBBLE_HEIGHT,
+            cached_bitmap: None,
         }
     }
 
     pub fn show(&mut self, text: &str, duration: Duration, scale: f32) {
-        self.text = text.to_string();
+        if self.text != text {
+            self.text = text.to_string();
+            // Invalidate cache
+            self.cached_bitmap = None;
+        }
         self.show_until = Some(Instant::now() + duration);
         self.calculate_size(scale);
     }
@@ -58,6 +65,7 @@ impl SpeechBubble {
     fn calculate_size(&mut self, scale: f32) {
         #[cfg(target_os = "windows")]
         unsafe {
+            // ... (size calc remains the same, assuming it's fast enough for one-off) ...
             let hdc_screen = GetDC(HWND(0));
             let hdc_mem = CreateCompatibleDC(hdc_screen);
 
@@ -107,8 +115,17 @@ impl SpeechBubble {
             let calc_h =
                 (text_h + padding * 2 + tail_h).max((BASE_BUBBLE_HEIGHT as f32 * scale) as i32);
 
+            if self.current_width != calc_w || self.current_height != calc_h {
+                self.cached_bitmap = None; // Invalidate if size changed
+            }
             self.current_width = calc_w;
             self.current_height = calc_h;
+
+            // Allow cache to be rebuilt if size changed (though show() handles text change)
+            // But if only scale changed for same text, we need to invalidate too?
+            // Actually show() calls calculate_size every time show is called.
+            // If main loop calls show() repeatedly? No, main loop calls show() once.
+            // render_to_buffer is called repeatedly.
 
             SelectObject(hdc_mem, old_font);
             let _ = DeleteObject(temp_font);
@@ -126,6 +143,17 @@ impl SpeechBubble {
     }
 
     pub fn render_to_buffer(&mut self, buffer_ptr: *mut u8, scale: f32) {
+        // Check cache
+        if let Some((ref data, w, h, s)) = self.cached_bitmap {
+            if w == self.current_width && h == self.current_height && (s - scale).abs() < 0.001 {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(data.as_ptr(), buffer_ptr, data.len());
+                }
+                return;
+            }
+        }
+
+        // Render and cache
         #[cfg(target_os = "windows")]
         unsafe {
             let hdc_screen = GetDC(HWND(0));
@@ -304,8 +332,16 @@ impl SpeechBubble {
 
             GdiFlush();
 
-            // --- Copy out ---
-            std::ptr::copy_nonoverlapping(pixel_ptr, buffer_ptr, w_usize * h_usize * 4);
+            // --- Copy out to buffer AND Cache ---
+            let byte_count = w_usize * h_usize * 4;
+            std::ptr::copy_nonoverlapping(pixel_ptr, buffer_ptr, byte_count);
+
+            // Create Vector for cache
+            let mut cache_vec = Vec::with_capacity(byte_count);
+            cache_vec.set_len(byte_count);
+            std::ptr::copy_nonoverlapping(pixel_ptr, cache_vec.as_mut_ptr(), byte_count);
+
+            self.cached_bitmap = Some((cache_vec, width, height, scale));
 
             SelectObject(hdc_mem, old_bitmap);
             let _ = DeleteObject(h_bitmap);

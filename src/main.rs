@@ -2,6 +2,7 @@
 
 mod anim;
 mod bubble;
+mod chat_window;
 mod menu;
 mod music_player;
 mod pet;
@@ -10,6 +11,7 @@ mod render;
 mod settings_window;
 mod types;
 
+use chat_window::{ChatWindow, ChatAction};
 use settings_window::SettingsWindow;
 
 use pet::Pet;
@@ -46,6 +48,9 @@ fn main() {
     ];
     let move_frames_right = vec![anim::load_gif_processed("assets/gifs/move.gif")];
     let drag_frames_right = vec![anim::load_gif_processed("assets/gifs/drag.gif")];
+
+    // Load Loading GIF
+    let loading_frames = anim::load_gif_processed("assets/icons/loading.gif");
 
     // Helper to mirror variants
     let mirror_variants = |variants: &Vec<Vec<PreprocessedFrame>>| -> Vec<Vec<PreprocessedFrame>> {
@@ -121,6 +126,10 @@ fn main() {
 
     let mut pet = Pet::new(animation_map, (max_pw as f64, max_ph as f64));
     pet.state = PetState::Move;
+
+    let mut chat_window = ChatWindow::new(&event_loop);
+    let mut is_thinking = false;
+    let mut thinking_start: Option<Instant> = None;
 
     let window = Rc::new(
         WindowBuilder::new()
@@ -216,15 +225,51 @@ fn main() {
 
             match event {
                 Event::WindowEvent { event, window_id } => {
-                    if window_id == window.id() {
+                    if chat_window.id() == window_id {
+                         match chat_window.handle_event(&event) {
+                             ChatAction::Send(msg) => {
+                                 println!("User sent: {}", msg);
+                                 is_thinking = true;
+                                 thinking_start = Some(Instant::now());
+                                 window.request_redraw();
+                             }
+                             ChatAction::Close => {
+                                 window.request_redraw();
+                             }
+                             ChatAction::None => {}
+                        }
+                    } else if window_id == window.id() {
                         match event {
                             WindowEvent::CloseRequested => elwt.exit(),
                             WindowEvent::RedrawRequested => {
-                                let draw_scale = pet.scale.max(0.5); // Ensure safe scale
+                                let draw_scale = pet.scale.max(0.5);
                                 let (cur_pw, cur_ph) = pet.get_scaled_size();
-
-                                // Update Menu Layout
                                 menu_manager.update_layout(draw_scale);
+
+                                // Update Thinking State (Temporary Simulation)
+                                if is_thinking {
+                                    if let Some(start) = thinking_start {
+                                        if start.elapsed() > Duration::from_secs(3) {
+                                            is_thinking = false;
+                                            thinking_start = None;
+                                            bubble_manager.show("AI Response Simulation", Duration::from_secs(3), pet.scale);
+                                        }
+                                    }
+                                }
+
+                                // Calc Loading GIF dimensions
+                                let mut loading_w = 0;
+                                let mut loading_h = 0;
+                                if is_thinking && !loading_frames.is_empty() {
+                                    let frame_idx = (Instant::now().duration_since(thinking_start.unwrap_or(Instant::now())).as_millis() / 100) as usize % loading_frames.len();
+                                    let _frame = &loading_frames[frame_idx]; // Just need index for later maybe, or just validation
+
+                                    // Cap loading size to roughly 32x32 scaled
+                                    // We ignore original frame size and force scaling to 32x32 * draw_scale
+                                    let target_size = 32.0 * draw_scale;
+                                    loading_w = target_size as i32;
+                                    loading_h = target_size as i32;
+                                }
 
                                 // Recalculate scaled dimensions for bubble and pomodoro
                                 let current_bubble_w = bubble_manager.current_width;
@@ -281,15 +326,17 @@ fn main() {
 
                                 // Determine space needed above pet
                                 let padding_top = 40.0;
-                                let extras_h = if bubble_manager.is_visible() {
-                                    current_bubble_h as f64 + gap_between
-                                } else {
-                                    0.0
-                                } + if pomodoro_manager.visible {
-                                    current_pomodoro_h as f64 + gap_between
-                                } else {
-                                    0.0
-                                };
+                                let mut extras_h = 0.0;
+                                
+                                if bubble_manager.is_visible() {
+                                    extras_h += current_bubble_h as f64 + gap_between;
+                                }
+                                if pomodoro_manager.visible {
+                                    extras_h += current_pomodoro_h as f64 + gap_between;
+                                }
+                                if is_thinking {
+                                    extras_h += loading_h as f64 + gap_between;
+                                }
 
                                 pet_off_x = pet_x;
                                 pet_off_y = padding_top + extras_h;
@@ -311,7 +358,15 @@ fn main() {
                                     win_w, win_h,
                                 ));
 
-                                let bubble_y = if bubble_manager.is_visible() {
+                                let loading_y = if is_thinking {
+                                    pet_off_y - gap_between - loading_h as f64
+                                } else {
+                                    pet_off_y 
+                                };
+
+                                let bubble_y = if is_thinking {
+                                    loading_y - gap_between - current_bubble_h as f64
+                                } else if bubble_manager.is_visible() {
                                     pet_off_y - gap_between - current_bubble_h as f64
                                 } else {
                                     pet_off_y
@@ -319,6 +374,8 @@ fn main() {
 
                                 let pomodoro_y = if bubble_manager.is_visible() {
                                     bubble_y - gap_between - current_pomodoro_h as f64
+                                } else if is_thinking {
+                                    loading_y - gap_between - current_pomodoro_h as f64
                                 } else {
                                     pet_off_y - gap_between - current_pomodoro_h as f64
                                 };
@@ -328,6 +385,7 @@ fn main() {
                                 let px = (pet_off_x + p_left) as i32;
                                 let menu_x = (pet_off_x + cur_pw + gap_between) as i32;
                                 let menu_y = pet_off_y as i32;
+                                let loading_x = (pet_off_x + cur_pw/2.0 - loading_w as f64 / 2.0) as i32;
 
                                 let mut composite_data =
                                     vec![0u8; win_w as usize * win_h as usize * 4usize];
@@ -365,6 +423,49 @@ fn main() {
                                             }
                                         }
                                     }
+                                }
+
+                                // 1.5 Draw Loading
+                                if is_thinking && !loading_frames.is_empty() {
+                                     let frame_idx = (Instant::now().duration_since(thinking_start.unwrap_or(Instant::now())).as_millis() / 100) as usize % loading_frames.len();
+                                     let frame = &loading_frames[frame_idx];
+                                     
+                                     // Render scaled
+                                     let ly = loading_y as i32;
+                                     if ly >= 0 && loading_w > 0 && loading_h > 0 {
+                                         // Calculate scale ratios
+                                         let scale_x = frame.width as f32 / loading_w as f32;
+                                         let scale_y = frame.height as f32 / loading_h as f32;
+
+                                         for y in 0..loading_h as usize {
+                                             for x in 0..loading_w as usize {
+                                                  // Sample from source using ratios
+                                                 let src_x = (x as f32 * scale_x) as u32;
+                                                 let src_y = (y as f32 * scale_y) as u32;
+                                                 
+                                                 if src_x >= frame.width as u32 || src_y >= frame.height as u32 { continue; }
+                                                 
+                                                 let src_idx = (src_y as usize * frame.width as usize + src_x as usize) * 4;
+                                                 let dest_x_i32 = loading_x + x as i32;
+                                                 let dest_y_i32 = ly + y as i32;
+                                                 
+                                                  if dest_x_i32 >= 0 && dest_x_i32 < win_w as i32 && dest_y_i32 >= 0 && dest_y_i32 < win_h as i32 {
+                                                     let dest_x = dest_x_i32 as usize;
+                                                     let dest_y = dest_y_i32 as usize;
+                                                     let dest_idx = (dest_y * win_w as usize + dest_x) * 4;
+                                                     let alpha = frame.data[src_idx + 3];
+                                                     if alpha > 0 {
+                                                         composite_data[dest_idx] = frame.data[src_idx];
+                                                         composite_data[dest_idx + 1] = frame.data[src_idx + 1];
+                                                         composite_data[dest_idx + 2] = frame.data[src_idx + 2];
+                                                         // Use u16 to prevent overflow when adding alpha
+                                                         let new_alpha = composite_data[dest_idx + 3] as u16 + alpha as u16;
+                                                         composite_data[dest_idx + 3] = new_alpha.min(255) as u8;
+                                                     }
+                                                  }
+                                             }
+                                         }
+                                     }
                                 }
 
                                 // 2. Draw Bubble
@@ -532,7 +633,7 @@ fn main() {
                                                 // Single Click handling for Menu
                                                 if menu_manager.visible {
                                                     if let Some(pos) = last_cursor_pos {
-                                                        let (cur_pw, _cur_ph) =
+                                                        let (cur_pw, cur_ph) =
                                                             pet.get_scaled_size();
                                                         let menu_x =
                                                             (pet_off_x + cur_pw + 10.0) as i32;
@@ -543,11 +644,25 @@ fn main() {
                                                         {
                                                             match action.as_str() {
                                                                 "chat" => {
-                                                                    bubble_manager.show(
-                                                                        "AI 对话功能即将上线！🤖",
-                                                                        Duration::from_secs(3),
-                                                                        pet.scale,
-                                                                    );
+                                                                    // Center on screen
+                                                                    if let Some(monitor) = window.current_monitor() {
+                                                                        let m_size = monitor.size();
+                                                                        let m_pos = monitor.position();
+                                                                        
+                                                                        let chat_w = 300.0;
+                                                                        let chat_h = 60.0;
+                                                                        
+                                                                        // Calculate center of the monitor
+                                                                        let center_x = m_pos.x as f64 + (m_size.width as f64 / 2.0) - (chat_w / 2.0);
+                                                                        let center_y = m_pos.y as f64 + (m_size.height as f64 / 2.0) - (chat_h / 2.0);
+                                                                        
+                                                                        chat_window.show(winit::dpi::LogicalPosition::new(center_x, center_y));
+                                                                    } else if let Ok(win_pos) = window.outer_position() {
+                                                                         // Fallback near pet if no monitor found
+                                                                         let chat_x = win_pos.x as f64 + pet_off_x;
+                                                                         let chat_y = win_pos.y as f64 + pet_off_y + cur_ph + 10.0;
+                                                                         chat_window.show(winit::dpi::LogicalPosition::new(chat_x, chat_y));
+                                                                    }
                                                                 }
                                                                 "settings" => {
                                                                     if settings_win.is_none() {
