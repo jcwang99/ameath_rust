@@ -83,10 +83,6 @@ impl ChatWindow {
         self.is_visible = false;
     }
 
-    pub fn is_visible(&self) -> bool {
-        self.is_visible
-    }
-
     pub fn request_redraw(&self) {
         if self.is_visible {
             self.window.request_redraw();

@@ -646,15 +646,22 @@ fn main() {
                                                                 "chat" => {
                                                                     // Center on screen
                                                                     if let Some(monitor) = window.current_monitor() {
+                                                                        let scale_factor = monitor.scale_factor();
                                                                         let m_size = monitor.size();
                                                                         let m_pos = monitor.position();
                                                                         
                                                                         let chat_w = 300.0;
                                                                         let chat_h = 60.0;
                                                                         
-                                                                        // Calculate center of the monitor
-                                                                        let center_x = m_pos.x as f64 + (m_size.width as f64 / 2.0) - (chat_w / 2.0);
-                                                                        let center_y = m_pos.y as f64 + (m_size.height as f64 / 2.0) - (chat_h / 2.0);
+                                                                        // Convert monitor physical dimensions to logical
+                                                                        let m_w_logical = m_size.width as f64 / scale_factor;
+                                                                        let m_h_logical = m_size.height as f64 / scale_factor;
+                                                                        let m_x_logical = m_pos.x as f64 / scale_factor;
+                                                                        let m_y_logical = m_pos.y as f64 / scale_factor;
+
+                                                                        // Calculate center of the monitor in logical coordinates
+                                                                        let center_x = m_x_logical + (m_w_logical / 2.0) - (chat_w / 2.0);
+                                                                        let center_y = m_y_logical + (m_h_logical / 2.0) - (chat_h / 2.0);
                                                                         
                                                                         chat_window.show(winit::dpi::LogicalPosition::new(center_x, center_y));
                                                                     } else if let Ok(win_pos) = window.outer_position() {
