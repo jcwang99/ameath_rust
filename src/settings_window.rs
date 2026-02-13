@@ -16,18 +16,16 @@ pub struct SettingsWindow {
     show_api_key: bool,
     pub history: Vec<(String, String)>,
     pub scroll_offset: f32,
-    pub expanded_history_index: Option<usize>,
+    pub history_scroll_states: Vec<f32>, // Per-item scroll offset
     pub content_height: f32,
     pub viewport_height: f32,
-    pub expanded_scroll_offset: f32,
-    pub active_expanded_rect: Option<(f64, f64, f64, f64)>, // lx_min, ly_min, lx_max, ly_max
-    pub active_expanded_content_height: f32,
+
     pub system_prompt_scroll_offset: f32,
-    pub active_sys_prompt_rect: Option<(f64, f64, f64, f64)>,
+    pub active_sys_prompt_rect: Option<(f64, f64, f64, f64)>, // lx_min, ly_min, lx_max, ly_max
     pub active_sys_prompt_content_height: f32,
     pub available_monitors: Vec<(String, String)>,
     pub current_monitor_name: Option<String>,
-    pub history_item_rects: Vec<(f64, f64, f64, f64)>, // Logical rects: x, y, w, h (or y_start, y_end)
+    pub history_item_rects: Vec<(f64, f64, f64, f64)>, // Logical rects: x, y, w, h
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -73,7 +71,7 @@ impl SettingsWindow {
                     self.current_tab = i;
                     self.focused_field = None;
                     self.scroll_offset = 0.0;
-                    self.expanded_scroll_offset = 0.0;
+                    self.scroll_offset = 0.0;
                     self.window.request_redraw();
                     if i == 3 {
                         return SettingsAction::RequestHistory;
@@ -94,19 +92,16 @@ impl SettingsWindow {
             if lx > 0.0 && ly > 140.0 {
                 // Use cached logical rects from Redraw (Guaranteed to be full list now)
                 if self.history_item_rects.len() == self.history.len() {
-                    for (i, (_x, ly_start, _w, ly_end)) in
+                    for (_i, (_x, ly_start, _w, ly_end)) in
                         self.history_item_rects.iter().enumerate()
                     {
                         let y_start = *ly_start + self.scroll_offset as f64 / scale;
                         let y_end = *ly_end + self.scroll_offset as f64 / scale;
 
                         if ly >= y_start && ly <= y_end {
-                            if self.expanded_history_index == Some(i) {
-                                self.expanded_history_index = None;
-                            } else {
-                                self.expanded_history_index = Some(i);
-                            }
-                            self.window.request_redraw();
+                            // Clicked history item i
+                            // No action needed for fixed cards currently
+                            // Maybe future: copy to clipboard?
                             return SettingsAction::None;
                         }
                     }
@@ -315,12 +310,10 @@ impl SettingsWindow {
             show_api_key: false,
             history: Vec::new(),
             scroll_offset: 0.0,
-            expanded_history_index: None,
+            history_scroll_states: Vec::new(),
             content_height: 0.0,
             viewport_height: 0.0,
-            expanded_scroll_offset: 0.0,
-            active_expanded_rect: None,
-            active_expanded_content_height: 0.0,
+
             system_prompt_scroll_offset: 0.0,
             active_sys_prompt_rect: None,
             active_sys_prompt_content_height: 0.0,
@@ -477,19 +470,26 @@ impl SettingsWindow {
     fn draw_rect(
         buffer: &mut [u32],
         surface_w: u32,
-        x: u32,
-        y: u32,
+        x: i32,
+        y: i32,
         width: u32,
         height: u32,
         color: u32,
         max_w: u32,
         max_h: u32,
     ) {
-        let max_y = (y + height).min(max_h);
-        let max_x = (x + width).min(max_w);
-        for cy in y..max_y {
-            for cx in x..max_x {
-                let idx = (cy * surface_w + cx) as usize;
+        let start_x = x.max(0);
+        let start_y = y.max(0);
+        let max_x = (x + width as i32).min(max_w as i32);
+        let max_y = (y + height as i32).min(max_h as i32);
+
+        if start_x >= max_x || start_y >= max_y {
+            return;
+        }
+
+        for cy in start_y..max_y {
+            for cx in start_x..max_x {
+                let idx = (cy * surface_w as i32 + cx) as usize;
                 if idx < buffer.len() {
                     buffer[idx] = color;
                 }
@@ -500,8 +500,8 @@ impl SettingsWindow {
     fn draw_rounded_rect(
         buffer: &mut [u32],
         surface_w: u32,
-        x: u32,
-        y: u32,
+        x: i32,
+        y: i32,
         width: u32,
         height: u32,
         radius: u32,
@@ -509,31 +509,41 @@ impl SettingsWindow {
         max_w: u32,
         max_h: u32,
     ) {
-        let max_y = (y + height).min(max_h);
-        let max_x = (x + width).min(max_w);
-        let r_sq = (radius * radius) as i32;
+        let start_x = x.max(0);
+        let start_y = y.max(0);
+        let max_x = (x + width as i32).min(max_w as i32);
+        let max_y = (y + height as i32).min(max_h as i32);
 
-        for cy in y..max_y {
-            for cx in x..max_x {
+        if start_x >= max_x || start_y >= max_y {
+            return;
+        }
+
+        let r_i32 = radius as i32;
+        let w_i32 = width as i32;
+        let h_i32 = height as i32;
+        let r_sq = r_i32 * r_i32;
+
+        for cy in start_y..max_y {
+            for cx in start_x..max_x {
                 let mut in_corner = false;
                 let mut dx = 0;
                 let mut dy = 0;
 
-                if cx < x + radius && cy < y + radius {
-                    dx = (x + radius) as i32 - cx as i32;
-                    dy = (y + radius) as i32 - cy as i32;
+                if cx < x + r_i32 && cy < y + r_i32 {
+                    dx = (x + r_i32) - cx;
+                    dy = (y + r_i32) - cy;
                     in_corner = true;
-                } else if cx >= x + width - radius && cy < y + radius {
-                    dx = cx as i32 - (x + width - radius) as i32;
-                    dy = (y + radius) as i32 - cy as i32;
+                } else if cx >= x + w_i32 - r_i32 && cy < y + r_i32 {
+                    dx = cx - (x + w_i32 - r_i32);
+                    dy = (y + r_i32) - cy;
                     in_corner = true;
-                } else if cx < x + radius && cy >= y + height - radius {
-                    dx = (x + radius) as i32 - cx as i32;
-                    dy = cy as i32 - (y + height - radius) as i32;
+                } else if cx < x + r_i32 && cy >= y + h_i32 - r_i32 {
+                    dx = (x + r_i32) - cx;
+                    dy = cy - (y + h_i32 - r_i32);
                     in_corner = true;
-                } else if cx >= x + width - radius && cy >= y + height - radius {
-                    dx = cx as i32 - (x + width - radius) as i32;
-                    dy = cy as i32 - (y + height - radius) as i32;
+                } else if cx >= x + w_i32 - r_i32 && cy >= y + h_i32 - r_i32 {
+                    dx = cx - (x + w_i32 - r_i32);
+                    dy = cy - (y + h_i32 - r_i32);
                     in_corner = true;
                 }
 
@@ -541,7 +551,7 @@ impl SettingsWindow {
                     continue;
                 }
 
-                let idx = (cy * surface_w + cx) as usize;
+                let idx = (cy * surface_w as i32 + cx) as usize;
                 if idx < buffer.len() {
                     buffer[idx] = color;
                 }
@@ -554,8 +564,8 @@ impl SettingsWindow {
         surface_w: u32,
         font: &Font,
         text: &str,
-        x: u32,
-        y: u32,
+        x: i32,
+        y: i32,
         scale: f32,
         color: u32,
     ) {
@@ -570,9 +580,12 @@ impl SettingsWindow {
         for glyph in font.layout(text, scale, point(x as f32, y as f32 + v_metrics.ascent)) {
             if let Some(bounding_box) = glyph.pixel_bounding_box() {
                 glyph.draw(|gx, gy, v| {
-                    let px = gx + bounding_box.min.x as u32;
-                    let py = gy + bounding_box.min.y as u32;
-                    if px < surface_w {
+                    let px_i = gx as i32 + bounding_box.min.x;
+                    let py_i = gy as i32 + bounding_box.min.y;
+
+                    if px_i >= 0 && px_i < surface_w as i32 && py_i >= 0 {
+                        let px = px_i as u32;
+                        let py = py_i as u32;
                         let idx = (py * surface_w + px) as usize;
                         if idx < buffer.len() {
                             let alpha = v;
@@ -636,8 +649,8 @@ impl SettingsWindow {
                 Self::draw_rect(
                     &mut buffer,
                     w,
-                    off_x as u32,
-                    off_y as u32,
+                    off_x as i32,
+                    off_y as i32,
                     sb_w,
                     (750.0 * scale) as u32,
                     0xFFFFFFFF,
@@ -651,8 +664,8 @@ impl SettingsWindow {
                         w,
                         font,
                         "Ame",
-                        s(40),
-                        sy_val(40),
+                        s(40) as i32,
+                        sy_val(40) as i32,
                         sc(32.0),
                         primary,
                     );
@@ -661,13 +674,22 @@ impl SettingsWindow {
                         let my = sy_val(160 + i as u32 * 70);
                         let is_active = i == self.current_tab;
                         let col = if is_active { primary } else { text_sec };
-                        Self::draw_text(&mut buffer, w, font, item, s(40), my, sc(20.0), col);
+                        Self::draw_text(
+                            &mut buffer,
+                            w,
+                            font,
+                            item,
+                            s(40) as i32,
+                            my as i32,
+                            sc(20.0),
+                            col,
+                        );
                         if is_active {
                             Self::draw_rounded_rect(
                                 &mut buffer,
                                 w,
-                                (off_x) as u32,
-                                my - sc(8.0) as u32,
+                                (off_x) as i32,
+                                (my as i32 - sc(8.0) as i32),
                                 sc(6.0) as u32,
                                 sc(36.0) as u32,
                                 sc(3.0) as u32,
@@ -690,240 +712,162 @@ impl SettingsWindow {
                         let mut calculated_content_height = 0.0;
 
                         // Reset geometry fields
-                        self.active_expanded_rect = None;
-                        self.active_expanded_content_height = 0.0;
+                        // Reset geometry fields
                         self.history_item_rects.clear();
 
+                        // Resize scroll states if needed
+                        if self.history_scroll_states.len() != self.history.len() {
+                            self.history_scroll_states.resize(self.history.len(), 0.0);
+                        }
+
+                        let item_h_fixed = sc(180.0);
+
                         for (i, (role, content)) in self.history.iter().enumerate() {
-                            if i == 0 {
-                                println!(
-                                    "History Redraw Index 0: ScreenY={}, Scroll={}",
-                                    current_y, self.scroll_offset
-                                );
-                            }
-                            let is_expanded = self.expanded_history_index == Some(i);
-
-                            // Calculate display content and height
-                            let (display_content, item_h, full_content_h) = if is_expanded {
-                                let max_width = sc(460.0) as u32; // Reduced further to ensure gap
-                                let lines = wrap_text(
-                                    content,
-                                    font,
-                                    rusttype::Scale::uniform(sc(16.0)),
-                                    max_width,
-                                );
-                                // Do not join and re-split. Keep lines.
-                                let line_count = lines.len();
-                                let full_h = sc(40.0) + (line_count as f32 * sc(20.0));
-                                // Clamp visual height
-                                let max_h = sc(400.0); // Max height for expanded item
-                                let h = full_h.min(max_h);
-                                (lines, h, full_h)
-                            } else {
-                                // Summary: Wrap to 1 line or truncate properly
-                                // For now, simple char limit + clip
-                                let summary = if content.chars().count() > 50 {
-                                    let substr: String = content.chars().take(47).collect();
-                                    format!("{}...", substr.replace("\n", " "))
-                                } else {
-                                    content.replace("\n", " ")
-                                };
-                                (vec![summary], sc(60.0), sc(60.0))
-                            };
-
-                            // Store Logical Rect for click handling
-                            let logical_y = 140.0 + (calculated_content_height / scale);
-                            let logical_h = item_h / scale;
+                            // Store Logical Rect (Simple fixed height)
+                            let logical_y = 140.0 + (i as f64 * 190.0); // 180 + 10 gap
+                            let logical_h = 180.0;
 
                             self.history_item_rects.push((
                                 230.0,
-                                logical_y as f64,
+                                logical_y,
                                 730.0,
-                                (logical_y + logical_h) as f64,
+                                logical_y + logical_h,
                             ));
 
                             let y_pos = current_y;
-                            calculated_content_height += item_h;
-                            current_y += item_h;
+                            calculated_content_height += item_h_fixed + sc(10.0); // + gap
+                            current_y += item_h_fixed + sc(10.0);
 
                             // Screen Bounds for Culling
-                            let min_y = sy_val(120) as f32; // Header bottom approx
+                            let min_y = sy_val(120) as f32;
                             let max_y = h as f32;
 
-                            if (y_pos + item_h) < min_y || y_pos > max_y {
+                            if (y_pos + item_h_fixed) < min_y || y_pos > max_y {
                                 continue;
                             }
-                            // println!("Drawing item {}: y_pos={}, item_h={}", i, y_pos, item_h);
 
-                            // Safe Cast Coordinates
                             let y_pos_i = y_pos as i32;
 
+                            // Draw Card Background
+                            Self::draw_rounded_rect(
+                                &mut buffer,
+                                w,
+                                s(230) as i32,
+                                y_pos_i,
+                                s(490),
+                                item_h_fixed as u32,
+                                8,
+                                0xFFFFFFFF, // White card
+                                w,
+                                h,
+                            );
+
                             // Draw Role Label
-                            if y_pos_i + sc(20.0) as i32 > min_y as i32 {
-                                // Don't draw label if pushed too far up?
-                                // Better: if y_pos < header, don't draw?
-                                // Let's just draw if within bounds. Text drawing clips internally now? No, settings_window doesn't.
-                                // We need manual clipping.
-
-                                let role_col = if role == "user" {
-                                    0x00007ACC
-                                } else {
-                                    0x002E8B57
-                                };
-
-                                if y_pos_i + sc(14.0) as i32 > min_y as i32 && y_pos_i < h as i32 {
-                                    Self::draw_text(
-                                        &mut buffer,
-                                        w,
-                                        font,
-                                        role,
-                                        s(230),
-                                        y_pos_i as u32,
-                                        sc(14.0),
-                                        role_col,
-                                    );
-                                }
-                            }
-
-                            if is_expanded {
-                                // Draw multiline with internal scrolling
-
-                                // Store geometry for mouse handling (LOGICAL coords)
-                                let logical_y_rel = (y_pos - start_y as f32) / scale;
-                                let item_logical_y = 140.0 + logical_y_rel;
-                                let item_logical_h = item_h / scale;
-
-                                self.active_expanded_rect = Some((
-                                    230.0,
-                                    item_logical_y as f64,
-                                    730.0,
-                                    (item_logical_y + item_logical_h) as f64,
-                                ));
-                                self.active_expanded_content_height = full_content_h / scale;
-
-                                // Clip drawing bounds
-                                let start_text_raw = y_pos + sc(20.0);
-                                let end_text_raw = y_pos + item_h;
-
-                                for (li, line) in display_content.iter().enumerate() {
-                                    let line_offset = li as f32 * sc(20.0);
-                                    let draw_y_f = start_text_raw
-                                        + line_offset
-                                        + (self.expanded_scroll_offset * scale);
-
-                                    // 1. Clip against item box (internal scroll)
-                                    if draw_y_f < start_text_raw - sc(5.0) {
-                                        continue;
-                                    }
-                                    if draw_y_f > end_text_raw - sc(20.0) {
-                                        break;
-                                    }
-
-                                    // 2. Clip against screen (global scroll)
-                                    if draw_y_f < 0.0 {
-                                        continue;
-                                    }
-                                    if draw_y_f > h as f32 {
-                                        break;
-                                    }
-
-                                    Self::draw_text(
-                                        &mut buffer,
-                                        w,
-                                        font,
-                                        line,
-                                        s(230),
-                                        draw_y_f as u32,
-                                        sc(16.0),
-                                        text_main,
-                                    );
-                                }
-
-                                // Draw Scrollbar for expanded item if needed
-                                if item_h < full_content_h {
-                                    let sb_w = sc(4.0) as u32;
-                                    let sb_h = (item_h - sc(10.0)).max(0.0) as u32;
-                                    let sb_x = s(230 + 490);
-                                    let sb_y_raw = y_pos_i + sc(5.0) as i32;
-
-                                    // Clip scrollbar distinct from text
-                                    if sb_y_raw + sb_h as i32 > 0 && sb_y_raw < h as i32 {
-                                        let sb_draw_y = sb_y_raw.max(0) as u32;
-                                        let hidden = if sb_y_raw < 0 { -sb_y_raw } else { 0 };
-                                        let visible_sb_h = (sb_h as i32 - hidden).max(0) as u32;
-
-                                        // Background
-                                        Self::draw_rect(
-                                            &mut buffer,
-                                            w,
-                                            sb_x,
-                                            sb_draw_y,
-                                            sb_w,
-                                            visible_sb_h,
-                                            0x00E3E5E7,
-                                            w,
-                                            h,
-                                        );
-
-                                        // Handle
-                                        let ratio = item_h / full_content_h;
-                                        let handle_h = (sb_h as f32 * ratio).max(sc(20.0));
-                                        let max_scroll = -(full_content_h - item_h);
-                                        let progress = if max_scroll.abs() < 1.0 {
-                                            0.0
-                                        } else {
-                                            self.expanded_scroll_offset * scale / max_scroll
-                                        };
-                                        let handle_y_rel = (sb_h as f32 - handle_h) * progress;
-                                        let handle_y_raw = sb_y_raw as f32 + handle_y_rel;
-
-                                        // Clip handle
-                                        if handle_y_raw + handle_h > 0.0 && handle_y_raw < h as f32
-                                        {
-                                            Self::draw_rect(
-                                                &mut buffer,
-                                                w,
-                                                sb_x,
-                                                handle_y_raw.max(0.0) as u32,
-                                                sb_w,
-                                                handle_h as u32, // Simplified clipping for handle height
-                                                0x00A0A0A0,
-                                                w,
-                                                h,
-                                            );
-                                        }
-                                    }
-                                }
+                            let role_col = if role == "user" {
+                                0x00007ACC
                             } else {
-                                // Collapsed: Draw Summary
-                                // Use i32 coordinates
-                                let text_y_raw = y_pos_i + sc(20.0) as i32;
-                                if text_y_raw > 0 && text_y_raw < h as i32 {
-                                    Self::draw_text(
-                                        &mut buffer,
-                                        w,
-                                        font,
-                                        &display_content[0],
-                                        s(230),
-                                        text_y_raw as u32,
-                                        sc(16.0),
-                                        text_main,
-                                    );
+                                0x002E8B57
+                            };
+                            Self::draw_text(
+                                &mut buffer,
+                                w,
+                                font,
+                                role,
+                                s(240) as i32,
+                                y_pos_i + sc(10.0) as i32,
+                                sc(14.0),
+                                role_col,
+                            );
+
+                            // Draw Content with Internal Scroll
+                            let max_width = sc(450.0) as u32; // Allow space for scrollbar
+                            let lines = wrap_text(
+                                content,
+                                font,
+                                rusttype::Scale::uniform(sc(16.0)),
+                                max_width,
+                            );
+                            let full_content_h = (lines.len() as f32 * sc(20.0)).max(sc(20.0));
+                            let view_h = item_h_fixed - sc(40.0); // - top label/padding
+
+                            let scroll = self.history_scroll_states[i];
+                            let start_text_y = y_pos + sc(35.0);
+                            let end_text_y = y_pos + item_h_fixed - sc(10.0);
+
+                            for (li, line) in lines.iter().enumerate() {
+                                let line_y =
+                                    start_text_y + (li as f32 * sc(20.0)) + (scroll * scale);
+
+                                // Clip to card content area
+                                if line_y < start_text_y - sc(5.0) {
+                                    continue;
                                 }
+                                if line_y > end_text_y - sc(15.0) {
+                                    break;
+                                }
+
+                                // Clip to screen
+                                if line_y < 0.0 || line_y > h as f32 {
+                                    continue;
+                                }
+
+                                Self::draw_text(
+                                    &mut buffer,
+                                    w,
+                                    font,
+                                    line,
+                                    s(240) as i32,
+                                    line_y as i32,
+                                    sc(16.0),
+                                    text_main,
+                                );
                             }
 
-                            // Divider (Skip for last item)
-                            if i < self.history.len() - 1 {
-                                let div_y_raw = y_pos_i + item_h as i32 - 1;
-                                if div_y_raw > 0 && div_y_raw < h as i32 {
+                            // Draw Scrollbar if needed
+                            if full_content_h > view_h {
+                                let sb_w = sc(4.0) as u32;
+                                let sb_h = view_h;
+                                let sb_x = s(230 + 480);
+                                let sb_y_raw = start_text_y;
+
+                                // Clip scrollbar container
+                                if sb_y_raw + sb_h > 0.0 && sb_y_raw < h as f32 {
+                                    // Draw track
+                                    // Draw track
                                     Self::draw_rect(
                                         &mut buffer,
                                         w,
-                                        s(230),
-                                        div_y_raw as u32,
-                                        (480.0 * scale) as u32,
-                                        1,
+                                        sb_x as i32,
+                                        sb_y_raw as i32,
+                                        sb_w,
+                                        sb_h as u32,
                                         0x00E3E5E7,
+                                        w,
+                                        h,
+                                    );
+
+                                    // Handle
+                                    let ratio = view_h / full_content_h;
+                                    let handle_h = (view_h * ratio).max(sc(20.0));
+                                    let max_scroll = -(full_content_h - view_h);
+                                    let progress = if max_scroll.abs() < 1.0 {
+                                        0.0
+                                    } else {
+                                        scroll * scale / max_scroll
+                                    };
+                                    // scroll is negative, max_scroll is negative. progress 0..1
+
+                                    let handle_y_rel = (view_h - handle_h) * progress;
+                                    let handle_y = sb_y_raw + handle_y_rel;
+
+                                    Self::draw_rect(
+                                        &mut buffer,
+                                        w,
+                                        sb_x as i32,
+                                        handle_y as i32,
+                                        sb_w,
+                                        handle_h as u32,
+                                        0x00A0A0A0,
                                         w,
                                         h,
                                     );
@@ -939,12 +883,12 @@ impl SettingsWindow {
                     // --- General Tab ---
                     let scroll_y = self.scroll_offset;
                     let card_w = (560.0 * scale) as u32;
-                    let card1_y = (sy_val(120) as f32 + scroll_y) as u32;
+                    let card1_y = (sy_val(120) as f32 + scroll_y) as i32;
 
                     Self::draw_rounded_rect(
                         &mut buffer,
                         w,
-                        s(210),
+                        s(210) as i32,
                         card1_y,
                         card_w,
                         (140.0 * scale) as u32,
@@ -959,8 +903,8 @@ impl SettingsWindow {
                             w,
                             font,
                             "Pet Scale",
-                            s(230),
-                            card1_y + sc(20.0) as u32,
+                            s(230) as i32,
+                            card1_y + sc(20.0) as i32,
                             sc(18.0),
                             text_main,
                         );
@@ -968,8 +912,8 @@ impl SettingsWindow {
                     let scales = vec![0.5, 0.75, 1.0, 1.25, 1.5];
                     let labels = vec!["0.5x", "0.75x", "1.0x", "1.25x", "1.5x"];
                     for (i, &val) in scales.iter().enumerate() {
-                        let mx = s(220 + i as u32 * 85);
-                        let my = card1_y + sc(60.0) as u32;
+                        let mx = s(220 + i as u32 * 85) as i32;
+                        let my = card1_y + sc(60.0) as i32;
                         let is_active = (current_scale - val).abs() < 0.01;
                         let bg_col = if is_active { primary } else { 0x00F1F2F3 };
                         let text_col = if is_active { 0x00FFFFFF } else { text_main };
@@ -991,19 +935,19 @@ impl SettingsWindow {
                                 w,
                                 font,
                                 labels[i],
-                                mx + sc(12.0) as u32,
-                                my + sc(12.0) as u32,
+                                mx + sc(12.0) as i32,
+                                my + sc(12.0) as i32,
                                 sc(14.0),
                                 text_col,
                             );
                         }
                     }
 
-                    let card2_y = (sy_val(280) as f32 + scroll_y) as u32;
+                    let card2_y = (sy_val(280) as f32 + scroll_y) as i32;
                     Self::draw_rounded_rect(
                         &mut buffer,
                         w,
-                        s(210),
+                        s(210) as i32,
                         card2_y,
                         card_w,
                         (140.0 * scale) as u32,
@@ -1018,15 +962,15 @@ impl SettingsWindow {
                             w,
                             font,
                             "Behavior Mode",
-                            s(230),
-                            card2_y + sc(20.0) as u32,
+                            s(230) as i32,
+                            card2_y + sc(20.0) as i32,
                             sc(18.0),
                             text_main,
                         );
                         let modes = vec!["Quiet", "Active", "Clingy"];
                         for (i, mode) in modes.iter().enumerate() {
-                            let mx = s(230 + i as u32 * 165);
-                            let my = card2_y + sc(60.0) as u32;
+                            let mx = s(230 + i as u32 * 165) as i32;
+                            let my = card2_y + sc(60.0) as i32;
                             let is_active = *mode == current_mode;
                             let b_col = if is_active { primary } else { 0x00E3E5E7 };
                             Self::draw_rounded_rect(
@@ -1057,7 +1001,7 @@ impl SettingsWindow {
                                 Self::draw_rounded_rect(
                                     &mut buffer,
                                     w,
-                                    mx + sc(125.0) as u32,
+                                    mx + sc(125.0) as i32,
                                     my + 6,
                                     14,
                                     14,
@@ -1072,19 +1016,19 @@ impl SettingsWindow {
                                 w,
                                 font,
                                 mode,
-                                mx + sc(25.0) as u32,
-                                my + sc(18.0) as u32,
+                                mx + sc(25.0) as i32,
+                                my + sc(18.0) as i32,
                                 sc(15.0),
                                 if is_active { primary } else { text_sec },
                             );
                         }
                     }
 
-                    let card3_y = (sy_val(440) as f32 + scroll_y) as u32;
+                    let card3_y = (sy_val(440) as f32 + scroll_y) as i32;
                     Self::draw_rounded_rect(
                         &mut buffer,
                         w,
-                        s(210),
+                        s(210) as i32,
                         card3_y,
                         card_w,
                         (140.0 * scale) as u32,
@@ -1099,16 +1043,16 @@ impl SettingsWindow {
                             w,
                             font,
                             "Music Directory",
-                            s(230),
-                            card3_y + sc(20.0) as u32,
+                            s(230) as i32,
+                            card3_y + sc(20.0) as i32,
                             sc(18.0),
                             text_main,
                         );
-                        let p_btn_y = card3_y + sc(60.0) as u32;
+                        let p_btn_y = card3_y + sc(60.0) as i32;
                         Self::draw_rounded_rect(
                             &mut buffer,
                             w,
-                            s(230),
+                            s(230) as i32,
                             p_btn_y,
                             sc(500.0) as u32,
                             sc(45.0) as u32,
@@ -1120,7 +1064,7 @@ impl SettingsWindow {
                         Self::draw_rounded_rect(
                             &mut buffer,
                             w,
-                            s(230) + 1,
+                            s(230) as i32 + 1,
                             p_btn_y + 1,
                             sc(500.0) as u32 - 2,
                             sc(45.0) as u32 - 2,
@@ -1137,18 +1081,18 @@ impl SettingsWindow {
                             w,
                             font,
                             &path,
-                            s(245),
-                            p_btn_y + sc(12.0) as u32,
+                            s(245) as i32,
+                            p_btn_y + sc(12.0) as i32,
                             sc(14.0),
                             text_sec,
                         );
                     }
 
-                    let card4_y = (sy_val(600) as f32 + scroll_y) as u32;
+                    let card4_y = (sy_val(600) as f32 + scroll_y) as i32;
                     Self::draw_rounded_rect(
                         &mut buffer,
                         w,
-                        s(210),
+                        s(210) as i32,
                         card4_y,
                         card_w,
                         (140.0 * scale) as u32,
@@ -1163,8 +1107,8 @@ impl SettingsWindow {
                             w,
                             font,
                             "Window Layer",
-                            s(230),
-                            card4_y + sc(20.0) as u32,
+                            s(230) as i32,
+                            card4_y + sc(20.0) as i32,
                             sc(18.0),
                             text_main,
                         );
@@ -1173,8 +1117,8 @@ impl SettingsWindow {
                             ("Desktop", crate::types::WindowLayer::Bottom),
                         ];
                         for (i, (label, layer)) in layers.iter().enumerate() {
-                            let mx = s(230 + i as u32 * 165);
-                            let my = card4_y + sc(60.0) as u32;
+                            let mx = s(230 + i as u32 * 165) as i32;
+                            let my = card4_y + sc(60.0) as i32;
                             let is_active = *layer == current_layer;
                             let b_col = if is_active { primary } else { 0x00E3E5E7 };
                             Self::draw_rounded_rect(
@@ -1205,7 +1149,7 @@ impl SettingsWindow {
                                 Self::draw_rounded_rect(
                                     &mut buffer,
                                     w,
-                                    mx + sc(125.0) as u32,
+                                    mx + sc(125.0) as i32,
                                     my + 6,
                                     14,
                                     14,
@@ -1220,8 +1164,8 @@ impl SettingsWindow {
                                 w,
                                 font,
                                 label,
-                                mx + sc(20.0) as u32,
-                                my + sc(18.0) as u32,
+                                mx + sc(20.0) as i32,
+                                my + sc(18.0) as i32,
                                 sc(15.0),
                                 if is_active { primary } else { text_sec },
                             );
@@ -1229,7 +1173,7 @@ impl SettingsWindow {
                     }
 
                     // --- Monitor Selection (Card 5) ---
-                    let card5_y = (sy_val(760) as f32 + scroll_y) as u32;
+                    let card5_y = (sy_val(760) as f32 + scroll_y) as i32;
                     let mut card5_h = (140.0 * scale) as u32; // Base height
                                                               // Add rows for monitors
                     let rows = (self.available_monitors.len() + 2) / 3;
@@ -1240,7 +1184,7 @@ impl SettingsWindow {
                     Self::draw_rounded_rect(
                         &mut buffer,
                         w,
-                        s(210),
+                        s(210) as i32,
                         card5_y,
                         card_w,
                         card5_h,
@@ -1255,16 +1199,16 @@ impl SettingsWindow {
                             w,
                             font,
                             "Monitor Selection",
-                            s(230),
-                            card5_y + sc(20.0) as u32,
+                            s(230) as i32,
+                            card5_y + sc(20.0) as i32,
                             sc(18.0),
                             text_main,
                         );
                         for (i, (name, _)) in self.available_monitors.iter().enumerate() {
                             let row = i / 3;
                             let col = i % 3;
-                            let mx = s(230 + col as u32 * 110);
-                            let my = card5_y + sc(60.0 + row as f32 * 65.0) as u32;
+                            let mx = s(230 + col as u32 * 110) as i32;
+                            let my = card5_y + sc(60.0 + row as f32 * 65.0) as i32;
                             let is_active = self.current_monitor_name.as_ref() == Some(name);
                             let bg_col = if is_active { primary } else { 0x00F1F2F3 };
                             let text_col = if is_active { 0x00FFFFFF } else { text_main };
@@ -1289,8 +1233,8 @@ impl SettingsWindow {
                                 w,
                                 font,
                                 disp_name,
-                                mx + sc(10.0) as u32,
-                                my + sc(18.0) as u32,
+                                mx + sc(10.0) as i32,
+                                my + sc(18.0) as i32,
                                 sc(13.0),
                                 text_col,
                             );
@@ -1304,34 +1248,26 @@ impl SettingsWindow {
                 } else if self.current_tab == 2 {
                     // --- AI Tab ---
                     let card_w = (560.0 * scale) as u32;
-                    let card_h = (850.0 * scale) as u32; // Increased height to fit content properly
+                    let card_h = (950.0 * scale) as u32; // Increased height to fit System Prompt + Note
                                                          // Apply scroll offset here!
                     let scroll_y = self.scroll_offset; // Use raw pixel offset
 
                     // Use i32 for Y calculations to handle negative values (off-screen top)
-                    let card_y_raw = sy_val(120) as i32 + scroll_y as i32;
+                    let card_y_raw = (sy_val(120) as f32 + scroll_y) as i32;
 
-                    // Draw card background (clipped)
-                    if card_y_raw + (card_h as i32) > 0 {
-                        let draw_y = card_y_raw.max(0) as u32;
-                        let visible_h = if card_y_raw < 0 {
-                            (card_h as i32 + card_y_raw).max(0) as u32
-                        } else {
-                            card_h
-                        };
-                        Self::draw_rounded_rect(
-                            &mut buffer,
-                            w,
-                            s(210),
-                            draw_y,
-                            card_w,
-                            visible_h, // We might need to adjust height if clipped bottom too?
-                            12,
-                            card_bg,
-                            w,
-                            h,
-                        );
-                    }
+                    // Draw card background
+                    Self::draw_rounded_rect(
+                        &mut buffer,
+                        w,
+                        s(210) as i32,
+                        card_y_raw,
+                        card_w,
+                        card_h,
+                        12,
+                        card_bg,
+                        w,
+                        h,
+                    );
 
                     let fields = vec![
                         ("API Key", ai_config.api_key.clone()),
@@ -1358,304 +1294,275 @@ impl SettingsWindow {
 
                         let fy_scaled_raw = card_y_raw + sc(fy) as i32;
 
-                        // Clip check
-                        if fy_scaled_raw + sc(200.0) as i32 > 0 && fy_scaled_raw < h as i32 {
-                            let draw_y = fy_scaled_raw.max(0) as u32;
+                        if let Some(font) = &self.font {
+                            Self::draw_text(
+                                &mut buffer,
+                                w,
+                                font,
+                                label,
+                                s(fx as u32) as i32,
+                                fy_scaled_raw,
+                                sc(14.0),
+                                text_sec,
+                            );
+                        }
 
-                            if let Some(font) = &self.font {
-                                Self::draw_text(
+                        let input_y_raw = fy_scaled_raw + sc(25.0) as i32;
+                        let input_w = sc(fw as f32) as u32;
+                        let input_h = if i == 7 {
+                            sc(200.0) as u32
+                        } else {
+                            sc(45.0) as u32
+                        };
+
+                        // Input Box
+                        let is_focused = self.focused_field == Some(i);
+                        let border_col = if is_focused { primary } else { 0x00E3E5E7 };
+                        Self::draw_rounded_rect(
+                            &mut buffer,
+                            w,
+                            s(fx as u32) as i32,
+                            input_y_raw,
+                            input_w,
+                            input_h,
+                            8,
+                            border_col,
+                            w,
+                            h,
+                        );
+                        Self::draw_rounded_rect(
+                            &mut buffer,
+                            w,
+                            s(fx as u32) as i32 + 1,
+                            input_y_raw + 1,
+                            input_w - 2,
+                            input_h.saturating_sub(2),
+                            7,
+                            card_bg,
+                            w,
+                            h,
+                        );
+
+                        // Text Drawing inside input
+                        if let Some(font) = &self.font {
+                            let display_val = if val.is_empty() {
+                                if is_focused {
+                                    ""
+                                } else {
+                                    "None"
+                                }
+                            } else {
+                                val
+                            };
+                            let display_col = if val.is_empty() {
+                                0x00CCCCCC
+                            } else {
+                                text_main
+                            };
+
+                            let mut final_text =
+                                if (i == 0 || i == 6) && !val.is_empty() && !self.show_api_key {
+                                    let mask_char = if is_focused { "•" } else { "*" };
+                                    mask_char.repeat(val.len().min(32))
+                                } else {
+                                    display_val.to_string()
+                                };
+
+                            if i == 0 || i == 6 {
+                                let eye_x = s(fx as u32 + fw as u32 - 45) as i32;
+                                let eye_y = input_y_raw + sc(12.0) as i32;
+                                let eye_col = if self.show_api_key { primary } else { text_sec };
+                                Self::draw_rect(
                                     &mut buffer,
                                     w,
-                                    font,
-                                    label,
-                                    s(fx as u32),
-                                    draw_y, // Approximation: simplified clipping for text label
-                                    sc(14.0),
-                                    text_sec,
+                                    eye_x,
+                                    eye_y + 4,
+                                    16,
+                                    16,
+                                    eye_col,
+                                    w,
+                                    h,
                                 );
                             }
 
-                            let input_y_raw = fy_scaled_raw + sc(25.0) as i32;
-                            let input_w = sc(fw as f32) as u32;
-                            let input_h = if i == 7 {
-                                sc(200.0) as u32
-                            } else {
-                                sc(45.0) as u32
-                            };
+                            // SAFE TRUNCATION (Fixes panic) - Skip for System Prompt (7)
+                            if i != 7 && final_text.chars().count() > 50 {
+                                final_text =
+                                    final_text.chars().take(47).collect::<String>() + "...";
+                            }
 
-                            // Clip Input Box
-                            if input_y_raw + input_h as i32 > 0 && input_y_raw < h as i32 {
-                                let inp_draw_y = input_y_raw.max(0) as u32;
-                                let hidden_top = if input_y_raw < 0 { -input_y_raw } else { 0 };
-                                let visible_h = (input_h as i32 - hidden_top).max(0) as u32;
-
-                                // Simple draw (visual artifact if top clipped but acceptable for now or improve clipping)
-                                let is_focused = self.focused_field == Some(i);
-                                let border_col = if is_focused { primary } else { 0x00E3E5E7 };
-                                Self::draw_rounded_rect(
-                                    &mut buffer,
-                                    w,
-                                    s(fx as u32),
-                                    inp_draw_y,
-                                    input_w,
-                                    visible_h,
-                                    8,
-                                    border_col,
-                                    w,
-                                    h,
-                                );
-                                Self::draw_rounded_rect(
-                                    &mut buffer,
-                                    w,
-                                    s(fx as u32) + 1,
-                                    inp_draw_y + 1, // Adjusted
-                                    input_w - 2,
-                                    // Use visible_h, ensure no underflow for border
-                                    visible_h.saturating_sub(2),
-                                    7,
-                                    card_bg,
-                                    w,
-                                    h,
+                            if i == 7 {
+                                // Multi-line rendering for System Prompt
+                                let max_width = sc(500.0 - 40.0) as u32;
+                                let lines = wrap_text(
+                                    &final_text,
+                                    font,
+                                    rusttype::Scale::uniform(sc(14.0)),
+                                    max_width,
                                 );
 
-                                // Text Drawing inside input
-                                if let Some(font) = &self.font {
-                                    let display_val = if val.is_empty() {
-                                        if is_focused {
-                                            ""
-                                        } else {
-                                            "None"
-                                        }
-                                    } else {
-                                        val
-                                    };
-                                    let display_col = if val.is_empty() {
-                                        0x00CCCCCC
-                                    } else {
-                                        text_main
-                                    };
+                                let sys_logical_y = input_y_raw as f64 / scale as f64;
+                                let sys_logical_h = input_h as f64 / scale as f64;
+                                let line_count = lines.len().max(1);
+                                let full_content_h = sc(12.0 + line_count as f32 * 20.0) + sc(20.0);
 
-                                    let mut final_text = if (i == 0 || i == 6)
-                                        && !val.is_empty()
-                                        && !self.show_api_key
+                                self.active_sys_prompt_rect = Some((
+                                    230.0,
+                                    sys_logical_y,
+                                    730.0,
+                                    sys_logical_y + sys_logical_h,
+                                ));
+                                self.active_sys_prompt_content_height =
+                                    full_content_h / scale as f32;
+
+                                let start_text_raw = input_y_raw + sc(12.0) as i32;
+                                let box_bottom_raw = input_y_raw + input_h as i32;
+
+                                for (line_idx, line) in lines.iter().enumerate() {
+                                    let line_offset = line_idx as f32 * sc(20.0);
+                                    let draw_y_f = start_text_raw as f32
+                                        + line_offset
+                                        + (self.system_prompt_scroll_offset * scale);
+
+                                    if draw_y_f < start_text_raw as f32 - sc(5.0) {
+                                        continue;
+                                    }
+                                    if draw_y_f > (box_bottom_raw as f32 - sc(15.0)) {
+                                        break;
+                                    }
+                                    if draw_y_f < 0.0 {
+                                        continue;
+                                    }
+                                    if draw_y_f > h as f32 {
+                                        break;
+                                    }
+
+                                    Self::draw_text(
+                                        &mut buffer,
+                                        w,
+                                        font,
+                                        line,
+                                        s(fx as u32) as i32 + sc(15.0) as i32,
+                                        draw_y_f as i32,
+                                        sc(14.0),
+                                        display_col,
+                                    );
+                                }
+
+                                // Scrollbar & Cursor OUTSIDE line loop
+                                let max_sys_visual_h = sc(200.0);
+                                if full_content_h > max_sys_visual_h {
+                                    let sb_w = sc(4.0) as u32;
+                                    let sb_h = sc(190.0) as u32;
+                                    let sb_x = s(fx as u32 + fw as u32 - 10) as i32;
+                                    let sb_y = input_y_raw + sc(5.0) as i32;
+                                    Self::draw_rect(
+                                        &mut buffer,
+                                        w,
+                                        sb_x,
+                                        sb_y,
+                                        sb_w,
+                                        sb_h,
+                                        0x00E3E5E7,
+                                        w,
+                                        h,
+                                    );
+
+                                    let ratio = max_sys_visual_h / full_content_h;
+                                    let handle_h = (sb_h as f32 * ratio).max(sc(20.0));
+                                    let max_scroll = -(full_content_h - max_sys_visual_h);
+                                    let progress = if max_scroll.abs() < 1.0 {
+                                        0.0
+                                    } else {
+                                        self.system_prompt_scroll_offset * scale / max_scroll
+                                    };
+                                    let handle_y =
+                                        sb_y as f32 + (sb_h as f32 - handle_h) * progress;
+                                    Self::draw_rect(
+                                        &mut buffer,
+                                        w,
+                                        sb_x,
+                                        handle_y as i32,
+                                        sb_w,
+                                        handle_h as u32,
+                                        0x00A0A0A0,
+                                        w,
+                                        h,
+                                    );
+                                }
+
+                                if is_focused {
+                                    let last_line = lines.last().cloned().unwrap_or_default();
+                                    let glyphs: Vec<_> = font
+                                        .layout(
+                                            &last_line,
+                                            Scale::uniform(sc(14.0)),
+                                            point(0.0, 0.0),
+                                        )
+                                        .collect();
+                                    let tw = glyph_width(&glyphs);
+                                    let cursor_x =
+                                        s(fx as u32) as i32 + sc(15.0) as i32 + tw as i32 + 2;
+                                    let cursor_y = input_y_raw
+                                        + sc(12.0 + (lines.len().saturating_sub(1)) as f32 * 20.0)
+                                            as i32;
+                                    // Adjust cursor Y for internal scroll
+                                    let cursor_draw_y = cursor_y as f32
+                                        + (self.system_prompt_scroll_offset * scale);
+                                    if cursor_draw_y >= start_text_raw as f32
+                                        && cursor_draw_y <= (box_bottom_raw as f32 - sc(20.0))
                                     {
-                                        let mask_char = if is_focused { "•" } else { "*" };
-                                        mask_char.repeat(val.len().min(32))
-                                    } else {
-                                        display_val.to_string()
-                                    };
-
-                                    if i == 0 || i == 6 {
-                                        let eye_x = s(fx as u32 + fw as u32 - 45);
-                                        let eye_y = inp_draw_y + sc(12.0) as u32;
-                                        let eye_col =
-                                            if self.show_api_key { primary } else { text_sec };
                                         Self::draw_rect(
                                             &mut buffer,
                                             w,
-                                            eye_x,
-                                            eye_y + 4,
-                                            16,
-                                            16,
-                                            eye_col,
+                                            cursor_x,
+                                            cursor_draw_y as i32,
+                                            2,
+                                            sc(22.0) as u32,
+                                            primary,
                                             w,
                                             h,
                                         );
                                     }
-
-                                    // SAFE TRUNCATION (Fixes panic) - Skip for System Prompt (7)
-                                    if i != 7 && final_text.chars().count() > 50 {
-                                        final_text =
-                                            final_text.chars().take(47).collect::<String>() + "...";
-                                    }
-
-                                    if i == 7 {
-                                        // System Prompt Rendering Logic (Simplified reuse)
-                                        // ... (Complex text wrapping logic needs to be adapted for calc position)
-                                        // For now let's just draw the text at correct offset
-                                        // Multi-line rendering for System Prompt
-                                        let max_width = sc(500.0 - 40.0) as u32; // Allow padding
-                                        let lines = wrap_text(
+                                }
+                            } else {
+                                // Single line
+                                Self::draw_text(
+                                    &mut buffer,
+                                    w,
+                                    font,
+                                    &final_text,
+                                    s(fx as u32) as i32 + sc(15.0) as i32,
+                                    input_y_raw as i32 + sc(12.0) as i32,
+                                    sc(14.0),
+                                    display_col,
+                                );
+                                if is_focused {
+                                    let glyphs: Vec<_> = font
+                                        .layout(
                                             &final_text,
-                                            font,
-                                            rusttype::Scale::uniform(sc(14.0)),
-                                            max_width,
-                                        );
-
-                                        // Update active rect for scrolling logic
-                                        // We need logical Y/H for handle_scroll
-                                        let sys_logical_y = input_y_raw as f64 / scale as f64;
-                                        let sys_logical_h = input_h as f64 / scale as f64;
-
-                                        // Calculate full content height for internal scrolling
-                                        let line_count = lines.len().max(1);
-                                        let full_content_h =
-                                            sc(12.0 + line_count as f32 * 20.0) + sc(20.0);
-
-                                        self.active_sys_prompt_rect = Some((
-                                            230.0,
-                                            sys_logical_y,
-                                            730.0,
-                                            sys_logical_y + sys_logical_h,
-                                        ));
-                                        self.active_sys_prompt_content_height =
-                                            full_content_h / scale as f32;
-
-                                        let start_text_raw = input_y_raw + sc(12.0) as i32;
-                                        let box_bottom_raw = input_y_raw + input_h as i32;
-
-                                        for (line_idx, line) in lines.iter().enumerate() {
-                                            let line_offset = line_idx as f32 * sc(20.0);
-                                            // Calculate raw Y position including internal scroll
-                                            let draw_y_f = start_text_raw as f32
-                                                + line_offset
-                                                + (self.system_prompt_scroll_offset * scale);
-
-                                            // 1. Clip against the input box (internal scrolling)
-                                            // Top bound: Don't draw above the first line's intended position (minus small margin)
-                                            if draw_y_f < start_text_raw as f32 - sc(5.0) {
-                                                continue;
-                                            }
-                                            // Bottom bound: Don't draw if it exceeds the box height (minus margin)
-                                            if draw_y_f > (box_bottom_raw as f32 - sc(15.0)) {
-                                                break;
-                                            }
-
-                                            // 2. Clip against screen bounds (global scrolling protection)
-                                            if draw_y_f < 0.0 {
-                                                continue;
-                                            }
-                                            if draw_y_f > h as f32 {
-                                                break;
-                                            }
-
-                                            // Draw
-                                            Self::draw_text(
-                                                &mut buffer,
-                                                w,
-                                                font,
-                                                line,
-                                                s(fx as u32) + sc(15.0) as u32,
-                                                draw_y_f as u32,
-                                                sc(14.0),
-                                                display_col,
-                                            );
-                                        }
-
-                                        // Draw Scrollbar - simplified
-                                        let full_content_h =
-                                            sc(12.0 + lines.len().max(1) as f32 * 20.0) + sc(20.0);
-                                        let max_sys_visual_h = sc(200.0);
-                                        if full_content_h > max_sys_visual_h {
-                                            let sb_w = sc(4.0) as u32;
-                                            let sb_h = sc(190.0) as u32; // Approx handle track height
-                                            let sb_x = s(fx as u32 + fw as u32 - 10);
-                                            let sb_y = inp_draw_y + sc(5.0) as u32;
-
-                                            Self::draw_rect(
-                                                &mut buffer,
-                                                w,
-                                                sb_x,
-                                                sb_y,
-                                                sb_w,
-                                                sb_h,
-                                                0x00E3E5E7,
-                                                w,
-                                                h,
-                                            );
-                                            // Handle
-                                            let ratio = max_sys_visual_h / full_content_h;
-                                            let handle_h = (sb_h as f32 * ratio).max(sc(20.0));
-                                            let max_scroll = -(full_content_h - max_sys_visual_h);
-                                            let progress = if max_scroll.abs() < 1.0 {
-                                                0.0
-                                            } else {
-                                                self.system_prompt_scroll_offset * scale
-                                                    / max_scroll
-                                            };
-                                            let handle_y =
-                                                sb_y as f32 + (sb_h as f32 - handle_h) * progress;
-                                            Self::draw_rect(
-                                                &mut buffer,
-                                                w,
-                                                sb_x,
-                                                handle_y as u32,
-                                                sb_w,
-                                                handle_h as u32,
-                                                0x00A0A0A0,
-                                                w,
-                                                h,
-                                            );
-                                        }
-
-                                        // Cursor
-                                        if is_focused {
-                                            let last_line =
-                                                lines.last().cloned().unwrap_or_default();
-                                            let line_count = lines.len().max(1);
-                                            let glyphs: Vec<_> = font
-                                                .layout(
-                                                    &last_line,
-                                                    Scale::uniform(sc(14.0)),
-                                                    point(0.0, 0.0),
-                                                )
-                                                .collect();
-                                            let tw = glyph_width(&glyphs);
-                                            let cursor_x = s(fx as u32) + sc(15.0) as u32 + tw + 2;
-                                            let cursor_y = inp_draw_y
-                                                + sc(12.0 + (line_count - 1) as f32 * 20.0) as u32;
-                                            Self::draw_rect(
-                                                &mut buffer,
-                                                w,
-                                                cursor_x,
-                                                cursor_y,
-                                                2,
-                                                sc(22.0) as u32,
-                                                primary,
-                                                w,
-                                                h,
-                                            );
-                                        }
+                                            Scale::uniform(sc(14.0)),
+                                            point(0.0, 0.0),
+                                        )
+                                        .collect();
+                                    let tw = if val.is_empty() {
+                                        0
                                     } else {
-                                        // Single line
-                                        Self::draw_text(
+                                        glyph_width(&glyphs)
+                                    };
+                                    let cursor_x = s(fx as u32) + sc(15.0) as u32 + tw + 2;
+                                    if cursor_x < s(fx as u32) + input_w {
+                                        Self::draw_rect(
                                             &mut buffer,
                                             w,
-                                            font,
-                                            &final_text,
-                                            s(fx as u32) + sc(15.0) as u32,
-                                            inp_draw_y + sc(12.0) as u32,
-                                            sc(14.0),
-                                            display_col,
+                                            cursor_x as i32,
+                                            input_y_raw + sc(12.0) as i32,
+                                            2,
+                                            sc(22.0) as u32,
+                                            primary,
+                                            w,
+                                            h,
                                         );
-                                        if is_focused {
-                                            let glyphs: Vec<_> = font
-                                                .layout(
-                                                    &final_text,
-                                                    Scale::uniform(sc(14.0)),
-                                                    point(0.0, 0.0),
-                                                )
-                                                .collect();
-                                            let tw = if val.is_empty() {
-                                                0
-                                            } else {
-                                                glyph_width(&glyphs)
-                                            };
-                                            let cursor_x = s(fx as u32) + sc(15.0) as u32 + tw + 2;
-                                            if cursor_x < s(fx as u32) + input_w {
-                                                Self::draw_rect(
-                                                    &mut buffer,
-                                                    w,
-                                                    cursor_x,
-                                                    inp_draw_y + sc(12.0) as u32,
-                                                    2,
-                                                    sc(22.0) as u32,
-                                                    primary,
-                                                    w,
-                                                    h,
-                                                );
-                                            }
-                                        }
                                     }
                                 }
                             }
@@ -1681,8 +1588,8 @@ impl SettingsWindow {
                             w,
                             font,
                             "Note: More AI features coming soon!",
-                            s(230),
-                            (card_y_raw + sc(340.0) as i32).max(0) as u32,
+                            s(230) as i32,
+                            card_y_raw + sc(760.0) as i32,
                             sc(11.0),
                             text_sec,
                         );
@@ -1703,7 +1610,7 @@ impl SettingsWindow {
                     Self::draw_rect(
                         &mut buffer,
                         w,
-                        s(180), // Start after sidebar
+                        s(180) as i32, // Start after sidebar
                         0,
                         w - s(180),
                         header_h,
@@ -1717,8 +1624,8 @@ impl SettingsWindow {
                         w,
                         font,
                         title,
-                        s(220),
-                        sy_val(40),
+                        s(220) as i32,
+                        sy_val(40) as i32,
                         sc(32.0),
                         text_main,
                     );
@@ -1727,8 +1634,8 @@ impl SettingsWindow {
                         w,
                         font,
                         sub,
-                        s(220),
-                        sy_val(85),
+                        s(220) as i32,
+                        sy_val(85) as i32,
                         sc(16.0),
                         text_sec,
                     );
@@ -1768,52 +1675,103 @@ impl SettingsWindow {
     ) {
         if self.current_tab == 3 {
             // History Tab
-            let mut scrolled_expanded = false;
+            let mut scrolled_item = false;
 
-            // Check if we should scroll the expanded item (internal scroll)
-            if let Some((min_x, min_y, max_x, max_y)) = self.active_expanded_rect {
-                if let Some(pos) = cursor_pos {
-                    // Map cursor to logical coordinates
-                    let size = self.window.inner_size();
-                    let w = size.width as f64;
-                    let h = size.height as f64;
-                    let scale = (w / 800.0).min(h / 750.0);
-                    let off_x = (w - 800.0 * scale) / 2.0;
-                    let off_y = (h - 750.0 * scale) / 2.0;
-                    let lx = (pos.x - off_x) / scale;
-                    let ly = (pos.y - off_y) / scale;
+            if let Some(pos) = cursor_pos {
+                let size = self.window.inner_size();
+                let w = size.width as f64;
+                let h = size.height as f64;
+                let scale = (w / 800.0).min(h / 750.0);
+                let off_x = (w - 800.0 * scale) / 2.0;
+                let off_y = (h - 750.0 * scale) / 2.0;
+                let lx = (pos.x - off_x) / scale;
+                let ly = (pos.y - off_y) / scale;
 
-                    if lx >= min_x && lx <= max_x && ly >= min_y && ly <= max_y {
-                        // Scroll expanded item
-                        self.expanded_scroll_offset += dy;
-                        // Clamp
-                        // Visual height is fixed at 400.0 (must match redraw)
-                        let view_h = 400.0;
-                        let content_h = self.active_expanded_content_height;
-                        // Scroll range: 0.0 to -(content_h - view_h)
-                        let min_offset = -(content_h - view_h).max(0.0);
+                // Check History Items using cached rects
+                if self.history_item_rects.len() == self.history.len() {
+                    for (i, (_x, ly_start, _w, ly_end)) in
+                        self.history_item_rects.iter().enumerate()
+                    {
+                        let y_start = *ly_start + self.scroll_offset as f64 / scale;
+                        let y_end = *ly_end + self.scroll_offset as f64 / scale;
 
-                        if self.expanded_scroll_offset < min_offset {
-                            self.expanded_scroll_offset = min_offset;
+                        // Check Horizontal Bounds too (230 to 720)
+                        if lx >= 230.0 && lx <= 720.0 && ly >= y_start && ly <= y_end {
+                            // Hit item i
+                            if let Some(font) = &self.font {
+                                let content = &self.history[i].1;
+                                let item_h_fixed_sc = 180.0 * scale as f32; // sc(180.0) approx
+                                let max_width = (450.0 * scale) as u32; // sc(450.0)
+                                let lines = wrap_text(
+                                    content,
+                                    font,
+                                    rusttype::Scale::uniform(16.0 * scale as f32),
+                                    max_width,
+                                );
+
+                                let line_h = 20.0 * scale as f32; // sc(20.0)
+                                let full_h = (lines.len() as f32 * line_h).max(line_h);
+                                let view_h = item_h_fixed_sc - (40.0 * scale as f32); // Header + Padding
+
+                                if full_h > view_h {
+                                    // Item is scrollable
+                                    let current_log = self.history_scroll_states[i];
+                                    let scroll_step_log = dy / scale as f32;
+                                    let new_val_log = current_log + scroll_step_log;
+
+                                    // Max scroll (negative value)
+                                    // full_h and view_h are Screen Pixels.
+                                    // scroll state is Logical Pixels (applied as state * scale in redraw)
+                                    let max_scroll_log = -((full_h - view_h) / scale as f32);
+
+                                    let clamped_log = new_val_log.clamp(max_scroll_log, 0.0);
+
+                                    // Check if we actually scrolled
+                                    if (clamped_log - current_log).abs() > 0.001 {
+                                        self.history_scroll_states[i] = clamped_log;
+                                        scrolled_item = true; // Consumed scroll
+                                    } else {
+                                        // We are at boundary.
+                                        // If user is trying to scroll PAST boundary, we let it fall through to main list?
+                                        // dy > 0: Scrolling UP (content moves down). If at 0.0, we are at top.
+                                        // dy < 0: Scrolling DOWN (content moves up). If at max_scroll, we are at bottom.
+
+                                        if dy > 0.0 && current_log >= 0.0 {
+                                            // At top, trying to go up -> Scroll Main List
+                                            scrolled_item = false;
+                                        } else if dy < 0.0 && current_log <= max_scroll_log + 0.1 {
+                                            // epsilon
+                                            // At bottom, trying to go down -> Scroll Main List
+                                            scrolled_item = false;
+                                        } else {
+                                            // Just stuck at boundary but not "pushing" past it?
+                                            // Or maybe we just consume it.
+                                            // Let's consume it to prevent jitter.
+                                            scrolled_item = true;
+                                        }
+
+                                        // Actually the "Smart Scroll" requirement usually means:
+                                        // If I scroll down and hit bottom, continue scrolling main list.
+                                        if (dy > 0.0 && current_log >= -0.01)
+                                            || (dy < 0.0 && current_log <= max_scroll_log + 0.01)
+                                        {
+                                            scrolled_item = false;
+                                        }
+                                    }
+                                }
+                            }
+                            break;
                         }
-                        if self.expanded_scroll_offset > 0.0 {
-                            self.expanded_scroll_offset = 0.0;
-                        }
-                        scrolled_expanded = true;
                     }
                 }
             }
 
-            if !scrolled_expanded {
-                println!(
-                    "Scroll History Main: dy={}, curr_offset={}, cont_h={}, view_h={}",
-                    dy, self.scroll_offset, self.content_height, self.viewport_height
-                );
+            if !scrolled_item {
                 self.scroll_offset += dy;
                 let content_h = if self.content_height > 0.0 {
                     self.content_height
                 } else {
-                    self.history.len() as f32 * 60.0
+                    self.history.len() as f32 * 200.0 // approx
                 };
                 let viewport_h = if self.viewport_height > 0.0 {
                     self.viewport_height
