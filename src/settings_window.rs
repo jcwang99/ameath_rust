@@ -27,6 +27,7 @@ pub struct SettingsWindow {
     pub active_sys_prompt_content_height: f32,
     pub available_monitors: Vec<(String, String)>,
     pub current_monitor_name: Option<String>,
+    pub history_item_rects: Vec<(f64, f64, f64, f64)>, // Logical rects: x, y, w, h (or y_start, y_end)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -91,45 +92,26 @@ impl SettingsWindow {
         if self.current_tab == 3 {
             // History Tab Click Handling
             if lx > 0.0 && ly > 140.0 {
-                let start_y = 140.0; // Logical start Y
-                let mut current_y = start_y + self.scroll_offset as f64;
+                // Use cached logical rects from Redraw (Guaranteed to be full list now)
+                if self.history_item_rects.len() == self.history.len() {
+                    for (i, (_x, ly_start, _w, ly_end)) in
+                        self.history_item_rects.iter().enumerate()
+                    {
+                        let y_start = *ly_start + self.scroll_offset as f64 / scale;
+                        let y_end = *ly_end + self.scroll_offset as f64 / scale;
 
-                // Use unscaled height logic for hit testing since lx/ly are logical
-                // Base height 60.0
-                // Expansion logic: 40.0 + lines * 20.0
-
-                for (i, (_role, content)) in self.history.iter().enumerate() {
-                    let is_expanded = self.expanded_history_index == Some(i);
-                    let item_h = if is_expanded {
-                        let chars: Vec<char> = content.chars().collect();
-                        let mut line_chars = 0;
-                        let max_line_chars = 50;
-                        let mut line_count = 1;
-                        for c in chars {
-                            line_chars += 1;
-                            if c == '\n' {
-                                line_chars = 0;
-                                line_count += 1;
-                            } else if line_chars >= max_line_chars {
-                                line_count += 1;
-                                line_chars = 0;
+                        if ly >= y_start && ly <= y_end {
+                            if self.expanded_history_index == Some(i) {
+                                self.expanded_history_index = None;
+                            } else {
+                                self.expanded_history_index = Some(i);
                             }
+                            self.window.request_redraw();
+                            return SettingsAction::None;
                         }
-                        40.0 + (line_count as f64 * 20.0)
-                    } else {
-                        60.0
-                    };
-
-                    if ly >= current_y && ly <= (current_y + item_h) {
-                        if is_expanded {
-                            self.expanded_history_index = None;
-                        } else {
-                            self.expanded_history_index = Some(i);
-                        }
-                        self.window.request_redraw();
-                        return SettingsAction::None;
                     }
-                    current_y += item_h;
+                } else {
+                    // Cache mismatch or empty
                 }
             }
             return SettingsAction::None;
@@ -347,6 +329,7 @@ impl SettingsWindow {
                 .map(|m| (m.name().unwrap_or_default(), m.name().unwrap_or_default()))
                 .collect(),
             current_monitor_name: None, // Will be set by main.rs on startup or selection
+            history_item_rects: Vec::new(),
         }
     }
 
@@ -706,96 +689,106 @@ impl SettingsWindow {
                         let mut current_y = start_y as f32 + self.scroll_offset;
                         let mut calculated_content_height = 0.0;
 
-                        // Reset geometry fields for this frame (will be set if expanded item exists and is drawn)
+                        // Reset geometry fields
                         self.active_expanded_rect = None;
                         self.active_expanded_content_height = 0.0;
+                        self.history_item_rects.clear();
 
                         for (i, (role, content)) in self.history.iter().enumerate() {
+                            if i == 0 {
+                                println!(
+                                    "History Redraw Index 0: ScreenY={}, Scroll={}",
+                                    current_y, self.scroll_offset
+                                );
+                            }
                             let is_expanded = self.expanded_history_index == Some(i);
 
                             // Calculate display content and height
                             let (display_content, item_h, full_content_h) = if is_expanded {
-                                let max_width = sc(500.0) as u32;
+                                let max_width = sc(460.0) as u32; // Reduced further to ensure gap
                                 let lines = wrap_text(
                                     content,
                                     font,
                                     rusttype::Scale::uniform(sc(16.0)),
                                     max_width,
                                 );
-                                let wrapped = lines.join("\n");
+                                // Do not join and re-split. Keep lines.
                                 let line_count = lines.len();
                                 let full_h = sc(40.0) + (line_count as f32 * sc(20.0));
                                 // Clamp visual height
                                 let max_h = sc(400.0); // Max height for expanded item
                                 let h = full_h.min(max_h);
-                                (wrapped, h, full_h)
+                                (lines, h, full_h)
                             } else {
-                                let summary = if content.chars().count() > 30 {
-                                    let substr: String = content.chars().take(30).collect();
+                                // Summary: Wrap to 1 line or truncate properly
+                                // For now, simple char limit + clip
+                                let summary = if content.chars().count() > 50 {
+                                    let substr: String = content.chars().take(47).collect();
                                     format!("{}...", substr.replace("\n", " "))
                                 } else {
                                     content.replace("\n", " ")
                                 };
-                                (summary, sc(60.0), sc(60.0))
+                                (vec![summary], sc(60.0), sc(60.0))
                             };
 
-                            calculated_content_height += item_h;
+                            // Store Logical Rect for click handling
+                            let logical_y = 140.0 + (calculated_content_height / scale);
+                            let logical_h = item_h / scale;
+
+                            self.history_item_rects.push((
+                                230.0,
+                                logical_y as f64,
+                                730.0,
+                                (logical_y + logical_h) as f64,
+                            ));
+
                             let y_pos = current_y;
+                            calculated_content_height += item_h;
                             current_y += item_h;
 
-                            let min_y = sy_val(140) as f32;
+                            // Screen Bounds for Culling
+                            let min_y = sy_val(120) as f32; // Header bottom approx
                             let max_y = h as f32;
 
-                            // Culling
                             if (y_pos + item_h) < min_y || y_pos > max_y {
                                 continue;
                             }
+                            // println!("Drawing item {}: y_pos={}, item_h={}", i, y_pos, item_h);
 
-                            let role_col = if role == "user" {
-                                0x00007ACC
-                            } else {
-                                0x002E8B57
-                            };
+                            // Safe Cast Coordinates
+                            let y_pos_i = y_pos as i32;
 
-                            Self::draw_text(
-                                &mut buffer,
-                                w,
-                                font,
-                                role,
-                                s(230),
-                                y_pos as u32,
-                                sc(14.0),
-                                role_col,
-                            );
+                            // Draw Role Label
+                            if y_pos_i + sc(20.0) as i32 > min_y as i32 {
+                                // Don't draw label if pushed too far up?
+                                // Better: if y_pos < header, don't draw?
+                                // Let's just draw if within bounds. Text drawing clips internally now? No, settings_window doesn't.
+                                // We need manual clipping.
+
+                                let role_col = if role == "user" {
+                                    0x00007ACC
+                                } else {
+                                    0x002E8B57
+                                };
+
+                                if y_pos_i + sc(14.0) as i32 > min_y as i32 && y_pos_i < h as i32 {
+                                    Self::draw_text(
+                                        &mut buffer,
+                                        w,
+                                        font,
+                                        role,
+                                        s(230),
+                                        y_pos_i as u32,
+                                        sc(14.0),
+                                        role_col,
+                                    );
+                                }
+                            }
 
                             if is_expanded {
                                 // Draw multiline with internal scrolling
 
-                                // Store geometry
-                                // We need logical Y. current_y is screen-scaled Y relative to window top?
-                                // start_y = sy_val(140). sy_val uses scale. So current_y is scaled.
-                                // We need to convert back to logical for mouse detection if we want logical.
-                                // But active_expanded_rect stores LOGICAL coords.
-                                // y_pos is SCALED Y.
-                                // Logical Y = (y_pos - off_y) / scale.
-                                // Wait, scale is 'scale'. off_y is not available nicely here without calc.
-                                // But we know logic: y_pos is strictly: (140.0 * scale + off_y) + (index * h * scale) - scroll * scale?
-                                // Actually, 'sy_val' does (val * scale) + off_y?
-                                // Let's check sy_val definition. It is likely a macro or closure.
-                                // It seems to be a closure closing over 'scale' and 'off_y'.
-                                // So y_pos is purely screen Y.
-                                // We better store SCREEN RECT in active_expanded_rect OR pass screen coords to handle_scroll.
-                                // Passing screen coords (lx, ly) to handle_scroll (which converts to logical) means we should store LOGICAL rect.
-                                // Logical Y = (y_pos / scale) ?? No, (y_pos - off_y) / scale.
-                                // We can't access off_y here easily!
-                                // Actually, we CAN Calculate logical rect "roughly" or just use the logic in handle_scroll to match geometry.
-                                // BUT: handle_scroll converts mouse to logical.
-                                // So we should store logical rect.
-                                // How to get logical Y from y_pos?
-                                // y_pos = start_y + offsets.
-                                // start_y = (140 * scale) + off_y (presumably).
-                                // So logical_y = 140.0 + (offsets / scale).
-                                // Let's try to deduce logical Y from knowing start_y is logical 140.
+                                // Store geometry for mouse handling (LOGICAL coords)
                                 let logical_y_rel = (y_pos - start_y as f32) / scale;
                                 let item_logical_y = 140.0 + logical_y_rel;
                                 let item_logical_h = item_h / scale;
@@ -808,23 +801,31 @@ impl SettingsWindow {
                                 ));
                                 self.active_expanded_content_height = full_content_h / scale;
 
-                                // Clip drawing
-                                let start_text_y = y_pos + sc(20.0);
-                                let end_text_y = y_pos + item_h;
+                                // Clip drawing bounds
+                                let start_text_raw = y_pos + sc(20.0);
+                                let end_text_raw = y_pos + item_h;
 
-                                for (li, line) in display_content.lines().enumerate() {
+                                for (li, line) in display_content.iter().enumerate() {
                                     let line_offset = li as f32 * sc(20.0);
-                                    let draw_y = start_text_y
+                                    let draw_y_f = start_text_raw
                                         + line_offset
                                         + (self.expanded_scroll_offset * scale);
 
-                                    // Clip
-                                    if draw_y < start_text_y - sc(5.0) {
+                                    // 1. Clip against item box (internal scroll)
+                                    if draw_y_f < start_text_raw - sc(5.0) {
                                         continue;
-                                    } // Too high
-                                    if draw_y > end_text_y - sc(20.0) {
+                                    }
+                                    if draw_y_f > end_text_raw - sc(20.0) {
                                         break;
-                                    } // Too low
+                                    }
+
+                                    // 2. Clip against screen (global scroll)
+                                    if draw_y_f < 0.0 {
+                                        continue;
+                                    }
+                                    if draw_y_f > h as f32 {
+                                        break;
+                                    }
 
                                     Self::draw_text(
                                         &mut buffer,
@@ -832,7 +833,7 @@ impl SettingsWindow {
                                         font,
                                         line,
                                         s(230),
-                                        draw_y as u32,
+                                        draw_y_f as u32,
                                         sc(16.0),
                                         text_main,
                                     );
@@ -841,76 +842,95 @@ impl SettingsWindow {
                                 // Draw Scrollbar for expanded item if needed
                                 if item_h < full_content_h {
                                     let sb_w = sc(4.0) as u32;
-                                    let sb_h = item_h as u32 - sc(10.0) as u32;
-                                    let sb_x = s(230 + 500 - 10);
-                                    let sb_y = y_pos as u32 + sc(5.0) as u32;
+                                    let sb_h = (item_h - sc(10.0)).max(0.0) as u32;
+                                    let sb_x = s(230 + 490);
+                                    let sb_y_raw = y_pos_i + sc(5.0) as i32;
 
-                                    // Background
+                                    // Clip scrollbar distinct from text
+                                    if sb_y_raw + sb_h as i32 > 0 && sb_y_raw < h as i32 {
+                                        let sb_draw_y = sb_y_raw.max(0) as u32;
+                                        let hidden = if sb_y_raw < 0 { -sb_y_raw } else { 0 };
+                                        let visible_sb_h = (sb_h as i32 - hidden).max(0) as u32;
+
+                                        // Background
+                                        Self::draw_rect(
+                                            &mut buffer,
+                                            w,
+                                            sb_x,
+                                            sb_draw_y,
+                                            sb_w,
+                                            visible_sb_h,
+                                            0x00E3E5E7,
+                                            w,
+                                            h,
+                                        );
+
+                                        // Handle
+                                        let ratio = item_h / full_content_h;
+                                        let handle_h = (sb_h as f32 * ratio).max(sc(20.0));
+                                        let max_scroll = -(full_content_h - item_h);
+                                        let progress = if max_scroll.abs() < 1.0 {
+                                            0.0
+                                        } else {
+                                            self.expanded_scroll_offset * scale / max_scroll
+                                        };
+                                        let handle_y_rel = (sb_h as f32 - handle_h) * progress;
+                                        let handle_y_raw = sb_y_raw as f32 + handle_y_rel;
+
+                                        // Clip handle
+                                        if handle_y_raw + handle_h > 0.0 && handle_y_raw < h as f32
+                                        {
+                                            Self::draw_rect(
+                                                &mut buffer,
+                                                w,
+                                                sb_x,
+                                                handle_y_raw.max(0.0) as u32,
+                                                sb_w,
+                                                handle_h as u32, // Simplified clipping for handle height
+                                                0x00A0A0A0,
+                                                w,
+                                                h,
+                                            );
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Collapsed: Draw Summary
+                                // Use i32 coordinates
+                                let text_y_raw = y_pos_i + sc(20.0) as i32;
+                                if text_y_raw > 0 && text_y_raw < h as i32 {
+                                    Self::draw_text(
+                                        &mut buffer,
+                                        w,
+                                        font,
+                                        &display_content[0],
+                                        s(230),
+                                        text_y_raw as u32,
+                                        sc(16.0),
+                                        text_main,
+                                    );
+                                }
+                            }
+
+                            // Divider (Skip for last item)
+                            if i < self.history.len() - 1 {
+                                let div_y_raw = y_pos_i + item_h as i32 - 1;
+                                if div_y_raw > 0 && div_y_raw < h as i32 {
                                     Self::draw_rect(
                                         &mut buffer,
                                         w,
-                                        sb_x,
-                                        sb_y,
-                                        sb_w,
-                                        sb_h,
+                                        s(230),
+                                        div_y_raw as u32,
+                                        (480.0 * scale) as u32,
+                                        1,
                                         0x00E3E5E7,
                                         w,
                                         h,
                                     );
-
-                                    // Handle
-                                    let ratio = item_h / full_content_h;
-                                    let handle_h = (sb_h as f32 * ratio).max(sc(20.0));
-                                    // scroll_offset is negative. range is 0 to -(content - view)
-                                    // progress = scroll / max_scroll (0 to 1)
-                                    let max_scroll = -(full_content_h - item_h);
-                                    let progress = if max_scroll.abs() < 1.0 {
-                                        0.0
-                                    } else {
-                                        self.expanded_scroll_offset * scale / max_scroll
-                                    };
-                                    let handle_y =
-                                        sb_y as f32 + (sb_h as f32 - handle_h) * progress;
-
-                                    Self::draw_rect(
-                                        &mut buffer,
-                                        w,
-                                        sb_x,
-                                        handle_y as u32,
-                                        sb_w,
-                                        handle_h as u32,
-                                        0x00A0A0A0,
-                                        w,
-                                        h,
-                                    );
                                 }
-                            } else {
-                                Self::draw_text(
-                                    &mut buffer,
-                                    w,
-                                    font,
-                                    &display_content,
-                                    s(230),
-                                    y_pos as u32 + sc(20.0) as u32,
-                                    sc(16.0),
-                                    text_main,
-                                );
                             }
-
-                            // Divider
-                            Self::draw_rect(
-                                &mut buffer,
-                                w,
-                                s(230),
-                                y_pos as u32 + item_h as u32 - 1,
-                                (500.0 * scale) as u32,
-                                1,
-                                0x00E3E5E7,
-                                w,
-                                h,
-                            );
                         }
-                        self.content_height = calculated_content_height + sc(50.0); // Add bottom padding
+                        self.content_height = calculated_content_height + sc(150.0); // Add bottom padding
                         self.viewport_height = (h as f32 - start_y as f32).max(0.0);
                     }
                 }
@@ -1785,6 +1805,10 @@ impl SettingsWindow {
             }
 
             if !scrolled_expanded {
+                println!(
+                    "Scroll History Main: dy={}, curr_offset={}, cont_h={}, view_h={}",
+                    dy, self.scroll_offset, self.content_height, self.viewport_height
+                );
                 self.scroll_offset += dy;
                 let content_h = if self.content_height > 0.0 {
                     self.content_height
