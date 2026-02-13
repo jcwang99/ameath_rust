@@ -16,6 +16,7 @@ pub struct SettingsWindow {
     show_api_key: bool,
     pub history: Vec<(String, String)>,
     pub scroll_offset: f32,
+    pub expanded_history_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,7 +70,49 @@ impl SettingsWindow {
         }
 
         if self.current_tab == 3 {
-            // History Tab Click Handling (if any)
+            // History Tab Click Handling
+            if lx > 0.0 && ly > 140.0 {
+                let start_y = 140.0; // Logical start Y
+                let mut current_y = start_y + self.scroll_offset as f64;
+
+                // Use unscaled height logic for hit testing since lx/ly are logical
+                // Base height 60.0
+                // Expansion logic: 40.0 + lines * 20.0
+
+                for (i, (_role, content)) in self.history.iter().enumerate() {
+                    let is_expanded = self.expanded_history_index == Some(i);
+                    let item_h = if is_expanded {
+                        let chars: Vec<char> = content.chars().collect();
+                        let mut line_chars = 0;
+                        let max_line_chars = 50;
+                        let mut line_count = 1;
+                        for c in chars {
+                            line_chars += 1;
+                            if c == '\n' {
+                                line_chars = 0;
+                                line_count += 1;
+                            } else if line_chars >= max_line_chars {
+                                line_count += 1;
+                                line_chars = 0;
+                            }
+                        }
+                        40.0 + (line_count as f64 * 20.0)
+                    } else {
+                        60.0
+                    };
+
+                    if ly >= current_y && ly <= (current_y + item_h) {
+                        if is_expanded {
+                            self.expanded_history_index = None;
+                        } else {
+                            self.expanded_history_index = Some(i);
+                        }
+                        self.window.request_redraw();
+                        return SettingsAction::None;
+                    }
+                    current_y += item_h;
+                }
+            }
             return SettingsAction::None;
         }
 
@@ -246,6 +289,7 @@ impl SettingsWindow {
             show_api_key: false,
             history: Vec::new(),
             scroll_offset: 0.0,
+            expanded_history_index: None,
         }
     }
 
@@ -625,17 +669,53 @@ impl SettingsWindow {
                     // History Tab
                     if let Some(font) = &self.font {
                         let start_y = sy_val(140);
-                        let item_h = sc(60.0) as u32; // Height per history item
+
+                        let mut current_y = start_y as f32 + self.scroll_offset;
 
                         for (i, (role, content)) in self.history.iter().enumerate() {
-                            let item_h_f32 = item_h as f32;
-                            let y_pos =
-                                start_y as f32 + self.scroll_offset + (i as f32 * item_h_f32);
+                            let is_expanded = self.expanded_history_index == Some(i);
+
+                            // Calculate display content and height
+                            let (display_content, item_h) = if is_expanded {
+                                // Simple wrapping: insert newlines every N chars
+                                // This is a crude approximation of wrapping
+                                let chars: Vec<char> = content.chars().collect();
+                                let mut wrapped = String::new();
+                                let mut line_chars = 0;
+                                let max_line_chars = 50;
+
+                                for c in chars {
+                                    wrapped.push(c);
+                                    line_chars += 1;
+                                    if c == '\n' {
+                                        line_chars = 0;
+                                    } else if line_chars >= max_line_chars {
+                                        wrapped.push('\n');
+                                        line_chars = 0;
+                                    }
+                                }
+
+                                let line_count = wrapped.chars().filter(|&c| c == '\n').count() + 1;
+                                let h = sc(40.0) + (line_count as f32 * sc(20.0)); // Base + text height
+                                (wrapped, h)
+                            } else {
+                                let summary = if content.chars().count() > 30 {
+                                    let substr: String = content.chars().take(30).collect();
+                                    format!("{}...", substr.replace("\n", " "))
+                                } else {
+                                    content.replace("\n", " ")
+                                };
+                                (summary, sc(60.0))
+                            };
+
+                            let y_pos = current_y;
+                            current_y += item_h;
+
                             let min_y = sy_val(140) as f32;
                             let max_y = h as f32;
 
-                            // Simple culling
-                            if (y_pos + item_h_f32) < min_y || y_pos > max_y {
+                            // Culling
+                            if (y_pos + item_h) < min_y || y_pos > max_y {
                                 continue;
                             }
 
@@ -644,6 +724,7 @@ impl SettingsWindow {
                             } else {
                                 0x002E8B57
                             };
+
                             Self::draw_text(
                                 &mut buffer,
                                 w,
@@ -655,30 +736,41 @@ impl SettingsWindow {
                                 role_col,
                             );
 
-                            let display_content = if content.chars().count() > 30 {
-                                let substr: String = content.chars().take(30).collect();
-                                format!("{}...", substr.replace("\n", " "))
+                            if is_expanded {
+                                // Draw multiline
+                                for (li, line) in display_content.lines().enumerate() {
+                                    Self::draw_text(
+                                        &mut buffer,
+                                        w,
+                                        font,
+                                        line,
+                                        s(230),
+                                        y_pos as u32
+                                            + sc(20.0) as u32
+                                            + (li as u32 * sc(20.0) as u32),
+                                        sc(16.0),
+                                        text_main,
+                                    );
+                                }
                             } else {
-                                content.replace("\n", " ")
-                            };
-
-                            Self::draw_text(
-                                &mut buffer,
-                                w,
-                                font,
-                                &display_content,
-                                s(230),
-                                y_pos as u32 + sc(20.0) as u32,
-                                sc(16.0),
-                                text_main,
-                            );
+                                Self::draw_text(
+                                    &mut buffer,
+                                    w,
+                                    font,
+                                    &display_content,
+                                    s(230),
+                                    y_pos as u32 + sc(20.0) as u32,
+                                    sc(16.0),
+                                    text_main,
+                                );
+                            }
 
                             // Divider
                             Self::draw_rect(
                                 &mut buffer,
                                 w,
                                 s(230),
-                                y_pos as u32 + item_h - 5,
+                                y_pos as u32 + item_h as u32 - 1,
                                 (500.0 * scale) as u32,
                                 1,
                                 0x00E3E5E7,
