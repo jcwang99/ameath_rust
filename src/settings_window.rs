@@ -22,6 +22,9 @@ pub struct SettingsWindow {
     pub expanded_scroll_offset: f32,
     pub active_expanded_rect: Option<(f64, f64, f64, f64)>, // lx_min, ly_min, lx_max, ly_max
     pub active_expanded_content_height: f32,
+    pub system_prompt_scroll_offset: f32,
+    pub active_sys_prompt_rect: Option<(f64, f64, f64, f64)>,
+    pub active_sys_prompt_content_height: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -295,6 +298,9 @@ impl SettingsWindow {
             expanded_scroll_offset: 0.0,
             active_expanded_rect: None,
             active_expanded_content_height: 0.0,
+            system_prompt_scroll_offset: 0.0,
+            active_sys_prompt_rect: None,
+            active_sys_prompt_content_height: 0.0,
         }
     }
 
@@ -685,25 +691,15 @@ impl SettingsWindow {
 
                             // Calculate display content and height
                             let (display_content, item_h, full_content_h) = if is_expanded {
-                                // Simple wrapping: insert newlines every N chars
-                                // This is a crude approximation of wrapping
-                                let chars: Vec<char> = content.chars().collect();
-                                let mut wrapped = String::new();
-                                let mut line_chars = 0;
-                                let max_line_chars = 28; // Reduced from 50 to fit ~500px width with 16px font
-
-                                for c in chars {
-                                    wrapped.push(c);
-                                    line_chars += 1;
-                                    if c == '\n' {
-                                        line_chars = 0;
-                                    } else if line_chars >= max_line_chars {
-                                        wrapped.push('\n');
-                                        line_chars = 0;
-                                    }
-                                }
-
-                                let line_count = wrapped.chars().filter(|&c| c == '\n').count() + 1;
+                                let max_width = sc(500.0) as u32;
+                                let lines = wrap_text(
+                                    content,
+                                    font,
+                                    rusttype::Scale::uniform(sc(16.0)),
+                                    max_width,
+                                );
+                                let wrapped = lines.join("\n");
+                                let line_count = lines.len();
                                 let full_h = sc(40.0) + (line_count as f32 * sc(20.0));
                                 // Clamp visual height
                                 let max_h = sc(400.0); // Max height for expanded item
@@ -752,8 +748,6 @@ impl SettingsWindow {
                                 // Draw multiline with internal scrolling
 
                                 // Store geometry
-                                let lx_min = 230.0;
-                                let lx_max = 230.0 + 500.0;
                                 // We need logical Y. current_y is screen-scaled Y relative to window top?
                                 // start_y = sy_val(140). sy_val uses scale. So current_y is scaled.
                                 // We need to convert back to logical for mouse detection if we want logical.
@@ -1325,19 +1319,58 @@ impl SettingsWindow {
 
                             if i == 7 {
                                 // Multi-line rendering for System Prompt
-                                let chars: Vec<char> = final_text.chars().collect();
-                                let max_chars_per_line = 60; // Approximate
-                                let lines: Vec<String> = chars
-                                    .chunks(max_chars_per_line)
-                                    .map(|chunk| chunk.iter().collect())
-                                    .collect();
+                                let max_width = sc(500.0 - 40.0) as u32; // Allow padding
+                                let lines = wrap_text(
+                                    &final_text,
+                                    font,
+                                    rusttype::Scale::uniform(sc(14.0)),
+                                    max_width,
+                                );
 
                                 // Calculate actual height needed
                                 let line_count = lines.len().max(1);
-                                let needed_height = sc(12.0 + line_count as f32 * 20.0) + sc(20.0);
+                                let full_content_h = sc(12.0 + line_count as f32 * 20.0) + sc(20.0);
 
-                                // Override input_h for drawing the rect background
-                                let actual_input_h = needed_height as u32;
+                                // Limit visual height for System Prompt
+                                let max_sys_visual_h = sc(200.0);
+                                let actual_input_h = if full_content_h > max_sys_visual_h {
+                                    max_sys_visual_h as u32
+                                } else {
+                                    full_content_h as u32
+                                };
+
+                                // Store geometry for scrolling
+                                // approximate logical Y.
+                                // input_y is scaled.
+                                // we need consistent logic with handle_scroll.
+                                // Let's store SCREEN coordinates in rect for handle_scroll,
+                                // effectively bypassing the logical conversion issue if we pass screen pos to handle_scroll?
+                                // No, handle_scroll receives logical pos via our manual conversion OR raw screen pos.
+                                // In handle_scroll I did manual conversion.
+                                // So here we must store LOGICAL rect.
+                                // input_y = fy_scaled + ... = card_y + ...
+                                // logical_y = fy + offset
+
+                                // Let's just store the logical rect based on known layout
+                                // System prompt is index 7.
+                                // fy for 7 is 530.0.
+                                // card starts at 120.0 (logical)
+                                // so logical y start = 120 + 530 + 25 = 675.0 ?
+                                // logic: fy=530, card_y_logical=120.
+                                // input_y_logical = 120 + 530 + 25 = 675.0.
+                                // visual height = actual_input_h / scale.
+
+                                let sys_logical_y = input_y as f64 / scale as f64;
+                                let sys_logical_h = actual_input_h as f64 / scale as f64;
+
+                                self.active_sys_prompt_rect = Some((
+                                    230.0,
+                                    sys_logical_y,
+                                    730.0,
+                                    sys_logical_y + sys_logical_h,
+                                ));
+                                self.active_sys_prompt_content_height =
+                                    full_content_h / scale as f32;
 
                                 // Re-draw background with correct height
                                 let is_focused = self.focused_field == Some(i);
@@ -1367,16 +1400,81 @@ impl SettingsWindow {
                                     h,
                                 );
 
+                                // Helper for clipping
+                                let start_text_y = input_y + sc(12.0) as u32;
+                                let end_text_y = input_y + actual_input_h - sc(10.0) as u32;
+
                                 for (line_idx, line) in lines.iter().enumerate() {
+                                    let line_offset = line_idx as f32 * sc(20.0);
+                                    let draw_y_f = start_text_y as f32
+                                        + line_offset
+                                        + (self.system_prompt_scroll_offset * scale);
+
+                                    // Clip
+                                    if draw_y_f < start_text_y as f32 - sc(15.0) {
+                                        continue;
+                                    }
+                                    if draw_y_f > end_text_y as f32 {
+                                        break;
+                                    }
+
                                     Self::draw_text(
                                         &mut buffer,
                                         w,
                                         font,
                                         line,
                                         s(fx as u32) + sc(15.0) as u32,
-                                        input_y + sc(12.0 + line_idx as f32 * 20.0) as u32,
+                                        draw_y_f as u32,
                                         sc(14.0),
                                         display_col,
+                                    );
+                                }
+
+                                // Draw Scrollbar if needed
+                                if full_content_h > max_sys_visual_h {
+                                    let sb_w = sc(4.0) as u32;
+                                    let sb_h = actual_input_h - sc(10.0) as u32;
+                                    let sb_x = s(fx as u32 + fw as u32 - 10);
+                                    let sb_y = input_y + sc(5.0) as u32;
+
+                                    // Background
+                                    Self::draw_rect(
+                                        &mut buffer,
+                                        w,
+                                        sb_x,
+                                        sb_y,
+                                        sb_w,
+                                        sb_h,
+                                        0x00E3E5E7,
+                                        w,
+                                        h,
+                                    );
+
+                                    // Handle
+                                    let ratio = max_sys_visual_h / full_content_h;
+                                    let handle_h = (sb_h as f32 * ratio).max(sc(20.0));
+
+                                    let max_scroll = -(full_content_h - max_sys_visual_h); // negative
+                                                                                           // progress 0..1
+                                    let progress = if max_scroll.abs() < 1.0 {
+                                        0.0
+                                    } else {
+                                        self.system_prompt_scroll_offset * scale / max_scroll
+                                    };
+
+                                    let handle_y =
+                                        sb_y as f32 + (sb_h as f32 - handle_h) * progress;
+
+                                    Self::draw_rect(
+                                        &mut buffer,
+                                        w,
+                                        sb_x,
+                                        handle_y as u32,
+                                        sb_w,
+                                        handle_h as u32,
+                                        0x00A0A0A0,
+                                        w,
+                                        h,
                                     );
                                 }
 
@@ -1573,24 +1671,58 @@ impl SettingsWindow {
             }
         } else if self.current_tab == 2 {
             // AI Tab (Global Scroll)
-            self.scroll_offset += dy;
+            let mut scrolled_sys_prompt = false;
 
-            let content_h = if self.content_height > 0.0 {
-                self.content_height
-            } else {
-                1500.0 // Default large enough if not yet calculated
-            };
+            // Check system prompt internal scroll
+            if let Some((min_x, min_y, max_x, max_y)) = self.active_sys_prompt_rect {
+                if let Some(pos) = cursor_pos {
+                    let size = self.window.inner_size();
+                    let w = size.width as f64;
+                    let h = size.height as f64;
+                    let scale = (w / 800.0).min(h / 750.0);
+                    let off_x = (w - 800.0 * scale) / 2.0;
+                    let off_y = (h - 750.0 * scale) / 2.0;
+                    let lx = (pos.x - off_x) / scale;
+                    let ly = (pos.y - off_y) / scale;
 
-            // Viewport is window height
-            let viewport_h = 750.0; // Base logical height
+                    if lx >= min_x && lx <= max_x && ly >= min_y && ly <= max_y {
+                        self.system_prompt_scroll_offset += dy;
+                        // Clamp
+                        let view_h = 200.0;
+                        let content_h = self.active_sys_prompt_content_height;
+                        let min_offset = -(content_h - view_h).max(0.0);
 
-            let min_offset = -(content_h - viewport_h).max(0.0);
-
-            if self.scroll_offset < min_offset {
-                self.scroll_offset = min_offset;
+                        if self.system_prompt_scroll_offset < min_offset {
+                            self.system_prompt_scroll_offset = min_offset;
+                        }
+                        if self.system_prompt_scroll_offset > 0.0 {
+                            self.system_prompt_scroll_offset = 0.0;
+                        }
+                        scrolled_sys_prompt = true;
+                    }
+                }
             }
-            if self.scroll_offset > 0.0 {
-                self.scroll_offset = 0.0;
+
+            if !scrolled_sys_prompt {
+                self.scroll_offset += dy;
+
+                let content_h = if self.content_height > 0.0 {
+                    self.content_height
+                } else {
+                    1500.0
+                };
+
+                // Viewport is window height
+                let viewport_h = 750.0;
+
+                let min_offset = -(content_h - viewport_h).max(0.0);
+
+                if self.scroll_offset < min_offset {
+                    self.scroll_offset = min_offset;
+                }
+                if self.scroll_offset > 0.0 {
+                    self.scroll_offset = 0.0;
+                }
             }
         }
     }
@@ -1607,4 +1739,38 @@ fn glyph_width(glyphs: &[rusttype::PositionedGlyph]) -> u32 {
     } else {
         last.position().x as u32
     }
+}
+
+fn wrap_text(
+    text: &str,
+    font: &rusttype::Font,
+    scale: rusttype::Scale,
+    max_width: u32,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+
+    for c in text.chars() {
+        let mut test_line = current_line.clone();
+        test_line.push(c);
+
+        let glyphs: Vec<_> = font
+            .layout(&test_line, scale, rusttype::point(0.0, 0.0))
+            .collect();
+        let width = glyph_width(&glyphs);
+
+        if width > max_width && !current_line.is_empty() {
+            lines.push(current_line);
+            current_line = c.to_string();
+        } else {
+            current_line = test_line;
+        }
+    }
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
