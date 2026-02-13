@@ -304,6 +304,26 @@ impl MemoryManager {
         Ok(())
     }
 
+    pub fn get_recent_history(&self, limit: usize) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT role, content FROM (
+                SELECT id, role, content FROM conversations 
+                WHERE layer = 1 
+                ORDER BY id DESC 
+                LIMIT ?1
+            ) ORDER BY id ASC",
+        )?;
+
+        let rows = stmt.query_map(params![limit], |row| Ok((row.get(0)?, row.get(1)?)))?;
+
+        let mut history = Vec::new();
+        for row in rows {
+            history.push(row?);
+        }
+        Ok(history)
+    }
+
     pub fn prune_layers(&self, keep_count: usize) -> Result<()> {
         let conn = self.conn.lock().unwrap();
 

@@ -29,6 +29,11 @@ impl ChatKernel {
             skills,
         }
     }
+    pub fn get_recent_history(&self, limit: usize) -> Result<Vec<(String, String)>, String> {
+        self.memory
+            .get_recent_history(limit)
+            .map_err(|e| e.to_string())
+    }
 
     pub async fn handle(&self, input: String) -> String {
         let client = match &self.client {

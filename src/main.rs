@@ -185,7 +185,7 @@ fn main() {
 
     // AI Kernel & Channel
     let (ai_tx, ai_rx) = std::sync::mpsc::channel::<String>();
-    let _chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
+    let chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
     let music_dir = std::path::PathBuf::from("assets/music");
     if music_dir.exists() {
         music_player.set_path(music_dir);
@@ -949,9 +949,23 @@ fn main() {
                                                 ai_config.save();
                                                 sw.request_redraw();
                                             }
+                                            settings_window::SettingsAction::RequestHistory => {
+                                                if let Ok(history) = chat_kernel.get_recent_history(50) {
+                                                    sw.history = history;
+                                                    sw.request_redraw();
+                                                }
+                                            }
                                             settings_window::SettingsAction::None => {}
                                         }
                                     }
+                                }
+                                WindowEvent::MouseWheel { delta, .. } => {
+                                    let dy = match delta {
+                                        winit::event::MouseScrollDelta::LineDelta(_, y) => y * 30.0,
+                                        winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32,
+                                    };
+                                    sw.handle_scroll(dy);
+                                    sw.request_redraw();
                                 }
                                 WindowEvent::ModifiersChanged(modifiers) => {
                                     modifier_state = modifiers.state();

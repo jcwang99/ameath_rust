@@ -14,6 +14,8 @@ pub struct SettingsWindow {
     current_tab: usize,               // 0: Home, 1: General, 2: AI, 3: About
     pub focused_field: Option<usize>, // AI Tab focus: 0: Key, 1: URL, 2: Model, 3: ReAct, 4: L1 Thr, 5: L2 Thr
     show_api_key: bool,
+    pub history: Vec<(String, String)>,
+    pub scroll_offset: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +33,7 @@ pub enum SettingsAction {
     SetAiL2Threshold(usize),
     SetAiTavilyKey(String),
     SetAiSystemPrompt(String),
+    RequestHistory,
 }
 
 impl SettingsWindow {
@@ -50,16 +53,24 @@ impl SettingsWindow {
 
         // Sidebar Tab Selection
         if lx >= 0.0 && lx < 180.0 {
-            for i in 0..4 {
+            for i in 0..5 {
                 let my_min = 160.0 + i as f64 * 70.0 - 25.0;
                 let my_max = 160.0 + i as f64 * 70.0 + 25.0;
                 if ly >= my_min && ly <= my_max {
                     self.current_tab = i;
                     self.focused_field = None;
                     self.window.request_redraw();
+                    if i == 3 {
+                        return SettingsAction::RequestHistory;
+                    }
                     return SettingsAction::None;
                 }
             }
+        }
+
+        if self.current_tab == 3 {
+            // History Tab Click Handling (if any)
+            return SettingsAction::None;
         }
 
         if self.current_tab == 1 {
@@ -130,9 +141,6 @@ impl SettingsWindow {
         } else if self.current_tab == 2 {
             // AI Tab
             let ai_y_start = 120.0;
-            let field_gap = 100.0;
-            let input_x = 230.0;
-            let input_w = 500.0;
 
             let mut found_field = false;
             for i in 0..8 {
@@ -181,9 +189,9 @@ impl SettingsWindow {
                 let btn_w = 120.0;
                 let btn_h = 35.0;
                 let btn_x = 210.0 + 560.0 - btn_w - 20.0;
-                let btn_y = ai_y_start + 400.0 - btn_h - 15.0; // This button is now for the "Save" button, which is below the 6th field.
-                                                               // The Tavily Key field is below this, so the button Y needs to be adjusted.
-                                                               // Let's assume the save button is now below the 7th field.
+
+                // The Tavily Key field is below this, so the button Y needs to be adjusted.
+                // Let's assume the save button is now below the 7th field.
                 let save_btn_y = ai_y_start + 500.0 + 55.0 - btn_h - 15.0; // 500.0 is the fy for Tavily Key, 55.0 is height of input field + label gap
 
                 if lx >= btn_x
@@ -236,6 +244,8 @@ impl SettingsWindow {
             current_tab: 1, // Default to General (Appearance)
             focused_field: None,
             show_api_key: false,
+            history: Vec::new(),
+            scroll_offset: 0.0,
         }
     }
 
@@ -557,7 +567,7 @@ impl SettingsWindow {
                         sc(32.0),
                         primary,
                     );
-                    let menu_items = vec!["Home", "General", "AI", "About"];
+                    let menu_items = vec!["Home", "General", "AI", "History", "About"];
                     for (i, item) in menu_items.iter().enumerate() {
                         let my = sy_val(160 + i as u32 * 70);
                         let is_active = i == self.current_tab;
@@ -586,6 +596,7 @@ impl SettingsWindow {
                         0 => ("Home", "Welcome to Ameath!"),
                         1 => ("Appearance", "Customize your pet's look"),
                         2 => ("AI Brain", "Connect Ameath to the cloud"),
+                        3 => ("History", "Recent Local Memory (Last 50)"),
                         _ => ("About", "Ameath v0.1.0"),
                     };
                     Self::draw_text(
@@ -608,6 +619,74 @@ impl SettingsWindow {
                         sc(16.0),
                         text_sec,
                     );
+                }
+
+                if self.current_tab == 3 {
+                    // History Tab
+                    if let Some(font) = &self.font {
+                        let start_y = sy_val(140);
+                        let item_h = sc(60.0) as u32; // Height per history item
+
+                        for (i, (role, content)) in self.history.iter().enumerate() {
+                            let item_h_f32 = item_h as f32;
+                            let y_pos =
+                                start_y as f32 + self.scroll_offset + (i as f32 * item_h_f32);
+                            let min_y = sy_val(140) as f32;
+                            let max_y = h as f32;
+
+                            // Simple culling
+                            if (y_pos + item_h_f32) < min_y || y_pos > max_y {
+                                continue;
+                            }
+
+                            let role_col = if role == "user" {
+                                0x00007ACC
+                            } else {
+                                0x002E8B57
+                            };
+                            Self::draw_text(
+                                &mut buffer,
+                                w,
+                                font,
+                                role,
+                                s(230),
+                                y_pos as u32,
+                                sc(14.0),
+                                role_col,
+                            );
+
+                            let display_content = if content.chars().count() > 30 {
+                                let substr: String = content.chars().take(30).collect();
+                                format!("{}...", substr.replace("\n", " "))
+                            } else {
+                                content.replace("\n", " ")
+                            };
+
+                            Self::draw_text(
+                                &mut buffer,
+                                w,
+                                font,
+                                &display_content,
+                                s(230),
+                                y_pos as u32 + sc(20.0) as u32,
+                                sc(16.0),
+                                text_main,
+                            );
+
+                            // Divider
+                            Self::draw_rect(
+                                &mut buffer,
+                                w,
+                                s(230),
+                                y_pos as u32 + item_h - 5,
+                                (500.0 * scale) as u32,
+                                1,
+                                0x00E3E5E7,
+                                w,
+                                h,
+                            );
+                        }
+                    }
                 }
 
                 if self.current_tab == 1 {
@@ -1094,6 +1173,31 @@ impl SettingsWindow {
                 }
                 buffer.present().unwrap();
             }
+        }
+    }
+    pub fn handle_scroll(&mut self, dy: f32) {
+        if self.current_tab != 3 {
+            return;
+        }
+
+        // Scroll speed
+        self.scroll_offset += dy;
+
+        // Clamp
+        // Content height ~ history.len() * 60
+        // Viewport ~ 600
+        let item_h = 60.0; // unscaled estimate for logic
+        let content_h = self.history.len() as f32 * item_h;
+        let viewport_h = 600.0;
+
+        let min_offset = -(content_h - viewport_h).max(0.0);
+        let max_offset = 0.0;
+
+        if self.scroll_offset < min_offset {
+            self.scroll_offset = min_offset;
+        }
+        if self.scroll_offset > max_offset {
+            self.scroll_offset = max_offset;
         }
     }
 }
