@@ -139,6 +139,7 @@ fn main() {
     pet.state = PetState::Move;
 
     let mut ai_config = types::AiConfig::load();
+    let mut window_config = types::WindowConfig::load(); // Load window config
     let mut modifier_state = winit::keyboard::ModifiersState::default();
     let mut chat_window = ChatWindow::new(&event_loop);
     let mut is_thinking = false;
@@ -150,12 +151,25 @@ fn main() {
             .with_inner_size(winit::dpi::PhysicalSize::new(win_w, win_h))
             .with_decorations(false)
             .with_transparent(true)
-            .with_visible(true)
+            .with_visible(false) // Start invisible to avoid jumping
             .with_skip_taskbar(true)
             .with_window_level(WindowLevel::AlwaysOnTop)
             .build(&event_loop)
             .unwrap(),
     );
+
+    // Initial positioning based on config
+    if let Some(ref monitor_name) = window_config.monitor_name {
+        let available = window.available_monitors();
+        if let Some(monitor) = available.into_iter().find(|m| m.name().as_ref() == Some(monitor_name)) {
+             let pos = monitor.position();
+             let size = monitor.size();
+             let center_x = pos.x + (size.width as i32 / 2) - (win_w as i32 / 2);
+             let center_y = pos.y + (size.height as i32 / 2) - (win_h as i32 / 2);
+             window.set_outer_position(winit::dpi::PhysicalPosition::new(center_x, center_y));
+        }
+    }
+    window.set_visible(true);
 
     // Determine refresh rate
     let monitor = window.current_monitor();
@@ -723,10 +737,11 @@ fn main() {
                                                                 }
                                                                 "settings" => {
                                                                     if settings_win.is_none() {
-                                                                        let sw =
+                                                                        let mut sw =
                                                                             SettingsWindow::new(
                                                                                 elwt,
                                                                             );
+                                                                        sw.current_monitor_name = window_config.monitor_name.clone();
                                                                         sw.request_redraw();
                                                                         settings_win = Some(sw);
                                                                     } else {
@@ -949,6 +964,32 @@ fn main() {
                                                 ai_config.tavily_api_key = key;
                                                 ai_config.save();
                                                 sw.request_redraw();
+                                            }
+                                            settings_window::SettingsAction::SetMonitor(name) => {
+                                                // Find monitor by name
+                                                let available = window.available_monitors();
+                                                if let Some(monitor) = available.into_iter().find(|m| m.name().as_ref() == Some(&name)) {
+                                                    let pos = monitor.position();
+                                                    let size = monitor.size();
+                                                    
+                                                    // Move window to center of new monitor
+                                                    // This is tricky because we need to account for DPI.
+                                                    // We can just set the position to the monitor's top-left + center offset.
+                                                    let win_size = window.inner_size();
+                                                    let center_x = pos.x + (size.width as i32 / 2) - (win_size.width as i32 / 2);
+                                                    let center_y = pos.y + (size.height as i32 / 2) - (win_size.height as i32 / 2);
+                                                    
+                                                    window.set_outer_position(winit::dpi::PhysicalPosition::new(center_x, center_y));
+                                                    
+                                                    // Update config
+                                                    window_config.monitor_name = Some(name.clone());
+                                                    window_config.save();
+                                                    
+                                                    sw.current_monitor_name = Some(name);
+                                                    
+                                                    // Update pet screen size
+                                                    pet.screen_size = (size.width as f64, size.height as f64);
+                                                }
                                             }
                                             settings_window::SettingsAction::SetAiSystemPrompt(prompt) => {
                                                 ai_config.system_prompt = prompt;

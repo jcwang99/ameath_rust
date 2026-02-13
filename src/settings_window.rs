@@ -25,6 +25,8 @@ pub struct SettingsWindow {
     pub system_prompt_scroll_offset: f32,
     pub active_sys_prompt_rect: Option<(f64, f64, f64, f64)>,
     pub active_sys_prompt_content_height: f32,
+    pub available_monitors: Vec<(String, String)>,
+    pub current_monitor_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,6 +45,7 @@ pub enum SettingsAction {
     SetAiTavilyKey(String),
     SetAiSystemPrompt(String),
     RequestHistory,
+    SetMonitor(String),
 }
 
 impl SettingsWindow {
@@ -128,8 +131,11 @@ impl SettingsWindow {
 
         if self.current_tab == 1 {
             // General Tab (Appearance)
+            let scroll_y = self.scroll_offset as f64 / scale;
+            let sly = ly - scroll_y; // Scrolled logical Y
+
             // Pet Scale Buttons (Visual: card1_y=120, buttons at 180)
-            if ly >= 180.0 && ly <= 230.0 {
+            if sly >= 180.0 && sly <= 230.0 {
                 let start_x = 220.0;
                 let btn_w = 75.0;
                 let gap = 10.0;
@@ -143,7 +149,7 @@ impl SettingsWindow {
             }
 
             // Mode Buttons (Visual: card2_y=280, buttons at 340)
-            if ly >= 340.0 && ly <= 400.0 {
+            if sly >= 340.0 && sly <= 400.0 {
                 let btn_w = 150.0;
                 let gap = 15.0;
                 let start_x = 230.0;
@@ -161,7 +167,7 @@ impl SettingsWindow {
             }
 
             // Music Path Button (Visual: card3_y=440, buttons at 500)
-            if ly >= 500.0 && ly <= 550.0 {
+            if sly >= 500.0 && sly <= 550.0 {
                 let start_x = 230.0;
                 let btn_w = 500.0;
                 if lx >= start_x && lx <= start_x + btn_w {
@@ -179,7 +185,7 @@ impl SettingsWindow {
             }
 
             // Layer Buttons (Visual: card4_y=600, buttons at 660)
-            if ly >= 660.0 && ly <= 720.0 {
+            if sly >= 660.0 && sly <= 720.0 {
                 let btn_w = 150.0;
                 let gap = 15.0;
                 let start_x = 230.0;
@@ -191,11 +197,32 @@ impl SettingsWindow {
                     return SettingsAction::SetLayer(crate::types::WindowLayer::Bottom);
                 }
             }
+
+            // Monitor Selection (Visual: card5_y=760, buttons at 820)
+            // Dynamic height based on rows
+            let rows = (self.available_monitors.len() + 2) / 3;
+            let monitors_h = if rows > 0 { rows as f64 * 65.0 } else { 65.0 };
+
+            if sly >= 820.0 && sly <= 820.0 + monitors_h {
+                for (i, (name, _)) in self.available_monitors.iter().enumerate() {
+                    let row = i / 3;
+                    let col = i % 3;
+                    // mx = 230 + col * 110
+                    // my = 820 + row * 65
+                    let btn_x = 230.0 + col as f64 * 110.0;
+                    let btn_y = 820.0 + row as f64 * 65.0;
+                    let btn_w = 100.0;
+
+                    if lx >= btn_x && lx <= btn_x + btn_w && sly >= btn_y && sly <= btn_y + 55.0 {
+                        return SettingsAction::SetMonitor(name.clone());
+                    }
+                }
+            }
         } else if self.current_tab == 2 {
             // AI Tab
             let ai_y_start = 120.0;
             // Apply scroll offset to click check
-            let scroll_y = self.scroll_offset as f64;
+            let scroll_y = self.scroll_offset as f64 / scale;
 
             let mut found_field = false;
             for i in 0..8 {
@@ -301,6 +328,11 @@ impl SettingsWindow {
             system_prompt_scroll_offset: 0.0,
             active_sys_prompt_rect: None,
             active_sys_prompt_content_height: 0.0,
+            available_monitors: event_loop
+                .available_monitors()
+                .map(|m| (m.name().unwrap_or_default(), m.name().unwrap_or_default()))
+                .collect(),
+            current_monitor_name: None, // Will be set by main.rs on startup or selection
         }
     }
 
@@ -893,8 +925,10 @@ impl SettingsWindow {
 
                 if self.current_tab == 1 {
                     // --- General Tab ---
+                    let scroll_y = self.scroll_offset;
                     let card_w = (560.0 * scale) as u32;
-                    let card1_y = sy_val(120);
+                    let card1_y = (sy_val(120) as f32 + scroll_y) as u32;
+
                     Self::draw_rounded_rect(
                         &mut buffer,
                         w,
@@ -953,7 +987,7 @@ impl SettingsWindow {
                         }
                     }
 
-                    let card2_y = sy_val(280);
+                    let card2_y = (sy_val(280) as f32 + scroll_y) as u32;
                     Self::draw_rounded_rect(
                         &mut buffer,
                         w,
@@ -1034,7 +1068,7 @@ impl SettingsWindow {
                         }
                     }
 
-                    let card3_y = sy_val(440);
+                    let card3_y = (sy_val(440) as f32 + scroll_y) as u32;
                     Self::draw_rounded_rect(
                         &mut buffer,
                         w,
@@ -1098,7 +1132,7 @@ impl SettingsWindow {
                         );
                     }
 
-                    let card4_y = sy_val(600);
+                    let card4_y = (sy_val(600) as f32 + scroll_y) as u32;
                     Self::draw_rounded_rect(
                         &mut buffer,
                         w,
@@ -1181,6 +1215,80 @@ impl SettingsWindow {
                             );
                         }
                     }
+
+                    // --- Monitor Selection (Card 5) ---
+                    let card5_y = (sy_val(760) as f32 + scroll_y) as u32;
+                    let mut card5_h = (140.0 * scale) as u32; // Base height
+                                                              // Add rows for monitors
+                    let rows = (self.available_monitors.len() + 2) / 3;
+                    if rows > 1 {
+                        card5_h += (rows as u32 - 1) * sc(70.0) as u32;
+                    }
+
+                    Self::draw_rounded_rect(
+                        &mut buffer,
+                        w,
+                        s(210),
+                        card5_y,
+                        card_w,
+                        card5_h,
+                        12,
+                        card_bg,
+                        w,
+                        h,
+                    );
+                    if let Some(font) = &self.font {
+                        Self::draw_text(
+                            &mut buffer,
+                            w,
+                            font,
+                            "Monitor Selection",
+                            s(230),
+                            card5_y + sc(20.0) as u32,
+                            sc(18.0),
+                            text_main,
+                        );
+                        for (i, (name, _)) in self.available_monitors.iter().enumerate() {
+                            let row = i / 3;
+                            let col = i % 3;
+                            let mx = s(230 + col as u32 * 110);
+                            let my = card5_y + sc(60.0 + row as f32 * 65.0) as u32;
+                            let is_active = self.current_monitor_name.as_ref() == Some(name);
+                            let bg_col = if is_active { primary } else { 0x00F1F2F3 };
+                            let text_col = if is_active { 0x00FFFFFF } else { text_main };
+
+                            Self::draw_rounded_rect(
+                                &mut buffer,
+                                w,
+                                mx,
+                                my,
+                                sc(100.0) as u32,
+                                sc(55.0) as u32,
+                                8,
+                                bg_col,
+                                w,
+                                h,
+                            );
+
+                            // Truncate name if too long?
+                            let disp_name = if name.len() > 10 { &name[..10] } else { name };
+                            Self::draw_text(
+                                &mut buffer,
+                                w,
+                                font,
+                                disp_name,
+                                mx + sc(10.0) as u32,
+                                my + sc(18.0) as u32,
+                                sc(13.0),
+                                text_col,
+                            );
+                        }
+                    }
+
+                    // Set content height for scrolling
+                    let bottom_y = 760.0 + (card5_h as f32 / scale); // Logical bottom of card5
+                    self.content_height = (bottom_y + 50.0) * scale; // Physical content height
+                    self.viewport_height = h as f32; // Physical viewport height
                 } else if self.current_tab == 2 {
                     // --- AI Tab ---
                     let card_w = (560.0 * scale) as u32;
@@ -1723,6 +1831,26 @@ impl SettingsWindow {
                 if self.scroll_offset > 0.0 {
                     self.scroll_offset = 0.0;
                 }
+            }
+        } else if self.current_tab == 1 {
+            self.scroll_offset += dy;
+            let content_h = if self.content_height > 0.0 {
+                self.content_height
+            } else {
+                800.0
+            };
+            let viewport_h = if self.viewport_height > 0.0 {
+                self.viewport_height
+            } else {
+                750.0
+            };
+
+            let min_offset = -(content_h - viewport_h).max(0.0);
+            if self.scroll_offset < min_offset {
+                self.scroll_offset = min_offset;
+            }
+            if self.scroll_offset > 0.0 {
+                self.scroll_offset = 0.0;
             }
         }
     }

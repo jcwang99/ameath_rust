@@ -146,3 +146,45 @@ pub enum WindowLayer {
     Top,
     Bottom,
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WindowConfig {
+    pub monitor_name: Option<String>,
+}
+
+impl Default for WindowConfig {
+    fn default() -> Self {
+        Self { monitor_name: None }
+    }
+}
+
+impl WindowConfig {
+    pub fn load() -> Self {
+        let path = Self::path();
+        if path.exists() {
+            if let Ok(content) = fs::read_to_string(path) {
+                if let Ok(config) = serde_json::from_str::<Self>(&content) {
+                    return config;
+                }
+            }
+        }
+        Self::default()
+    }
+
+    pub fn save(&self) {
+        let path = Self::path();
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(content) = serde_json::to_string_pretty(self) {
+            let _ = fs::write(path, content);
+        }
+    }
+
+    fn path() -> PathBuf {
+        let mut path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+        path.pop();
+        path.push("window_config.json");
+        path
+    }
+}
