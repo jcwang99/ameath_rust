@@ -977,6 +977,11 @@ fn main() {
                                         // Redraw happens inside handle_key_input
                                     }
                                 }
+                                WindowEvent::Ime(ime_event) => {
+                                    if let winit::event::Ime::Commit(text) = ime_event {
+                                        sw.handle_ime(&text, &mut ai_config);
+                                    }
+                                }
                                 WindowEvent::CursorMoved { position, .. } => {
                                     settings_cursor_pos = Some(position);
                                 }

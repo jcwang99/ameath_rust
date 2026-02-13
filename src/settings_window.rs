@@ -184,23 +184,33 @@ impl SettingsWindow {
         } else if self.current_tab == 2 {
             // AI Tab
             let ai_y_start = 120.0;
+            // Apply scroll offset to click check
+            let scroll_y = self.scroll_offset as f64;
 
             let mut found_field = false;
             for i in 0..8 {
-                // Changed from 0..7 to 0..8
                 let (fx, fy, fw) = match i {
-                    0 => (230.0, ai_y_start + 55.0, 500.0),
-                    1 => (230.0, ai_y_start + 155.0, 500.0),
-                    2 => (230.0, ai_y_start + 255.0, 500.0),
-                    3 => (230.0, ai_y_start + 355.0, 150.0),
-                    4 => (405.0, ai_y_start + 355.0, 150.0),
-                    5 => (580.0, ai_y_start + 355.0, 150.0),
-                    6 => (230.0, ai_y_start + 455.0, 500.0), // Tavily Key
-                    7 => (230.0, ai_y_start + 555.0, 500.0), // System Prompt
+                    0 => (230.0, 30.0, 500.0),
+                    1 => (230.0, 130.0, 500.0),
+                    2 => (230.0, 230.0, 500.0),
+                    3 => (230.0, 330.0, 150.0), // Smaller numeric fields
+                    4 => (405.0, 330.0, 150.0),
+                    5 => (580.0, 330.0, 150.0),
+                    6 => (230.0, 430.0, 500.0), // Tavily Key
+                    7 => (230.0, 530.0, 500.0), // System Prompt
                     _ => (0.0, 0.0, 0.0),
                 };
 
-                if lx >= fx && lx <= fx + fw && ly >= fy && ly <= fy + 45.0 {
+                // Match the drawing logic:
+                // let fy_scaled = card_y + sc(fy) as u32;
+                // card_y = sy_val(120) + scroll_y
+                // So effective Y is 120 + fy + scroll_y (in unscaled coords)
+
+                let effective_y = ai_y_start + fy + scroll_y;
+                let input_y = effective_y + 25.0; // Label is at effective_y, input is +25
+                let input_h = if i == 7 { 150.0 } else { 45.0 };
+
+                if lx >= fx && lx <= fx + fw && ly >= input_y && ly <= input_y + input_h {
                     found_field = true;
                     if is_right_click {
                         match i {
@@ -215,7 +225,7 @@ impl SettingsWindow {
                             _ => {}
                         }
                     } else {
-                        if (i == 0 || i == 6) && lx >= fx + fw - 45.0 {
+                        if (i == 0 || i == 6) && lx >= fx + fw - 45.0 && ly <= input_y + 45.0 {
                             // Check for eye icon click for API Key and Tavily Key
                             self.show_api_key = !self.show_api_key;
                             self.window.request_redraw();
@@ -229,24 +239,6 @@ impl SettingsWindow {
             }
 
             if !found_field {
-                let btn_w = 120.0;
-                let btn_h = 35.0;
-                let btn_x = 210.0 + 560.0 - btn_w - 20.0;
-
-                // The Tavily Key field is below this, so the button Y needs to be adjusted.
-                // Let's assume the save button is now below the 7th field.
-                let save_btn_y = ai_y_start + 500.0 + 55.0 - btn_h - 15.0; // 500.0 is the fy for Tavily Key, 55.0 is height of input field + label gap
-
-                if lx >= btn_x
-                    && lx <= btn_x + btn_w
-                    && ly >= save_btn_y
-                    && ly <= save_btn_y + btn_h
-                {
-                    self.focused_field = None;
-                    self.window.request_redraw();
-                    return SettingsAction::None;
-                }
-
                 self.focused_field = None;
                 self.window.request_redraw();
             }
@@ -265,6 +257,7 @@ impl SettingsWindow {
                 .build(event_loop)
                 .unwrap(),
         );
+        window.set_ime_allowed(true); // Enable IME support explicitly
 
         let context = Context::new(window.clone()).unwrap();
         let surface = Surface::new(&context, window.clone()).unwrap();
@@ -1074,8 +1067,11 @@ impl SettingsWindow {
                 } else if self.current_tab == 2 {
                     // --- AI Tab ---
                     let card_w = (560.0 * scale) as u32;
-                    let card_h = (550.0 * scale) as u32; // Increased height to accommodate new field
-                    let card_y = sy_val(120);
+                    let card_h = (750.0 * scale) as u32; // Increased height for multi-line field
+                                                         // Apply scroll offset here!
+                    let scroll_y = self.scroll_offset * scale;
+                    let card_y = (sy_val(120) as f32 + scroll_y) as u32;
+
                     Self::draw_rounded_rect(
                         &mut buffer,
                         w,
@@ -1096,6 +1092,7 @@ impl SettingsWindow {
                         ("L1 Summary", ai_config.l1_summary_threshold.to_string()),
                         ("L2 Merge", ai_config.l2_merge_threshold.to_string()),
                         ("Tavily Key", ai_config.tavily_api_key.clone()),
+                        ("System Prompt", ai_config.system_prompt.clone()),
                     ];
                     for (i, (label, val)) in fields.iter().enumerate() {
                         let (fx, fy, fw) = match i {
@@ -1125,7 +1122,11 @@ impl SettingsWindow {
                         }
                         let input_y = fy_scaled + sc(25.0) as u32;
                         let input_w = sc(fw as f32) as u32;
-                        let input_h = sc(45.0) as u32;
+                        let input_h = if i == 7 {
+                            sc(150.0) as u32
+                        } else {
+                            sc(45.0) as u32
+                        };
                         let is_focused = self.focused_field == Some(i);
                         let border_col = if is_focused { primary } else { 0x00E3E5E7 };
                         Self::draw_rounded_rect(
@@ -1193,64 +1194,110 @@ impl SettingsWindow {
                                 );
                             }
 
-                            // SAFE TRUNCATION (Fixes panic)
-                            if final_text.chars().count() > 50 {
+                            // SAFE TRUNCATION (Fixes panic) - Skip for System Prompt (7)
+                            if i != 7 && final_text.chars().count() > 50 {
                                 final_text =
                                     final_text.chars().take(47).collect::<String>() + "...";
                             }
 
-                            Self::draw_text(
-                                &mut buffer,
-                                w,
-                                font,
-                                &final_text,
-                                s(fx as u32) + sc(15.0) as u32,
-                                input_y + sc(12.0) as u32,
-                                sc(14.0),
-                                display_col,
-                            );
-                            if is_focused {
-                                let glyphs: Vec<_> = font
-                                    .layout(&final_text, Scale::uniform(sc(14.0)), point(0.0, 0.0))
+                            if i == 7 {
+                                // Multi-line rendering for System Prompt
+                                let chars: Vec<char> = final_text.chars().collect();
+                                let max_chars_per_line = 60; // Approximate
+                                let lines: Vec<String> = chars
+                                    .chunks(max_chars_per_line)
+                                    .map(|chunk| chunk.iter().collect())
                                     .collect();
-                                let tw = if val.is_empty() {
-                                    0
-                                } else {
-                                    glyph_width(&glyphs)
-                                };
-                                let cursor_x = s(fx as u32) + sc(15.0) as u32 + tw + 2;
-                                if cursor_x < s(fx as u32) + input_w {
-                                    Self::draw_rect(
+
+                                for (line_idx, line) in lines.iter().enumerate() {
+                                    Self::draw_text(
                                         &mut buffer,
                                         w,
-                                        cursor_x,
-                                        input_y + sc(12.0) as u32,
-                                        2,
-                                        sc(22.0) as u32,
-                                        primary,
-                                        w,
-                                        h,
+                                        font,
+                                        line,
+                                        s(fx as u32) + sc(15.0) as u32,
+                                        input_y + sc(12.0 + line_idx as f32 * 20.0) as u32,
+                                        sc(14.0),
+                                        display_col,
                                     );
+                                }
+
+                                // Simple Cursor (at end of last line)
+                                if is_focused {
+                                    let last_line = lines.last().cloned().unwrap_or_default();
+                                    let line_count = lines.len().max(1);
+                                    let glyphs: Vec<_> = font
+                                        .layout(
+                                            &last_line,
+                                            Scale::uniform(sc(14.0)),
+                                            point(0.0, 0.0),
+                                        )
+                                        .collect();
+                                    let tw = glyph_width(&glyphs);
+
+                                    let cursor_x = s(fx as u32) + sc(15.0) as u32 + tw + 2;
+                                    let cursor_y =
+                                        input_y + sc(12.0 + (line_count - 1) as f32 * 20.0) as u32;
+
+                                    if cursor_y < input_y + input_h {
+                                        Self::draw_rect(
+                                            &mut buffer,
+                                            w,
+                                            cursor_x,
+                                            cursor_y,
+                                            2,
+                                            sc(22.0) as u32,
+                                            primary,
+                                            w,
+                                            h,
+                                        );
+                                    }
+                                }
+                            } else {
+                                // Single-line rendering for others
+                                Self::draw_text(
+                                    &mut buffer,
+                                    w,
+                                    font,
+                                    &final_text,
+                                    s(fx as u32) + sc(15.0) as u32,
+                                    input_y + sc(12.0) as u32,
+                                    sc(14.0),
+                                    display_col,
+                                );
+                                if is_focused {
+                                    let glyphs: Vec<_> = font
+                                        .layout(
+                                            &final_text,
+                                            Scale::uniform(sc(14.0)),
+                                            point(0.0, 0.0),
+                                        )
+                                        .collect();
+                                    let tw = if val.is_empty() {
+                                        0
+                                    } else {
+                                        glyph_width(&glyphs)
+                                    };
+                                    let cursor_x = s(fx as u32) + sc(15.0) as u32 + tw + 2;
+                                    if cursor_x < s(fx as u32) + input_w {
+                                        Self::draw_rect(
+                                            &mut buffer,
+                                            w,
+                                            cursor_x,
+                                            input_y + sc(12.0) as u32,
+                                            2,
+                                            sc(22.0) as u32,
+                                            primary,
+                                            w,
+                                            h,
+                                        );
+                                    }
                                 }
                             }
                         }
                     }
+
                     if let Some(font) = &self.font {
-                        let bw = sc(120.0) as u32;
-                        let bh = sc(35.0) as u32;
-                        let bx = s(210 + 560 - 120 - 20);
-                        let by = card_y + (400.0 * scale) as u32 - bh - sc(15.0) as u32;
-                        Self::draw_rounded_rect(&mut buffer, w, bx, by, bw, bh, 6, primary, w, h);
-                        Self::draw_text(
-                            &mut buffer,
-                            w,
-                            font,
-                            "Save",
-                            bx + sc(35.0) as u32,
-                            by + sc(8.0) as u32,
-                            sc(14.0),
-                            0xFFFFFFFF,
-                        );
                         Self::draw_text(
                             &mut buffer,
                             w,
@@ -1267,29 +1314,56 @@ impl SettingsWindow {
             }
         }
     }
+    pub fn handle_ime(&mut self, text: &str, ai_config: &mut crate::types::AiConfig) -> bool {
+        if self.current_tab != 2 {
+            return false;
+        }
+        if let Some(idx) = self.focused_field {
+            match idx {
+                0 => ai_config.api_key.push_str(text),
+                1 => ai_config.base_url.push_str(text),
+                2 => ai_config.model.push_str(text),
+                6 => ai_config.tavily_api_key.push_str(text),
+                7 => ai_config.system_prompt.push_str(text),
+                3 | 4 | 5 => {
+                    // Numeric only, ignore IME
+                }
+                _ => {}
+            }
+            ai_config.save();
+            self.window.request_redraw();
+            return true;
+        }
+        false
+    }
+
     pub fn handle_scroll(&mut self, dy: f32) {
-        if self.current_tab != 3 {
-            return;
-        }
+        if self.current_tab == 3 {
+            // History Tab
+            self.scroll_offset += dy;
+            let item_h = 60.0;
+            let content_h = self.history.len() as f32 * item_h;
+            let viewport_h = 600.0;
+            let min_offset = -(content_h - viewport_h).max(0.0);
+            if self.scroll_offset < min_offset {
+                self.scroll_offset = min_offset;
+            }
+            if self.scroll_offset > 0.0 {
+                self.scroll_offset = 0.0;
+            }
+        } else if self.current_tab == 2 {
+            // AI Tab (Global Scroll)
+            self.scroll_offset += dy;
+            // Allow scrolling if content is taller than viewport
+            // Allow a bit more scroll for safety (-300.0)
+            let min_offset = -300.0f32;
 
-        // Scroll speed
-        self.scroll_offset += dy;
-
-        // Clamp
-        // Content height ~ history.len() * 60
-        // Viewport ~ 600
-        let item_h = 60.0; // unscaled estimate for logic
-        let content_h = self.history.len() as f32 * item_h;
-        let viewport_h = 600.0;
-
-        let min_offset = -(content_h - viewport_h).max(0.0);
-        let max_offset = 0.0;
-
-        if self.scroll_offset < min_offset {
-            self.scroll_offset = min_offset;
-        }
-        if self.scroll_offset > max_offset {
-            self.scroll_offset = max_offset;
+            if self.scroll_offset < min_offset {
+                self.scroll_offset = min_offset;
+            }
+            if self.scroll_offset > 0.0 {
+                self.scroll_offset = 0.0;
+            }
         }
     }
 }
