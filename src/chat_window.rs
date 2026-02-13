@@ -31,7 +31,7 @@ impl ChatWindow {
     pub fn new<T>(event_loop: &EventLoopWindowTarget<T>) -> Self {
         let window = WindowBuilder::new()
             .with_title("Ameath Chat")
-            .with_inner_size(PhysicalSize::new(300, 60)) // Compact size
+            .with_inner_size(PhysicalSize::new(600, 60)) // Wider size: 600
             .with_decorations(false) // No title bar
             .with_visible(false)
             .with_window_level(WindowLevel::AlwaysOnTop)
@@ -120,7 +120,9 @@ impl ChatWindow {
                         if !self.input_text.trim().is_empty() {
                             let msg = self.input_text.clone();
                             self.input_text.clear();
-                            self.hide();
+                            // Don't close on send, keep open for more chat
+                            // self.hide();
+                            self.request_redraw();
                             return ChatAction::Send(msg);
                         }
                     }
@@ -155,25 +157,75 @@ impl ChatWindow {
     }
 
     fn redraw(&mut self) {
-        let size = self.window.inner_size();
-        if size.width == 0 || size.height == 0 {
-            return;
-        }
+        // 1. Calculate layout first to determine needed height
+        let scale = Scale::uniform(24.0);
+        let v_metrics = self.font.v_metrics(scale);
+        let padding = 10.0;
+        let line_height = v_metrics.ascent - v_metrics.descent + v_metrics.line_gap;
+        let max_width = 600.0 - (padding * 2.0); // 580.0
 
-        let new_size = (size.width, size.height);
-        if self.last_size != Some(new_size) {
+        // Wrap text
+        let mut lines = Vec::new();
+        let mut current_line = String::new();
+        let mut current_width = 0.0;
+
+        for c in self.input_text.chars() {
+            let glyph = self.font.glyph(c).scaled(scale);
+            let h_metrics = glyph.h_metrics();
+            let advance = h_metrics.advance_width;
+
+            if current_width + advance > max_width {
+                lines.push(current_line);
+                current_line = String::new();
+                current_width = 0.0;
+            }
+            current_line.push(c);
+            current_width += advance;
+        }
+        lines.push(current_line); // Push last line
+
+        let num_lines = lines.len().max(1);
+        let content_height = (num_lines as f32 * line_height) + (padding * 2.0);
+        let target_height = content_height.max(60.0) as u32;
+
+        // 2. Resize window if needed
+        let current_size = self.window.inner_size();
+        if current_size.height != target_height {
+            let _ = self
+                .window
+                .request_inner_size(PhysicalSize::new(600, target_height));
+            // Return early, let the next resize event trigger redraw to avoid flickering/race
+            // or just continue drawing to the new surface size if immediate
             self.surface
                 .resize(
-                    NonZeroU32::new(size.width).unwrap(),
-                    NonZeroU32::new(size.height).unwrap(),
+                    NonZeroU32::new(600).unwrap(),
+                    NonZeroU32::new(target_height).unwrap(),
                 )
                 .unwrap();
-            self.last_size = Some(new_size);
+            self.last_size = Some((600, target_height));
+        } else if self.last_size != Some((current_size.width, current_size.height)) {
+            self.surface
+                .resize(
+                    NonZeroU32::new(current_size.width).unwrap(),
+                    NonZeroU32::new(current_size.height).unwrap(),
+                )
+                .unwrap();
+            self.last_size = Some((current_size.width, current_size.height));
         }
 
         let mut buffer = self.surface.buffer_mut().unwrap();
-        let width = size.width as usize;
-        let height = size.height as usize;
+        let width = 600; // Fixed width logic for buffer
+        let height = target_height as usize;
+
+        if buffer.len() != width * height {
+            // Surface resize might not have propagated to buffer len yet if we just resized?
+            // Actually surface.resize should handle it. match width/height to buffer len just in case
+            // Or trust the target_height
+        }
+
+        // Safety check for buffer size vs loop limits
+        let buf_w = width;
+        let buf_h = height;
 
         // Colors
         let bg_color = 0xFF2D2D2D; // Dark grey
@@ -184,47 +236,53 @@ impl ChatWindow {
         // Fill background
         buffer.fill(0);
 
-        for y in 0..height {
-            for x in 0..width {
+        for y in 0..buf_h {
+            for x in 0..buf_w {
                 // Border
-                if x < 2 || x >= width - 2 || y < 2 || y >= height - 2 {
-                    buffer[y * width + x] = border_color;
+                if x < 2 || x >= buf_w - 2 || y < 2 || y >= buf_h - 2 {
+                    buffer[y * buf_w + x] = border_color;
                 } else {
-                    buffer[y * width + x] = bg_color;
+                    buffer[y * buf_w + x] = bg_color;
                 }
             }
         }
 
         // Draw text
-        let scale = Scale::uniform(24.0);
-        let v_metrics = self.font.v_metrics(scale);
-        let offset = point(10.0, v_metrics.ascent + 10.0);
+        for (i, line) in lines.iter().enumerate() {
+            let y_pos = padding + v_metrics.ascent + (i as f32 * line_height);
+            let offset = point(padding, y_pos);
 
-        // Draw input text
-        let glyphs: Vec<_> = self.font.layout(&self.input_text, scale, offset).collect();
-        for glyph in glyphs {
-            if let Some(bb) = glyph.pixel_bounding_box() {
-                glyph.draw(|x, y, v| {
-                    let px = x as i32 + bb.min.x;
-                    let py = y as i32 + bb.min.y;
-                    if v > 0.5 && px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
-                        buffer[py as usize * width + px as usize] = text_color;
-                    }
-                });
+            let glyphs: Vec<_> = self.font.layout(line, scale, offset).collect();
+            for glyph in glyphs {
+                if let Some(bb) = glyph.pixel_bounding_box() {
+                    glyph.draw(|x, y, v| {
+                        let px = x as i32 + bb.min.x;
+                        let py = y as i32 + bb.min.y;
+                        if v > 0.5 && px >= 0 && px < buf_w as i32 && py >= 0 && py < buf_h as i32 {
+                            buffer[py as usize * buf_w + px as usize] = text_color;
+                        }
+                    });
+                }
             }
         }
 
-        // Draw blinking cursor (simple implementation: always draw for now)
-        // Would handle blinking in main loop via timer
-        let cursor_x = if let Some(last) = self.font.layout(&self.input_text, scale, offset).last()
-        {
-            last.pixel_bounding_box().map(|bb| bb.max.x).unwrap_or(10) + 2
+        // Draw cursor at end of last line
+        let last_line_idx = lines.len() - 1;
+        let last_line = &lines[last_line_idx];
+        let y_pos = padding + v_metrics.ascent + (last_line_idx as f32 * line_height);
+        let offset = point(padding, y_pos);
+
+        let cursor_x = if let Some(last) = self.font.layout(last_line, scale, offset).last() {
+            last.pixel_bounding_box()
+                .map(|bb| bb.max.x)
+                .unwrap_or(padding as i32)
+                + 2
         } else {
-            10
+            padding as i32
         };
 
-        let cursor_h = 20;
-        let cursor_y = 15;
+        let cursor_h = 24; // approx line height
+        let cursor_y = (padding + (last_line_idx as f32 * line_height)) as i32;
 
         // Use winit's IME positioning
         self.window.set_ime_cursor_area(
@@ -234,8 +292,11 @@ impl ChatWindow {
 
         for y in cursor_y..(cursor_y + cursor_h) {
             for x in cursor_x..(cursor_x + 2) {
-                if x < width as i32 && y < height as i32 {
-                    buffer[y as usize * width + x as usize] = cursor_color;
+                if x < buf_w as i32 && y < buf_h as i32 {
+                    let idx = y as usize * buf_w + x as usize;
+                    if idx < buffer.len() {
+                        buffer[idx] = cursor_color;
+                    }
                 }
             }
         }

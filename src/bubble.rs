@@ -22,17 +22,14 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, DrawTextW, GdiFlush,
-    GetDC, ReleaseDC, SelectObject, ANSI_CHARSET, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    CLIP_DEFAULT_PRECIS, DEFAULT_PITCH, DIB_RGB_COLORS, DT_CALCRECT, DT_CENTER, DT_WORDBREAK,
-    FF_SWISS, FW_BOLD, HDC, NONANTIALIASED_QUALITY, OUT_DEFAULT_PRECIS,
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GdiFlush, GetDC, ReleaseDC,
+    SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HDC,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
 pub const BASE_BUBBLE_WIDTH: i32 = 250;
 pub const BASE_BUBBLE_HEIGHT: i32 = 120;
-pub const MAX_BUBBLE_WIDTH: i32 = 600; // significantly increased width
 
 pub struct SpeechBubble {
     pub text: String,
@@ -88,83 +85,68 @@ impl SpeechBubble {
     fn calculate_size(&mut self, scale: f32) {
         #[cfg(target_os = "windows")]
         unsafe {
-            // ... (size calc remains the same, assuming it's fast enough for one-off) ...
-            let hdc_screen = GetDC(HWND(0));
-            let hdc_mem = CreateCompatibleDC(hdc_screen);
+            // Use DirectWrite for measurement to match Direct2D rendering perfectly
+            let dwrite_factory: IDWriteFactory =
+                DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).unwrap();
 
-            let font_size = (18.0 * scale) as i32;
-            let font_name: Vec<u16> = "Segoe UI Emoji".encode_utf16().chain(Some(0)).collect();
-            use windows::core::PCWSTR;
-            let temp_font = CreateFontW(
-                font_size,
-                0,
-                0,
-                0,
-                FW_BOLD.0 as i32,
-                0,
-                0,
-                0,
-                ANSI_CHARSET.0 as u32,
-                OUT_DEFAULT_PRECIS.0 as u32,
-                CLIP_DEFAULT_PRECIS.0 as u32,
-                NONANTIALIASED_QUALITY.0 as u32,
-                (DEFAULT_PITCH.0 | FF_SWISS.0) as u32,
-                PCWSTR(font_name.as_ptr()),
-            );
-            let old_font = SelectObject(hdc_mem, temp_font);
+            let font_size = 18.0 * scale;
+            let text_format = dwrite_factory
+                .CreateTextFormat(
+                    windows::core::w!("Segoe UI Emoji"),
+                    None,
+                    DWRITE_FONT_WEIGHT_BOLD,
+                    DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    font_size,
+                    windows::core::w!(""),
+                )
+                .unwrap();
 
-            let padding = (12.0 * scale) as i32;
+            text_format
+                .SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)
+                .unwrap();
+            text_format
+                .SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)
+                .unwrap();
 
-            // Dynamic Sizing based on Screen Metrics (User Request)
+            // Dynamic Sizing based on Screen Metrics
             let screen_w = GetSystemMetrics(SM_CXSCREEN);
             let screen_h = GetSystemMetrics(SM_CYSCREEN);
 
-            // Limit to 50% of screen size, but ensure at least BASE_WIDTH
-            let max_w =
+            let padding = (12.0 * scale) as i32;
+            let max_w_allowed =
                 ((screen_w / 2) - padding * 2).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
-            let max_h_limit = screen_h / 2;
 
-            let mut rect = RECT {
-                left: 0,
-                top: 0,
-                right: max_w,
-                bottom: max_h_limit,
-            };
+            let wide_text: Vec<u16> = self.text.encode_utf16().collect();
+            let text_layout = dwrite_factory
+                .CreateTextLayout(
+                    &wide_text,
+                    &text_format,
+                    max_w_allowed as f32,
+                    screen_h as f32, // Large enough limit
+                )
+                .unwrap();
 
-            let mut wide_text: Vec<u16> = self.text.encode_utf16().chain(Some(0)).collect();
-            DrawTextW(
-                hdc_mem,
-                &mut wide_text,
-                &mut rect,
-                DT_CENTER | DT_WORDBREAK | DT_CALCRECT,
-            );
+            let mut metrics = std::mem::zeroed();
+            text_layout.GetMetrics(&mut metrics).unwrap();
 
-            let text_w = rect.right - rect.left;
-            let text_h = rect.bottom - rect.top;
+            let text_w = metrics.width;
+            let text_h = metrics.height;
 
             let tail_h = (20.0 * scale) as i32;
-            let calc_w = (text_w + padding * 2).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
-            // Add extra vertical buffer (e.g. 20px scaled) to account for GDI vs DirectWrite differences
-            let height_buffer = (20.0 * scale) as i32;
-            let calc_h = (text_h + padding * 2 + tail_h + height_buffer)
+            let calc_w =
+                (text_w as i32 + padding * 2).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
+
+            // Add a small safety margin (4px scaled) and ensure min base height
+            let height_buffer = (8.0 * scale) as i32;
+            let calc_h = (text_h as i32 + padding * 2 + tail_h + height_buffer)
                 .max((BASE_BUBBLE_HEIGHT as f32 * scale) as i32);
 
             if self.current_width != calc_w || self.current_height != calc_h {
-                self.cached_bitmap = None; // Invalidate if size changed
+                self.cached_bitmap = None; // Invalidate cache if size changes
             }
             self.current_width = calc_w;
             self.current_height = calc_h;
-
-            // Allow cache to be rebuilt if size changed (though show() handles text change)
-            // But if only scale changed for same text, we need to invalidate too?
-            // Actually show() calls calculate_size every time show is called.
-            // If main loop calls show() repeatedly? No, main loop calls show() once.
-            // render_to_buffer is called repeatedly.
-
-            SelectObject(hdc_mem, old_font);
-            let _ = DeleteObject(temp_font);
-            let _ = DeleteDC(hdc_mem);
-            ReleaseDC(HWND(0), hdc_screen);
         }
     }
 

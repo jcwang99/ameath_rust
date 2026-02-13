@@ -243,12 +243,12 @@ fn main() {
 
             // Global Hotkey Trigger
             if let Ok(_hotkey_event) = hotkey_channel.try_recv() {
-                // Center on current monitor
+                // Always show/focus on hotkey (idempotent)
                 if let Some(monitor) = window.current_monitor() {
                     let scale_factor = monitor.scale_factor();
                     let m_size = monitor.size();
                     let m_pos = monitor.position();
-                    let chat_w = 300.0;
+                    let chat_w = 600.0;
                     let chat_h = 60.0;
                     let m_w_logical = m_size.width as f64 / scale_factor;
                     let m_h_logical = m_size.height as f64 / scale_factor;
