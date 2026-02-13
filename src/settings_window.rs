@@ -82,6 +82,12 @@ impl SettingsWindow {
             }
         }
 
+        // Ignore clicks in header area for content tabs (1, 2, 3)
+        // Header is approx 120 logical pixels high
+        if ly < 120.0 {
+            return SettingsAction::None;
+        }
+
         if self.current_tab == 3 {
             // History Tab Click Handling
             if lx > 0.0 && ly > 140.0 {
@@ -223,6 +229,10 @@ impl SettingsWindow {
             let ai_y_start = 120.0;
             // Apply scroll offset to click check
             let scroll_y = self.scroll_offset as f64 / scale;
+            println!(
+                "AI Tab Click - ScrollOffset: {}, Scale: {}, CalcScrollY: {}, LY: {}",
+                self.scroll_offset, scale, scroll_y, ly
+            );
 
             let mut found_field = false;
             for i in 0..8 {
@@ -245,9 +255,13 @@ impl SettingsWindow {
 
                 let effective_y = ai_y_start + fy + scroll_y;
                 let input_y = effective_y + 25.0; // Label is at effective_y, input is +25
-                let input_h = if i == 7 { 150.0 } else { 45.0 };
+                let input_h = if i == 7 { 200.0 } else { 45.0 };
 
                 if lx >= fx && lx <= fx + fw && ly >= input_y && ly <= input_y + input_h {
+                    println!(
+                        "Click Hit! Field: {}, LY: {}, InputY: {}, H: {}",
+                        i, ly, input_y, input_h
+                    );
                     found_field = true;
                     if is_right_click {
                         match i {
@@ -564,6 +578,12 @@ impl SettingsWindow {
     ) {
         let scale = Scale::uniform(scale);
         let v_metrics = font.v_metrics(scale);
+
+        // Pre-calculate foreground color components
+        let fg_r = ((color >> 16) & 0xFF) as f32;
+        let fg_g = ((color >> 8) & 0xFF) as f32;
+        let fg_b = (color & 0xFF) as f32;
+
         for glyph in font.layout(text, scale, point(x as f32, y as f32 + v_metrics.ascent)) {
             if let Some(bounding_box) = glyph.pixel_bounding_box() {
                 glyph.draw(|gx, gy, v| {
@@ -575,16 +595,17 @@ impl SettingsWindow {
                             let alpha = v;
                             if alpha > 0.0 {
                                 let bg = buffer[idx];
-                                let mut r = ((bg >> 16) & 0xFF) as f32;
-                                let mut g = ((bg >> 8) & 0xFF) as f32;
-                                let mut b = (bg & 0xFF) as f32;
-                                let fg_r = ((color >> 16) & 0xFF) as f32;
-                                let fg_g = ((color >> 8) & 0xFF) as f32;
-                                let fg_b = (color & 0xFF) as f32;
-                                r = r * (1.0 - alpha) + fg_r * alpha;
-                                g = g * (1.0 - alpha) + fg_g * alpha;
-                                b = b * (1.0 - alpha) + fg_b * alpha;
-                                buffer[idx] = ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+                                let r = ((bg >> 16) & 0xFF) as f32;
+                                let g = ((bg >> 8) & 0xFF) as f32;
+                                let b = (bg & 0xFF) as f32;
+
+                                // Blend
+                                let out_r = r * (1.0 - alpha) + fg_r * alpha;
+                                let out_g = g * (1.0 - alpha) + fg_g * alpha;
+                                let out_b = b * (1.0 - alpha) + fg_b * alpha;
+
+                                buffer[idx] =
+                                    ((out_r as u32) << 16) | ((out_g as u32) << 8) | (out_b as u32);
                             }
                         }
                     }
@@ -676,35 +697,6 @@ impl SettingsWindow {
                 }
 
                 // 3. Tab Content
-                if let Some(font) = &self.font {
-                    let (title, sub) = match self.current_tab {
-                        0 => ("Home", "Welcome to Ameath!"),
-                        1 => ("Appearance", "Customize your pet's look"),
-                        2 => ("AI Brain", "Connect Ameath to the cloud"),
-                        3 => ("History", "Recent Local Memory (Last 50)"),
-                        _ => ("About", "Ameath v0.1.0"),
-                    };
-                    Self::draw_text(
-                        &mut buffer,
-                        w,
-                        font,
-                        title,
-                        s(220),
-                        sy_val(40),
-                        sc(32.0),
-                        text_main,
-                    );
-                    Self::draw_text(
-                        &mut buffer,
-                        w,
-                        font,
-                        sub,
-                        s(220),
-                        sy_val(85),
-                        sc(16.0),
-                        text_sec,
-                    );
-                }
 
                 if self.current_tab == 3 {
                     // History Tab
@@ -1292,23 +1284,35 @@ impl SettingsWindow {
                 } else if self.current_tab == 2 {
                     // --- AI Tab ---
                     let card_w = (560.0 * scale) as u32;
-                    let card_h = (750.0 * scale) as u32; // Increased height for multi-line field
+                    let card_h = (850.0 * scale) as u32; // Increased height to fit content properly
                                                          // Apply scroll offset here!
                     let scroll_y = self.scroll_offset; // Use raw pixel offset
-                    let card_y = (sy_val(120) as f32 + scroll_y) as u32;
 
-                    Self::draw_rounded_rect(
-                        &mut buffer,
-                        w,
-                        s(210),
-                        card_y,
-                        card_w,
-                        card_h,
-                        12,
-                        card_bg,
-                        w,
-                        h,
-                    );
+                    // Use i32 for Y calculations to handle negative values (off-screen top)
+                    let card_y_raw = sy_val(120) as i32 + scroll_y as i32;
+
+                    // Draw card background (clipped)
+                    if card_y_raw + (card_h as i32) > 0 {
+                        let draw_y = card_y_raw.max(0) as u32;
+                        let visible_h = if card_y_raw < 0 {
+                            (card_h as i32 + card_y_raw).max(0) as u32
+                        } else {
+                            card_h
+                        };
+                        Self::draw_rounded_rect(
+                            &mut buffer,
+                            w,
+                            s(210),
+                            draw_y,
+                            card_w,
+                            visible_h, // We might need to adjust height if clipped bottom too?
+                            12,
+                            card_bg,
+                            w,
+                            h,
+                        );
+                    }
+
                     let fields = vec![
                         ("API Key", ai_config.api_key.clone()),
                         ("Base URL", ai_config.base_url.clone()),
@@ -1332,164 +1336,49 @@ impl SettingsWindow {
                             _ => (0.0, 0.0, 0.0),
                         };
 
-                        let fy_scaled = card_y + sc(fy) as u32;
-                        if let Some(font) = &self.font {
-                            Self::draw_text(
-                                &mut buffer,
-                                w,
-                                font,
-                                label,
-                                s(fx as u32),
-                                fy_scaled,
-                                sc(14.0),
-                                text_sec,
-                            );
-                        }
-                        let input_y = fy_scaled + sc(25.0) as u32;
-                        let input_w = sc(fw as f32) as u32;
-                        let input_h = if i == 7 {
-                            sc(150.0) as u32
-                        } else {
-                            sc(45.0) as u32
-                        };
-                        let is_focused = self.focused_field == Some(i);
-                        let border_col = if is_focused { primary } else { 0x00E3E5E7 };
-                        Self::draw_rounded_rect(
-                            &mut buffer,
-                            w,
-                            s(fx as u32),
-                            input_y,
-                            input_w,
-                            input_h,
-                            8,
-                            border_col,
-                            w,
-                            h,
-                        );
-                        Self::draw_rounded_rect(
-                            &mut buffer,
-                            w,
-                            s(fx as u32) + 1,
-                            input_y + 1,
-                            input_w - 2,
-                            input_h - 2,
-                            7,
-                            card_bg,
-                            w,
-                            h,
-                        );
+                        let fy_scaled_raw = card_y_raw + sc(fy) as i32;
 
-                        if let Some(font) = &self.font {
-                            let display_val = if val.is_empty() {
-                                if is_focused {
-                                    ""
-                                } else {
-                                    "None"
-                                }
-                            } else {
-                                val
-                            };
-                            let display_col = if val.is_empty() {
-                                0x00CCCCCC
-                            } else {
-                                text_main
-                            };
-                            let mut final_text =
-                                if (i == 0 || i == 6) && !val.is_empty() && !self.show_api_key {
-                                    let mask_char = if is_focused { "•" } else { "*" };
-                                    mask_char.repeat(val.len().min(32))
-                                } else {
-                                    display_val.to_string()
-                                };
+                        // Clip check
+                        if fy_scaled_raw + sc(200.0) as i32 > 0 && fy_scaled_raw < h as i32 {
+                            let draw_y = fy_scaled_raw.max(0) as u32;
 
-                            if i == 0 || i == 6 {
-                                let eye_x = s(fx as u32 + fw as u32 - 45);
-                                let eye_y = input_y + sc(12.0) as u32;
-                                let eye_col = if self.show_api_key { primary } else { text_sec };
-                                Self::draw_rect(
+                            if let Some(font) = &self.font {
+                                Self::draw_text(
                                     &mut buffer,
                                     w,
-                                    eye_x,
-                                    eye_y + 4,
-                                    16,
-                                    16,
-                                    eye_col,
-                                    w,
-                                    h,
-                                );
-                            }
-
-                            // SAFE TRUNCATION (Fixes panic) - Skip for System Prompt (7)
-                            if i != 7 && final_text.chars().count() > 50 {
-                                final_text =
-                                    final_text.chars().take(47).collect::<String>() + "...";
-                            }
-
-                            if i == 7 {
-                                // Multi-line rendering for System Prompt
-                                let max_width = sc(500.0 - 40.0) as u32; // Allow padding
-                                let lines = wrap_text(
-                                    &final_text,
                                     font,
-                                    rusttype::Scale::uniform(sc(14.0)),
-                                    max_width,
+                                    label,
+                                    s(fx as u32),
+                                    draw_y, // Approximation: simplified clipping for text label
+                                    sc(14.0),
+                                    text_sec,
                                 );
+                            }
 
-                                // Calculate actual height needed
-                                let line_count = lines.len().max(1);
-                                let full_content_h = sc(12.0 + line_count as f32 * 20.0) + sc(20.0);
+                            let input_y_raw = fy_scaled_raw + sc(25.0) as i32;
+                            let input_w = sc(fw as f32) as u32;
+                            let input_h = if i == 7 {
+                                sc(200.0) as u32
+                            } else {
+                                sc(45.0) as u32
+                            };
 
-                                // Limit visual height for System Prompt
-                                let max_sys_visual_h = sc(200.0);
-                                let actual_input_h = if full_content_h > max_sys_visual_h {
-                                    max_sys_visual_h as u32
-                                } else {
-                                    full_content_h as u32
-                                };
+                            // Clip Input Box
+                            if input_y_raw + input_h as i32 > 0 && input_y_raw < h as i32 {
+                                let inp_draw_y = input_y_raw.max(0) as u32;
+                                let hidden_top = if input_y_raw < 0 { -input_y_raw } else { 0 };
+                                let visible_h = (input_h as i32 - hidden_top).max(0) as u32;
 
-                                // Store geometry for scrolling
-                                // approximate logical Y.
-                                // input_y is scaled.
-                                // we need consistent logic with handle_scroll.
-                                // Let's store SCREEN coordinates in rect for handle_scroll,
-                                // effectively bypassing the logical conversion issue if we pass screen pos to handle_scroll?
-                                // No, handle_scroll receives logical pos via our manual conversion OR raw screen pos.
-                                // In handle_scroll I did manual conversion.
-                                // So here we must store LOGICAL rect.
-                                // input_y = fy_scaled + ... = card_y + ...
-                                // logical_y = fy + offset
-
-                                // Let's just store the logical rect based on known layout
-                                // System prompt is index 7.
-                                // fy for 7 is 530.0.
-                                // card starts at 120.0 (logical)
-                                // so logical y start = 120 + 530 + 25 = 675.0 ?
-                                // logic: fy=530, card_y_logical=120.
-                                // input_y_logical = 120 + 530 + 25 = 675.0.
-                                // visual height = actual_input_h / scale.
-
-                                let sys_logical_y = input_y as f64 / scale as f64;
-                                let sys_logical_h = actual_input_h as f64 / scale as f64;
-
-                                self.active_sys_prompt_rect = Some((
-                                    230.0,
-                                    sys_logical_y,
-                                    730.0,
-                                    sys_logical_y + sys_logical_h,
-                                ));
-                                self.active_sys_prompt_content_height =
-                                    full_content_h / scale as f32;
-
-                                // Re-draw background with correct height
+                                // Simple draw (visual artifact if top clipped but acceptable for now or improve clipping)
                                 let is_focused = self.focused_field == Some(i);
                                 let border_col = if is_focused { primary } else { 0x00E3E5E7 };
                                 Self::draw_rounded_rect(
                                     &mut buffer,
                                     w,
                                     s(fx as u32),
-                                    input_y,
+                                    inp_draw_y,
                                     input_w,
-                                    actual_input_h,
+                                    visible_h,
                                     8,
                                     border_col,
                                     w,
@@ -1499,162 +1388,254 @@ impl SettingsWindow {
                                     &mut buffer,
                                     w,
                                     s(fx as u32) + 1,
-                                    input_y + 1,
+                                    inp_draw_y + 1, // Adjusted
                                     input_w - 2,
-                                    actual_input_h - 2,
+                                    // Use visible_h, ensure no underflow for border
+                                    visible_h.saturating_sub(2),
                                     7,
                                     card_bg,
                                     w,
                                     h,
                                 );
 
-                                // Helper for clipping
-                                let start_text_y = input_y + sc(12.0) as u32;
-                                let end_text_y = input_y + actual_input_h - sc(10.0) as u32;
-
-                                for (line_idx, line) in lines.iter().enumerate() {
-                                    let line_offset = line_idx as f32 * sc(20.0);
-                                    let draw_y_f = start_text_y as f32
-                                        + line_offset
-                                        + (self.system_prompt_scroll_offset * scale);
-
-                                    // Clip
-                                    if draw_y_f < start_text_y as f32 - sc(15.0) {
-                                        continue;
-                                    }
-                                    if draw_y_f > end_text_y as f32 {
-                                        break;
-                                    }
-
-                                    Self::draw_text(
-                                        &mut buffer,
-                                        w,
-                                        font,
-                                        line,
-                                        s(fx as u32) + sc(15.0) as u32,
-                                        draw_y_f as u32,
-                                        sc(14.0),
-                                        display_col,
-                                    );
-                                }
-
-                                // Draw Scrollbar if needed
-                                if full_content_h > max_sys_visual_h {
-                                    let sb_w = sc(4.0) as u32;
-                                    let sb_h = actual_input_h - sc(10.0) as u32;
-                                    let sb_x = s(fx as u32 + fw as u32 - 10);
-                                    let sb_y = input_y + sc(5.0) as u32;
-
-                                    // Background
-                                    Self::draw_rect(
-                                        &mut buffer,
-                                        w,
-                                        sb_x,
-                                        sb_y,
-                                        sb_w,
-                                        sb_h,
-                                        0x00E3E5E7,
-                                        w,
-                                        h,
-                                    );
-
-                                    // Handle
-                                    let ratio = max_sys_visual_h / full_content_h;
-                                    let handle_h = (sb_h as f32 * ratio).max(sc(20.0));
-
-                                    let max_scroll = -(full_content_h - max_sys_visual_h); // negative
-                                                                                           // progress 0..1
-                                    let progress = if max_scroll.abs() < 1.0 {
-                                        0.0
+                                // Text Drawing inside input
+                                if let Some(font) = &self.font {
+                                    let display_val = if val.is_empty() {
+                                        if is_focused {
+                                            ""
+                                        } else {
+                                            "None"
+                                        }
                                     } else {
-                                        self.system_prompt_scroll_offset * scale / max_scroll
+                                        val
+                                    };
+                                    let display_col = if val.is_empty() {
+                                        0x00CCCCCC
+                                    } else {
+                                        text_main
                                     };
 
-                                    let handle_y =
-                                        sb_y as f32 + (sb_h as f32 - handle_h) * progress;
+                                    let mut final_text = if (i == 0 || i == 6)
+                                        && !val.is_empty()
+                                        && !self.show_api_key
+                                    {
+                                        let mask_char = if is_focused { "•" } else { "*" };
+                                        mask_char.repeat(val.len().min(32))
+                                    } else {
+                                        display_val.to_string()
+                                    };
 
-                                    Self::draw_rect(
-                                        &mut buffer,
-                                        w,
-                                        sb_x,
-                                        handle_y as u32,
-                                        sb_w,
-                                        handle_h as u32,
-                                        0x00A0A0A0,
-                                        w,
-                                        h,
-                                    );
-                                }
-
-                                // Simple Cursor (at end of last line)
-                                if is_focused {
-                                    let last_line = lines.last().cloned().unwrap_or_default();
-                                    let line_count = lines.len().max(1);
-                                    let glyphs: Vec<_> = font
-                                        .layout(
-                                            &last_line,
-                                            Scale::uniform(sc(14.0)),
-                                            point(0.0, 0.0),
-                                        )
-                                        .collect();
-                                    let tw = glyph_width(&glyphs);
-
-                                    let cursor_x = s(fx as u32) + sc(15.0) as u32 + tw + 2;
-                                    let cursor_y =
-                                        input_y + sc(12.0 + (line_count - 1) as f32 * 20.0) as u32;
-
-                                    if cursor_y < input_y + input_h {
+                                    if i == 0 || i == 6 {
+                                        let eye_x = s(fx as u32 + fw as u32 - 45);
+                                        let eye_y = inp_draw_y + sc(12.0) as u32;
+                                        let eye_col =
+                                            if self.show_api_key { primary } else { text_sec };
                                         Self::draw_rect(
                                             &mut buffer,
                                             w,
-                                            cursor_x,
-                                            cursor_y,
-                                            2,
-                                            sc(22.0) as u32,
-                                            primary,
+                                            eye_x,
+                                            eye_y + 4,
+                                            16,
+                                            16,
+                                            eye_col,
                                             w,
                                             h,
                                         );
                                     }
-                                }
-                            } else {
-                                // Single-line rendering for others
-                                Self::draw_text(
-                                    &mut buffer,
-                                    w,
-                                    font,
-                                    &final_text,
-                                    s(fx as u32) + sc(15.0) as u32,
-                                    input_y + sc(12.0) as u32,
-                                    sc(14.0),
-                                    display_col,
-                                );
-                                if is_focused {
-                                    let glyphs: Vec<_> = font
-                                        .layout(
+
+                                    // SAFE TRUNCATION (Fixes panic) - Skip for System Prompt (7)
+                                    if i != 7 && final_text.chars().count() > 50 {
+                                        final_text =
+                                            final_text.chars().take(47).collect::<String>() + "...";
+                                    }
+
+                                    if i == 7 {
+                                        // System Prompt Rendering Logic (Simplified reuse)
+                                        // ... (Complex text wrapping logic needs to be adapted for calc position)
+                                        // For now let's just draw the text at correct offset
+                                        // Multi-line rendering for System Prompt
+                                        let max_width = sc(500.0 - 40.0) as u32; // Allow padding
+                                        let lines = wrap_text(
                                             &final_text,
-                                            Scale::uniform(sc(14.0)),
-                                            point(0.0, 0.0),
-                                        )
-                                        .collect();
-                                    let tw = if val.is_empty() {
-                                        0
+                                            font,
+                                            rusttype::Scale::uniform(sc(14.0)),
+                                            max_width,
+                                        );
+
+                                        // Update active rect for scrolling logic
+                                        // We need logical Y/H for handle_scroll
+                                        let sys_logical_y = input_y_raw as f64 / scale as f64;
+                                        let sys_logical_h = input_h as f64 / scale as f64;
+
+                                        // Calculate full content height for internal scrolling
+                                        let line_count = lines.len().max(1);
+                                        let full_content_h =
+                                            sc(12.0 + line_count as f32 * 20.0) + sc(20.0);
+
+                                        self.active_sys_prompt_rect = Some((
+                                            230.0,
+                                            sys_logical_y,
+                                            730.0,
+                                            sys_logical_y + sys_logical_h,
+                                        ));
+                                        self.active_sys_prompt_content_height =
+                                            full_content_h / scale as f32;
+
+                                        let start_text_raw = input_y_raw + sc(12.0) as i32;
+                                        let box_bottom_raw = input_y_raw + input_h as i32;
+
+                                        for (line_idx, line) in lines.iter().enumerate() {
+                                            let line_offset = line_idx as f32 * sc(20.0);
+                                            // Calculate raw Y position including internal scroll
+                                            let draw_y_f = start_text_raw as f32
+                                                + line_offset
+                                                + (self.system_prompt_scroll_offset * scale);
+
+                                            // 1. Clip against the input box (internal scrolling)
+                                            // Top bound: Don't draw above the first line's intended position (minus small margin)
+                                            if draw_y_f < start_text_raw as f32 - sc(5.0) {
+                                                continue;
+                                            }
+                                            // Bottom bound: Don't draw if it exceeds the box height (minus margin)
+                                            if draw_y_f > (box_bottom_raw as f32 - sc(15.0)) {
+                                                break;
+                                            }
+
+                                            // 2. Clip against screen bounds (global scrolling protection)
+                                            if draw_y_f < 0.0 {
+                                                continue;
+                                            }
+                                            if draw_y_f > h as f32 {
+                                                break;
+                                            }
+
+                                            // Draw
+                                            Self::draw_text(
+                                                &mut buffer,
+                                                w,
+                                                font,
+                                                line,
+                                                s(fx as u32) + sc(15.0) as u32,
+                                                draw_y_f as u32,
+                                                sc(14.0),
+                                                display_col,
+                                            );
+                                        }
+
+                                        // Draw Scrollbar - simplified
+                                        let full_content_h =
+                                            sc(12.0 + lines.len().max(1) as f32 * 20.0) + sc(20.0);
+                                        let max_sys_visual_h = sc(200.0);
+                                        if full_content_h > max_sys_visual_h {
+                                            let sb_w = sc(4.0) as u32;
+                                            let sb_h = sc(190.0) as u32; // Approx handle track height
+                                            let sb_x = s(fx as u32 + fw as u32 - 10);
+                                            let sb_y = inp_draw_y + sc(5.0) as u32;
+
+                                            Self::draw_rect(
+                                                &mut buffer,
+                                                w,
+                                                sb_x,
+                                                sb_y,
+                                                sb_w,
+                                                sb_h,
+                                                0x00E3E5E7,
+                                                w,
+                                                h,
+                                            );
+                                            // Handle
+                                            let ratio = max_sys_visual_h / full_content_h;
+                                            let handle_h = (sb_h as f32 * ratio).max(sc(20.0));
+                                            let max_scroll = -(full_content_h - max_sys_visual_h);
+                                            let progress = if max_scroll.abs() < 1.0 {
+                                                0.0
+                                            } else {
+                                                self.system_prompt_scroll_offset * scale
+                                                    / max_scroll
+                                            };
+                                            let handle_y =
+                                                sb_y as f32 + (sb_h as f32 - handle_h) * progress;
+                                            Self::draw_rect(
+                                                &mut buffer,
+                                                w,
+                                                sb_x,
+                                                handle_y as u32,
+                                                sb_w,
+                                                handle_h as u32,
+                                                0x00A0A0A0,
+                                                w,
+                                                h,
+                                            );
+                                        }
+
+                                        // Cursor
+                                        if is_focused {
+                                            let last_line =
+                                                lines.last().cloned().unwrap_or_default();
+                                            let line_count = lines.len().max(1);
+                                            let glyphs: Vec<_> = font
+                                                .layout(
+                                                    &last_line,
+                                                    Scale::uniform(sc(14.0)),
+                                                    point(0.0, 0.0),
+                                                )
+                                                .collect();
+                                            let tw = glyph_width(&glyphs);
+                                            let cursor_x = s(fx as u32) + sc(15.0) as u32 + tw + 2;
+                                            let cursor_y = inp_draw_y
+                                                + sc(12.0 + (line_count - 1) as f32 * 20.0) as u32;
+                                            Self::draw_rect(
+                                                &mut buffer,
+                                                w,
+                                                cursor_x,
+                                                cursor_y,
+                                                2,
+                                                sc(22.0) as u32,
+                                                primary,
+                                                w,
+                                                h,
+                                            );
+                                        }
                                     } else {
-                                        glyph_width(&glyphs)
-                                    };
-                                    let cursor_x = s(fx as u32) + sc(15.0) as u32 + tw + 2;
-                                    if cursor_x < s(fx as u32) + input_w {
-                                        Self::draw_rect(
+                                        // Single line
+                                        Self::draw_text(
                                             &mut buffer,
                                             w,
-                                            cursor_x,
-                                            input_y + sc(12.0) as u32,
-                                            2,
-                                            sc(22.0) as u32,
-                                            primary,
-                                            w,
-                                            h,
+                                            font,
+                                            &final_text,
+                                            s(fx as u32) + sc(15.0) as u32,
+                                            inp_draw_y + sc(12.0) as u32,
+                                            sc(14.0),
+                                            display_col,
                                         );
+                                        if is_focused {
+                                            let glyphs: Vec<_> = font
+                                                .layout(
+                                                    &final_text,
+                                                    Scale::uniform(sc(14.0)),
+                                                    point(0.0, 0.0),
+                                                )
+                                                .collect();
+                                            let tw = if val.is_empty() {
+                                                0
+                                            } else {
+                                                glyph_width(&glyphs)
+                                            };
+                                            let cursor_x = s(fx as u32) + sc(15.0) as u32 + tw + 2;
+                                            if cursor_x < s(fx as u32) + input_w {
+                                                Self::draw_rect(
+                                                    &mut buffer,
+                                                    w,
+                                                    cursor_x,
+                                                    inp_draw_y + sc(12.0) as u32,
+                                                    2,
+                                                    sc(22.0) as u32,
+                                                    primary,
+                                                    w,
+                                                    h,
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1667,11 +1648,11 @@ impl SettingsWindow {
                     // We need to calculate the bottom-most point relative to scroll_y=0
                     // Let's approximate based on the last drawn item (System Prompt)
                     // We need to recalculate the height of System Prompt to know where it ends relative to card start
-                    let sys_prompt_lines = ai_config.system_prompt.len() / 60 + 1; // Approx
-                    let sys_prompt_h = sc(12.0 + sys_prompt_lines as f32 * 20.0) + sc(50.0);
+                    // Use actual calculated height clamped to visual max (200.0)
+                    let sys_prompt_h = sc(self.active_sys_prompt_content_height.min(200.0));
                     let content_bottom = sy_val(120) as f32 + sc(530.0) + sys_prompt_h + sc(100.0); // Extra padding
                     self.content_height = content_bottom - sy_val(120) as f32; // Height relative to start
-                    self.content_height += 1000.0; // Add plenty of extra scroll space just in case
+
                     self.viewport_height = h as f32;
 
                     if let Some(font) = &self.font {
@@ -1681,12 +1662,58 @@ impl SettingsWindow {
                             font,
                             "Note: More AI features coming soon!",
                             s(230),
-                            card_y + sc(340.0) as u32,
+                            (card_y_raw + sc(340.0) as i32).max(0) as u32,
                             sc(11.0),
                             text_sec,
                         );
                     }
                 }
+                // Draw Tab Header ON TOP
+                if let Some(font) = &self.font {
+                    let (title, sub) = match self.current_tab {
+                        0 => ("Home", "Welcome to Ameath!"),
+                        1 => ("Appearance", "Customize your pet's look"),
+                        2 => ("AI Brain", "Connect Ameath to the cloud"),
+                        3 => ("History", "Recent Local Memory (Last 50)"),
+                        _ => ("About", "Ameath v0.1.0"),
+                    };
+
+                    // Draw Header Background to cover scrolled content
+                    let header_h = sy_val(120);
+                    Self::draw_rect(
+                        &mut buffer,
+                        w,
+                        s(180), // Start after sidebar
+                        0,
+                        w - s(180),
+                        header_h,
+                        bg_color, // Use background color
+                        w,
+                        h,
+                    );
+
+                    Self::draw_text(
+                        &mut buffer,
+                        w,
+                        font,
+                        title,
+                        s(220),
+                        sy_val(40),
+                        sc(32.0),
+                        text_main,
+                    );
+                    Self::draw_text(
+                        &mut buffer,
+                        w,
+                        font,
+                        sub,
+                        s(220),
+                        sy_val(85),
+                        sc(16.0),
+                        text_sec,
+                    );
+                }
+
                 buffer.present().unwrap();
             }
         }
@@ -1877,28 +1904,26 @@ fn wrap_text(
 ) -> Vec<String> {
     let mut lines = Vec::new();
     let mut current_line = String::new();
+    let mut current_width = 0.0;
 
     for c in text.chars() {
-        let mut test_line = current_line.clone();
-        test_line.push(c);
+        let g = font.glyph(c).scaled(scale);
+        let h_metrics = g.h_metrics();
+        let advance = h_metrics.advance_width;
 
-        let glyphs: Vec<_> = font
-            .layout(&test_line, scale, rusttype::point(0.0, 0.0))
-            .collect();
-        let width = glyph_width(&glyphs);
-
-        if width > max_width && !current_line.is_empty() {
-            lines.push(current_line);
-            current_line = c.to_string();
-        } else {
-            current_line = test_line;
+        if current_width + advance > max_width as f32 {
+            if !current_line.is_empty() {
+                lines.push(current_line);
+                current_line = String::new();
+                current_width = 0.0;
+            }
         }
+
+        current_line.push(c);
+        current_width += advance;
     }
     if !current_line.is_empty() {
         lines.push(current_line);
-    }
-    if lines.is_empty() {
-        lines.push(String::new());
     }
     lines
 }
