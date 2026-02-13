@@ -12,7 +12,7 @@ pub struct SettingsWindow {
     surface: Surface<Rc<Window>, Rc<Window>>,
     font: Option<Font<'static>>,
     current_tab: usize,               // 0: Home, 1: General, 2: AI, 3: About
-    pub focused_field: Option<usize>, // AI Tab focus: 0: Key, 1: URL, 2: Model
+    pub focused_field: Option<usize>, // AI Tab focus: 0: Key, 1: URL, 2: Model, 3: ReAct, 4: L1 Thr, 5: L2 Thr
     show_api_key: bool,
 }
 
@@ -26,6 +26,11 @@ pub enum SettingsAction {
     SetAiApiKey(String),
     SetAiBaseUrl(String),
     SetAiModel(String),
+    SetAiReactLimit(usize),
+    SetAiL1Threshold(usize),
+    SetAiL2Threshold(usize),
+    SetAiTavilyKey(String),
+    SetAiSystemPrompt(String),
 }
 
 impl SettingsWindow {
@@ -130,32 +135,41 @@ impl SettingsWindow {
             let input_w = 500.0;
 
             let mut found_field = false;
-            for i in 0..3 {
-                let fy = ai_y_start + 30.0 + (i as f64 * field_gap);
-                let input_y = fy + 25.0;
-                let input_h = 45.0;
+            for i in 0..8 {
+                // Changed from 0..7 to 0..8
+                let (fx, fy, fw) = match i {
+                    0 => (230.0, ai_y_start + 55.0, 500.0),
+                    1 => (230.0, ai_y_start + 155.0, 500.0),
+                    2 => (230.0, ai_y_start + 255.0, 500.0),
+                    3 => (230.0, ai_y_start + 355.0, 150.0),
+                    4 => (405.0, ai_y_start + 355.0, 150.0),
+                    5 => (580.0, ai_y_start + 355.0, 150.0),
+                    6 => (230.0, ai_y_start + 455.0, 500.0), // Tavily Key
+                    7 => (230.0, ai_y_start + 555.0, 500.0), // System Prompt
+                    _ => (0.0, 0.0, 0.0),
+                };
 
-                if lx >= input_x
-                    && lx <= input_x + input_w
-                    && ly >= input_y
-                    && ly <= input_y + input_h
-                {
+                if lx >= fx && lx <= fx + fw && ly >= fy && ly <= fy + 45.0 {
                     found_field = true;
                     if is_right_click {
                         match i {
                             0 => return SettingsAction::SetAiApiKey("".to_string()),
                             1 => return SettingsAction::SetAiBaseUrl("".to_string()),
                             2 => return SettingsAction::SetAiModel("".to_string()),
+                            3 => return SettingsAction::SetAiReactLimit(20),
+                            4 => return SettingsAction::SetAiL1Threshold(10),
+                            5 => return SettingsAction::SetAiL2Threshold(10),
+                            6 => return SettingsAction::SetAiTavilyKey("".to_string()),
+                            7 => return SettingsAction::SetAiSystemPrompt("".to_string()),
                             _ => {}
                         }
                     } else {
-                        // Eye icon toggle for API Key (i == 0)
-                        if i == 0 && lx >= input_x + input_w - 45.0 {
+                        if (i == 0 || i == 6) && lx >= fx + fw - 45.0 {
+                            // Check for eye icon click for API Key and Tavily Key
                             self.show_api_key = !self.show_api_key;
                             self.window.request_redraw();
                             return SettingsAction::None;
                         }
-
                         self.focused_field = Some(i);
                         self.window.request_redraw();
                         return SettingsAction::None;
@@ -167,9 +181,16 @@ impl SettingsWindow {
                 let btn_w = 120.0;
                 let btn_h = 35.0;
                 let btn_x = 210.0 + 560.0 - btn_w - 20.0;
-                let btn_y = ai_y_start + 400.0 - btn_h - 15.0;
+                let btn_y = ai_y_start + 400.0 - btn_h - 15.0; // This button is now for the "Save" button, which is below the 6th field.
+                                                               // The Tavily Key field is below this, so the button Y needs to be adjusted.
+                                                               // Let's assume the save button is now below the 7th field.
+                let save_btn_y = ai_y_start + 500.0 + 55.0 - btn_h - 15.0; // 500.0 is the fy for Tavily Key, 55.0 is height of input field + label gap
 
-                if lx >= btn_x && lx <= btn_x + btn_w && ly >= btn_y && ly <= btn_y + btn_h {
+                if lx >= btn_x
+                    && lx <= btn_x + btn_w
+                    && ly >= save_btn_y
+                    && ly <= save_btn_y + btn_h
+                {
                     self.focused_field = None;
                     self.window.request_redraw();
                     return SettingsAction::None;
@@ -264,6 +285,12 @@ impl SettingsWindow {
                         2 => {
                             ai_config.model.pop();
                         }
+                        6 => {
+                            ai_config.tavily_api_key.pop();
+                        }
+                        7 => {
+                            ai_config.system_prompt.pop();
+                        }
                         _ => {}
                     }
                     ai_config.save();
@@ -288,6 +315,17 @@ impl SettingsWindow {
                                         0 => ai_config.api_key = trimmed,
                                         1 => ai_config.base_url = trimmed,
                                         2 => ai_config.model = trimmed,
+                                        3 => ai_config.react_limit = trimmed.parse().unwrap_or(20),
+                                        4 => {
+                                            ai_config.l1_summary_threshold =
+                                                trimmed.parse().unwrap_or(10)
+                                        }
+                                        5 => {
+                                            ai_config.l2_merge_threshold =
+                                                trimmed.parse().unwrap_or(10)
+                                        }
+                                        6 => ai_config.tavily_api_key = trimmed,
+                                        7 => ai_config.system_prompt = trimmed,
                                         _ => {}
                                     }
                                     ai_config.save();
@@ -303,6 +341,26 @@ impl SettingsWindow {
                             0 => ai_config.api_key.push_str(c),
                             1 => ai_config.base_url.push_str(c),
                             2 => ai_config.model.push_str(c),
+                            6 => ai_config.tavily_api_key.push_str(c),
+                            7 => ai_config.system_prompt.push_str(c),
+                            3 | 4 | 5 => {
+                                if c.chars().all(|ch| ch.is_ascii_digit()) {
+                                    let mut val_str = match field_idx {
+                                        3 => ai_config.react_limit.to_string(),
+                                        4 => ai_config.l1_summary_threshold.to_string(),
+                                        5 => ai_config.l2_merge_threshold.to_string(),
+                                        _ => String::new(),
+                                    };
+                                    val_str.push_str(c);
+                                    let val = val_str.parse().unwrap_or(0);
+                                    match field_idx {
+                                        3 => ai_config.react_limit = val,
+                                        4 => ai_config.l1_summary_threshold = val,
+                                        5 => ai_config.l2_merge_threshold = val,
+                                        _ => {}
+                                    }
+                                }
+                            }
                             _ => {}
                         }
                         ai_config.save();
@@ -313,7 +371,7 @@ impl SettingsWindow {
             }
             Key::Named(NamedKey::Tab) => {
                 if event.state == winit::event::ElementState::Pressed {
-                    self.focused_field = Some((field_idx + 1) % 3);
+                    self.focused_field = Some((field_idx + 1) % 8); // Changed from %7 to %8
                     self.window.request_redraw();
                     return true;
                 }
@@ -845,7 +903,7 @@ impl SettingsWindow {
                 } else if self.current_tab == 2 {
                     // --- AI Tab ---
                     let card_w = (560.0 * scale) as u32;
-                    let card_h = (400.0 * scale) as u32;
+                    let card_h = (550.0 * scale) as u32; // Increased height to accommodate new field
                     let card_y = sy_val(120);
                     Self::draw_rounded_rect(
                         &mut buffer,
@@ -860,34 +918,49 @@ impl SettingsWindow {
                         h,
                     );
                     let fields = vec![
-                        ("API Key", &ai_config.api_key),
-                        ("Base URL", &ai_config.base_url),
-                        ("Model", &ai_config.model),
+                        ("API Key", ai_config.api_key.clone()),
+                        ("Base URL", ai_config.base_url.clone()),
+                        ("Model", ai_config.model.clone()),
+                        ("ReAct Steps", ai_config.react_limit.to_string()),
+                        ("L1 Summary", ai_config.l1_summary_threshold.to_string()),
+                        ("L2 Merge", ai_config.l2_merge_threshold.to_string()),
+                        ("Tavily Key", ai_config.tavily_api_key.clone()),
                     ];
                     for (i, (label, val)) in fields.iter().enumerate() {
-                        let fy =
-                            card_y + (30.0 * scale) as u32 + (i as u32 * (100.0 * scale) as u32);
+                        let (fx, fy, fw) = match i {
+                            0 => (230.0, 30.0, 500.0),
+                            1 => (230.0, 130.0, 500.0),
+                            2 => (230.0, 230.0, 500.0),
+                            3 => (230.0, 330.0, 150.0), // Smaller numeric fields
+                            4 => (405.0, 330.0, 150.0),
+                            5 => (580.0, 330.0, 150.0),
+                            6 => (230.0, 430.0, 500.0), // Tavily Key
+                            7 => (230.0, 530.0, 500.0), // System Prompt
+                            _ => (0.0, 0.0, 0.0),
+                        };
+
+                        let fy_scaled = card_y + sc(fy) as u32;
                         if let Some(font) = &self.font {
                             Self::draw_text(
                                 &mut buffer,
                                 w,
                                 font,
                                 label,
-                                s(230),
-                                fy,
+                                s(fx as u32),
+                                fy_scaled,
                                 sc(14.0),
                                 text_sec,
                             );
                         }
-                        let input_y = fy + (25.0 * scale) as u32;
-                        let input_w = (500.0 * scale) as u32;
-                        let input_h = (45.0 * scale) as u32;
+                        let input_y = fy_scaled + sc(25.0) as u32;
+                        let input_w = sc(fw as f32) as u32;
+                        let input_h = sc(45.0) as u32;
                         let is_focused = self.focused_field == Some(i);
                         let border_col = if is_focused { primary } else { 0x00E3E5E7 };
                         Self::draw_rounded_rect(
                             &mut buffer,
                             w,
-                            s(230),
+                            s(fx as u32),
                             input_y,
                             input_w,
                             input_h,
@@ -899,7 +972,7 @@ impl SettingsWindow {
                         Self::draw_rounded_rect(
                             &mut buffer,
                             w,
-                            s(230) + 1,
+                            s(fx as u32) + 1,
                             input_y + 1,
                             input_w - 2,
                             input_h - 2,
@@ -924,17 +997,17 @@ impl SettingsWindow {
                             } else {
                                 text_main
                             };
-                            let mut final_text = if i == 0 && !val.is_empty() && !self.show_api_key
-                            {
-                                let mask_char = if is_focused { "•" } else { "*" };
-                                mask_char.repeat(val.len().min(32))
-                            } else {
-                                display_val.to_string()
-                            };
+                            let mut final_text =
+                                if (i == 0 || i == 6) && !val.is_empty() && !self.show_api_key {
+                                    let mask_char = if is_focused { "•" } else { "*" };
+                                    mask_char.repeat(val.len().min(32))
+                                } else {
+                                    display_val.to_string()
+                                };
 
-                            if i == 0 {
-                                let eye_x = s(230 + 500 - 45);
-                                let eye_y = input_y + (12.0 * scale) as u32;
+                            if i == 0 || i == 6 {
+                                let eye_x = s(fx as u32 + fw as u32 - 45);
+                                let eye_y = input_y + sc(12.0) as u32;
                                 let eye_col = if self.show_api_key { primary } else { text_sec };
                                 Self::draw_rect(
                                     &mut buffer,
@@ -960,7 +1033,7 @@ impl SettingsWindow {
                                 w,
                                 font,
                                 &final_text,
-                                s(245),
+                                s(fx as u32) + sc(15.0) as u32,
                                 input_y + sc(12.0) as u32,
                                 sc(14.0),
                                 display_col,
@@ -974,8 +1047,8 @@ impl SettingsWindow {
                                 } else {
                                     glyph_width(&glyphs)
                                 };
-                                let cursor_x = s(245) + tw + 2;
-                                if cursor_x < s(245 + 500) {
+                                let cursor_x = s(fx as u32) + sc(15.0) as u32 + tw + 2;
+                                if cursor_x < s(fx as u32) + input_w {
                                     Self::draw_rect(
                                         &mut buffer,
                                         w,

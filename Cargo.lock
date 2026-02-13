@@ -73,6 +73,7 @@ name = "ameath-rust"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "async-trait",
  "chrono",
  "global-hotkey",
  "image 0.24.9",

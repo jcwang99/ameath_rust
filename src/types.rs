@@ -23,6 +23,30 @@ pub struct AiConfig {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    #[serde(default = "default_react_limit")]
+    pub react_limit: usize,
+    #[serde(default = "default_l1_threshold")]
+    pub l1_summary_threshold: usize,
+    #[serde(default = "default_l2_threshold")]
+    pub l2_merge_threshold: usize,
+    #[serde(default = "String::new")]
+    pub tavily_api_key: String,
+    #[serde(default = "default_system_prompt")]
+    pub system_prompt: String,
+}
+
+fn default_react_limit() -> usize {
+    20
+}
+fn default_l1_threshold() -> usize {
+    10
+}
+fn default_l2_threshold() -> usize {
+    10
+}
+fn default_system_prompt() -> String {
+    "You are Ameath, a desktop pet assistant. You are helpful, witty, and slightly mischievous."
+        .to_string()
 }
 
 impl Default for AiConfig {
@@ -31,6 +55,11 @@ impl Default for AiConfig {
             api_key: String::new(),
             base_url: "https://api.deepseek.com/v1".to_string(),
             model: "deepseek-chat".to_string(),
+            react_limit: 20,
+            l1_summary_threshold: 10,
+            l2_merge_threshold: 10,
+            tavily_api_key: String::new(),
+            system_prompt: default_system_prompt(),
         }
     }
 }

@@ -911,14 +911,42 @@ fn main() {
                                             }
                                             settings_window::SettingsAction::SetAiApiKey(key) => {
                                                 ai_config.api_key = key;
+                                                ai_config.save();
                                                 sw.request_redraw();
                                             }
                                             settings_window::SettingsAction::SetAiBaseUrl(url) => {
                                                 ai_config.base_url = url;
+                                                ai_config.save();
                                                 sw.request_redraw();
                                             }
                                             settings_window::SettingsAction::SetAiModel(model) => {
                                                 ai_config.model = model;
+                                                ai_config.save();
+                                                sw.request_redraw();
+                                            }
+                                            settings_window::SettingsAction::SetAiReactLimit(limit) => {
+                                                ai_config.react_limit = limit;
+                                                ai_config.save();
+                                                sw.request_redraw();
+                                            }
+                                            settings_window::SettingsAction::SetAiL1Threshold(t) => {
+                                                ai_config.l1_summary_threshold = t;
+                                                ai_config.save();
+                                                sw.request_redraw();
+                                            }
+                                            settings_window::SettingsAction::SetAiL2Threshold(val) => {
+                                                ai_config.l2_merge_threshold = val;
+                                                ai_config.save();
+                                                sw.request_redraw();
+                                            }
+                                            settings_window::SettingsAction::SetAiTavilyKey(key) => {
+                                                ai_config.tavily_api_key = key;
+                                                ai_config.save();
+                                                sw.request_redraw();
+                                            }
+                                            settings_window::SettingsAction::SetAiSystemPrompt(prompt) => {
+                                                ai_config.system_prompt = prompt;
+                                                ai_config.save();
                                                 sw.request_redraw();
                                             }
                                             settings_window::SettingsAction::None => {}

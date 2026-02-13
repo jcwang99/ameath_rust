@@ -1,10 +1,29 @@
 use crate::types::AiConfig;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Message {
     pub role: String,
+    #[serde(default)]
     pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ToolCall {
+    pub id: String,
+    pub r#type: String,
+    pub function: ToolFunction,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ToolFunction {
+    pub name: String,
+    pub arguments: String,
 }
 
 pub struct OpenAiClient {
@@ -16,6 +35,8 @@ pub struct OpenAiClient {
 pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<Message>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Value>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -36,7 +57,11 @@ impl OpenAiClient {
         }
     }
 
-    pub async fn chat(&self, messages: Vec<Message>) -> Result<String, String> {
+    pub async fn chat(
+        &self,
+        messages: Vec<Message>,
+        tools: Option<Vec<Value>>,
+    ) -> Result<Message, String> {
         let url = format!(
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
@@ -45,6 +70,7 @@ impl OpenAiClient {
         let request = ChatRequest {
             model: self.config.model.clone(),
             messages,
+            tools,
         };
 
         let response = self
@@ -73,7 +99,7 @@ impl OpenAiClient {
         chat_response
             .choices
             .first()
-            .map(|c| c.message.content.clone())
+            .map(|c| c.message.clone())
             .ok_or_else(|| "No response from AI".to_string())
     }
 }

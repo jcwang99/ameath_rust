@@ -1,14 +1,52 @@
-pub trait Skill {
+use async_trait::async_trait;
+use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+pub mod browser;
+pub mod memory_skill;
+pub mod system;
+
+#[async_trait]
+pub trait Skill: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
+    async fn execute(&self, args: Value) -> Result<String, String>;
+    fn to_tool(&self) -> Value;
 }
 
 pub struct SkillManager {
-    // Placeholder for registered skills
+    skills: HashMap<String, Arc<dyn Skill>>,
 }
 
 impl SkillManager {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(
+        memory: Arc<crate::ai::memory::MemoryManager>,
+        config: &crate::types::AiConfig,
+    ) -> Self {
+        let mut manager = Self {
+            skills: HashMap::new(),
+        };
+
+        // Register default skills
+        manager.register(Arc::new(system::SystemSkill::new()));
+        manager.register(Arc::new(browser::BrowserSkill::new(
+            config.tavily_api_key.clone(),
+        )));
+        manager.register(Arc::new(memory_skill::MemorySkill::new(memory)));
+
+        manager
+    }
+
+    pub fn register(&mut self, skill: Arc<dyn Skill>) {
+        self.skills.insert(skill.name().to_string(), skill);
+    }
+
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Skill>> {
+        self.skills.get(name).cloned()
+    }
+
+    pub fn get_tools_for_llm(&self) -> Vec<Value> {
+        self.skills.values().map(|s| s.to_tool()).collect()
     }
 }
