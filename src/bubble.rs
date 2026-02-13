@@ -27,10 +27,12 @@ use windows::Win32::Graphics::Gdi::{
     CLIP_DEFAULT_PRECIS, DEFAULT_PITCH, DIB_RGB_COLORS, DT_CALCRECT, DT_CENTER, DT_WORDBREAK,
     FF_SWISS, FW_BOLD, HDC, NONANTIALIASED_QUALITY, OUT_DEFAULT_PRECIS,
 };
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
-pub const BASE_BUBBLE_WIDTH: i32 = 220;
-pub const BASE_BUBBLE_HEIGHT: i32 = 110;
-pub const MAX_BUBBLE_WIDTH: i32 = 300;
+pub const BASE_BUBBLE_WIDTH: i32 = 250;
+pub const BASE_BUBBLE_HEIGHT: i32 = 120;
+pub const MAX_BUBBLE_WIDTH: i32 = 600; // significantly increased width
 
 pub struct SpeechBubble {
     pub text: String,
@@ -52,14 +54,35 @@ impl SpeechBubble {
         }
     }
 
-    pub fn show(&mut self, text: &str, duration: Duration, scale: f32) {
-        if self.text != text {
-            self.text = text.to_string();
-            // Invalidate cache
+    pub fn show(&mut self, text: &str, _duration: Duration, scale: f32) {
+        // MD Stripping / Basic Clean
+        let clean_text = Self::clean_markdown(text);
+
+        if self.text != clean_text {
+            self.text = clean_text;
             self.cached_bitmap = None;
         }
-        self.show_until = Some(Instant::now() + duration);
+
+        // Adaptive Duration
+        // Base 2s + 0.1s per character
+        let chars = self.text.chars().count();
+        let dyn_duration = Duration::from_secs(2) + Duration::from_millis((chars * 100) as u64);
+
+        self.show_until = Some(Instant::now() + dyn_duration);
         self.calculate_size(scale);
+    }
+
+    pub fn keep_alive(&mut self) {
+        if let Some(until) = self.show_until {
+            if until < Instant::now() + Duration::from_secs(1) {
+                self.show_until = Some(Instant::now() + Duration::from_secs(1));
+            }
+        }
+    }
+
+    fn clean_markdown(input: &str) -> String {
+        // Very basic stripper: remove ** and __ and `
+        input.replace("**", "").replace("__", "").replace("`", "")
     }
 
     fn calculate_size(&mut self, scale: f32) {
@@ -91,12 +114,21 @@ impl SpeechBubble {
             let old_font = SelectObject(hdc_mem, temp_font);
 
             let padding = (12.0 * scale) as i32;
-            let max_w = (MAX_BUBBLE_WIDTH as f32 * scale) as i32 - padding * 2;
+
+            // Dynamic Sizing based on Screen Metrics (User Request)
+            let screen_w = GetSystemMetrics(SM_CXSCREEN);
+            let screen_h = GetSystemMetrics(SM_CYSCREEN);
+
+            // Limit to 50% of screen size, but ensure at least BASE_WIDTH
+            let max_w =
+                ((screen_w / 2) - padding * 2).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
+            let max_h_limit = screen_h / 2;
+
             let mut rect = RECT {
                 left: 0,
                 top: 0,
                 right: max_w,
-                bottom: 1000,
+                bottom: max_h_limit,
             };
 
             let mut wide_text: Vec<u16> = self.text.encode_utf16().chain(Some(0)).collect();
@@ -112,8 +144,10 @@ impl SpeechBubble {
 
             let tail_h = (20.0 * scale) as i32;
             let calc_w = (text_w + padding * 2).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
-            let calc_h =
-                (text_h + padding * 2 + tail_h).max((BASE_BUBBLE_HEIGHT as f32 * scale) as i32);
+            // Add extra vertical buffer (e.g. 20px scaled) to account for GDI vs DirectWrite differences
+            let height_buffer = (20.0 * scale) as i32;
+            let calc_h = (text_h + padding * 2 + tail_h + height_buffer)
+                .max((BASE_BUBBLE_HEIGHT as f32 * scale) as i32);
 
             if self.current_width != calc_w || self.current_height != calc_h {
                 self.cached_bitmap = None; // Invalidate if size changed

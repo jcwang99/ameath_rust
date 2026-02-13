@@ -42,13 +42,17 @@ impl ChatKernel {
         };
 
         // 1. Initial User Message
+        // Clear volatile tool traces from previous sessions/requests
+        self.memory.clear_traces().ok();
+
         let user_msg = Message {
             role: "user".to_string(),
             content: input,
             tool_calls: None,
             tool_call_id: None,
         };
-        self.memory.add_message(&user_msg).ok();
+        // DEFER SAVING until we have a response
+        // self.memory.add_message(&user_msg).ok();
 
         // 2. ReAct Loop (Infinite with Handover)
         let mut total_handovers = 0;
@@ -82,8 +86,21 @@ impl ChatKernel {
                 });
             }
 
+            // INJECT CURRENT USER MESSAGE (Deferred Persistence Fix)
+            messages.push(user_msg.clone());
+            println!(
+                "[Kernel] Context prepared. Message count: {}",
+                messages.len()
+            );
+
             let tools = self.skills.get_tools_for_llm();
-            let tools_opt = if tools.is_empty() { None } else { Some(tools) };
+            let tools_opt = if tools.is_empty() {
+                println!("[Kernel] No tools available.");
+                None
+            } else {
+                println!("[Kernel] Tools available: {}", tools.len());
+                Some(tools)
+            };
 
             let mut turns = 0;
             let max_turns = self.config.react_limit;
@@ -92,26 +109,50 @@ impl ChatKernel {
 
             while turns < max_turns {
                 turns += 1;
+                println!("[Kernel] Turn {}/{}", turns, max_turns);
 
                 match client.chat(messages.clone(), tools_opt.clone()).await {
                     Ok(response_msg) => {
+                        println!("[Kernel] LLM Response Role: {}", response_msg.role);
+                        if let Some(calls) = &response_msg.tool_calls {
+                            println!("[Kernel] Tool Calls detected: {}", calls.len());
+                        }
+
                         messages.push(response_msg.clone());
 
                         if let Some(tool_calls) = &response_msg.tool_calls {
                             // Execution Phase
                             for tool_call in tool_calls {
                                 let skill_name = &tool_call.function.name;
+                                let args_str = &tool_call.function.arguments;
+                                println!(
+                                    "[Kernel] Executing Tool: {} with args: {}",
+                                    skill_name, args_str
+                                );
+
                                 let args_result: Result<serde_json::Value, _> =
-                                    serde_json::from_str(&tool_call.function.arguments);
-                                let args = args_result.unwrap_or_else(|_| serde_json::json!({}));
+                                    serde_json::from_str(args_str);
+                                let args = args_result.unwrap_or_else(|e| {
+                                    println!("[Kernel] JSON Parse Error: {}", e);
+                                    serde_json::json!({})
+                                });
 
                                 let result = if let Some(skill) = self.skills.get(skill_name) {
                                     match skill.execute(args).await {
-                                        Ok(out) => out,
-                                        Err(err) => format!("Error: {}", err),
+                                        Ok(out) => {
+                                            println!("[Kernel] Tool Output: {:.100}...", out); // Truncate log
+                                            out
+                                        }
+                                        Err(err) => {
+                                            let e = format!("Error: {}", err);
+                                            println!("[Kernel] Tool Execution Failed: {}", e);
+                                            e
+                                        }
                                     }
                                 } else {
-                                    format!("Unknown tool: {}", skill_name)
+                                    let e = format!("Unknown tool: {}", skill_name);
+                                    println!("[Kernel] {}", e);
+                                    e
                                 };
 
                                 let tool_response = Message {
@@ -128,13 +169,18 @@ impl ChatKernel {
                                 messages.push(tool_response);
                             }
                         } else {
+                            println!("[Kernel] No tool calls. Final response received.");
                             // Completion Phase: Store final response in Layer 1
+                            self.memory.add_message(&user_msg).ok(); // Save initiated user message now
                             self.memory.add_message(&response_msg).ok(); // This is the final answer
                             final_response = Some(response_msg.content);
                             break; // Break inner loop
                         }
                     }
-                    Err(e) => return format!("AI Error: {}", e),
+                    Err(e) => {
+                        println!("[Kernel] AI Client Error: {}", e);
+                        return format!("AI Error: {}", e);
+                    }
                 }
             }
 

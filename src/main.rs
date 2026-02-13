@@ -235,6 +235,7 @@ fn main() {
     let mut settings_win: Option<SettingsWindow> = None;
     let mut menu_visible_timer: Option<Instant> = None;
     let mut current_layer = types::WindowLayer::Top;
+    let mut bubble_rect: Option<(i32, i32, i32, i32)> = None;
 
     event_loop
         .run(move |event, elwt| {
@@ -522,6 +523,7 @@ fn main() {
                                     bubble_manager.render_to_buffer(b_buf.as_mut_ptr(), pet.scale);
 
                                     let by = bubble_y as i32;
+                                    bubble_rect = Some((bx, by, current_bubble_w, current_bubble_h));
 
                                     if by >= 0 {
                                         for y in 0..current_bubble_h as usize {
@@ -1060,11 +1062,26 @@ fn main() {
                                 && mouse_y >= pet_screen_y
                                 && mouse_y <= pet_screen_y + menu_h;
 
-                            if over_pet || over_menu {
+                            // Check Bubble Hover
+                            let over_bubble = if let Some((bx, by, bw, bh)) = bubble_rect {
+                                mouse_x >= bx as f64 && mouse_x <= (bx + bw) as f64
+                                    && mouse_y >= by as f64 && mouse_y <= (by + bh) as f64
+                            } else {
+                                false
+                            };
+
+                            // Unified Interaction Logic
+                            // User Request: Stop pet moving AND keep bubble alive if interacting with pet (or bubble/menu)
+                            if over_pet || over_menu || over_bubble {
                                 is_hovered = true;
-                                menu_manager.visible = true;
-                                menu_manager.opacity = (menu_manager.opacity + 0.1).min(1.0);
-                                menu_visible_timer = Some(Instant::now());
+                                bubble_manager.keep_alive();
+                                
+                                // Menu visibility logic (keep existing behavior for menu trigger)
+                                if over_pet || over_menu {
+                                    menu_manager.visible = true;
+                                    menu_manager.opacity = (menu_manager.opacity + 0.1).min(1.0);
+                                    menu_visible_timer = Some(Instant::now());
+                                }
                             } else {
                                 let should_fade = match menu_visible_timer {
                                     Some(t) => t.elapsed() > Duration::from_secs(5),

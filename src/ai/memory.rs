@@ -291,19 +291,6 @@ impl MemoryManager {
         Ok(())
     }
 
-    pub fn mark_l1_summarized(&self, ids: &[i64]) -> Result<()> {
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        for id in ids {
-            tx.execute(
-                "UPDATE conversations SET summarized = 1 WHERE id = ?1",
-                params![id],
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
     pub fn get_recent_history(&self, limit: usize) -> Result<Vec<(String, String)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
