@@ -52,16 +52,16 @@ fn main() {
 
     // Load assets (Right-facing by default)
     let idle_frames_right = vec![
-        anim::load_gif_processed("assets/gifs/idle1.gif"),
-        anim::load_gif_processed("assets/gifs/idle2.gif"),
-        anim::load_gif_processed("assets/gifs/idle3.gif"),
-        anim::load_gif_processed("assets/gifs/idle4.gif"),
+        anim::load_gif_from_memory(include_bytes!("../assets/gifs/idle1.gif")),
+        anim::load_gif_from_memory(include_bytes!("../assets/gifs/idle2.gif")),
+        anim::load_gif_from_memory(include_bytes!("../assets/gifs/idle3.gif")),
+        anim::load_gif_from_memory(include_bytes!("../assets/gifs/idle4.gif")),
     ];
-    let move_frames_right = vec![anim::load_gif_processed("assets/gifs/move.gif")];
-    let drag_frames_right = vec![anim::load_gif_processed("assets/gifs/drag.gif")];
+    let move_frames_right = vec![anim::load_gif_from_memory(include_bytes!("../assets/gifs/move.gif"))];
+    let drag_frames_right = vec![anim::load_gif_from_memory(include_bytes!("../assets/gifs/drag.gif"))];
 
     // Load Loading GIF
-    let loading_frames = anim::load_gif_processed("assets/icons/loading.gif");
+    let loading_frames = anim::load_gif_from_memory(include_bytes!("../assets/icons/loading.gif"));
 
     // Helper to mirror variants
     let mirror_variants = |variants: &Vec<Vec<PreprocessedFrame>>| -> Vec<Vec<PreprocessedFrame>> {
@@ -262,8 +262,12 @@ fn main() {
 
             match event {
                 Event::WindowEvent { event, window_id } => {
+                    if let WindowEvent::ModifiersChanged(modifiers) = &event {
+                        modifier_state = modifiers.state();
+                    }
+
                     if chat_window.id() == window_id {
-                         match chat_window.handle_event(&event) {
+                         match chat_window.handle_event(&event, modifier_state) {
                              ChatAction::Send(msg) => {
                                  println!("User sent: {}", msg);
                                  is_thinking = true;
@@ -966,11 +970,8 @@ fn main() {
                                         winit::event::MouseScrollDelta::LineDelta(_, y) => y * 30.0,
                                         winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32,
                                     };
-                                    sw.handle_scroll(dy);
+                                    sw.handle_scroll(dy, settings_cursor_pos);
                                     sw.request_redraw();
-                                }
-                                WindowEvent::ModifiersChanged(modifiers) => {
-                                    modifier_state = modifiers.state();
                                 }
                                 WindowEvent::KeyboardInput { event: key_event, .. } => {
                                     if sw.handle_key_input(&key_event, &mut ai_config, modifier_state) {

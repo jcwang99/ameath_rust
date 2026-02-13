@@ -28,20 +28,20 @@ pub struct QuickMenu {
 impl QuickMenu {
     pub fn new() -> Self {
         let mut base_buttons = Vec::new();
-        let icons = [
-            ("speech-bubble.png", "chat"),
-            ("music.png", "music"),
-            ("time-left.png", "pomodoro"),
-            ("gear.png", "settings"),
-            ("switch.png", "exit"),
+
+        let icon_data: [(&[u8], &str); 5] = [
+            (include_bytes!("../assets/icons/speech-bubble.png"), "chat"),
+            (include_bytes!("../assets/icons/music.png"), "music"),
+            (include_bytes!("../assets/icons/time-left.png"), "pomodoro"),
+            (include_bytes!("../assets/icons/gear.png"), "settings"),
+            (include_bytes!("../assets/icons/switch.png"), "exit"),
         ];
 
-        for (filename, id) in icons {
-            let path = Path::new("assets/icons").join(filename);
-            let base_icon = match image::open(&path) {
-                Ok(img) => img.to_rgba8(), // Keep original resolution
+        for (bytes, id) in icon_data {
+            let base_icon = match image::load_from_memory(bytes) {
+                Ok(img) => img.to_rgba8(),
                 Err(e) => {
-                    eprintln!("Failed to load icon {}: {}", path.display(), e);
+                    eprintln!("Failed to load embedded icon {}: {}", id, e);
                     RgbaImage::from_fn(64, 64, |_, _| image::Rgba([255, 0, 255, 255]))
                 }
             };

@@ -89,7 +89,11 @@ impl ChatWindow {
         }
     }
 
-    pub fn handle_event(&mut self, event: &WindowEvent) -> ChatAction {
+    pub fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::keyboard::ModifiersState,
+    ) -> ChatAction {
         match event {
             WindowEvent::Ime(ime) => match ime {
                 winit::event::Ime::Commit(text) => {
@@ -135,6 +139,22 @@ impl ChatWindow {
                         self.request_redraw();
                     }
                     Key::Character(c) => {
+                        let has_ctrl = modifiers.control_key() || modifiers.super_key();
+                        if c == "v" && has_ctrl {
+                            #[cfg(target_os = "windows")]
+                            {
+                                use arboard::Clipboard;
+                                if let Ok(mut clipboard) = Clipboard::new() {
+                                    if let Ok(text) = clipboard.get_text() {
+                                        let trimmed = text.trim();
+                                        self.input_text.push_str(trimmed);
+                                        self.request_redraw();
+                                    }
+                                }
+                            }
+                            return ChatAction::None;
+                        }
+
                         // Filter control characters
                         if !c.chars().any(|ch| ch.is_control()) {
                             self.input_text.push_str(c);

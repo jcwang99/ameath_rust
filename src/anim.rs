@@ -73,3 +73,12 @@ pub fn load_gif_processed(path: &str) -> Vec<PreprocessedFrame> {
         .expect("Failed to collect frames");
     preprocess_frames(frames)
 }
+
+pub fn load_gif_from_memory(data: &[u8]) -> Vec<PreprocessedFrame> {
+    let decoder = GifDecoder::new(data).expect("Failed to decode GIF from memory");
+    let frames = decoder
+        .into_frames()
+        .collect_frames()
+        .expect("Failed to collect frames");
+    preprocess_frames(frames)
+}
