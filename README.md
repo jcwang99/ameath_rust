@@ -107,6 +107,18 @@ cargo build --release
 *   **技术支持**:
     *   `winit`, `softbuffer`, `rodio`, `tray-icon`, `reqwest` 等开源社区的贡献。
 
+
+## Future Plan
+```markdown
+- [ ] **语音系统**: 引入局部语音包或集成 TTS (Text-to-Speech) 引擎，让她能开口说话。
+- [ ] **AI 主动交互**: 允许 AI 根据时间、天气或用户状态主动发起对话。
+- [ ] **动作扩展**: 增加更多精细的像素动画与随机触发的待机动作。
+```
+
+
+
 ---
 
 希望你喜欢有她陪伴的每一天。✨
+
+
