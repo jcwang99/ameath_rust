@@ -29,7 +29,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
 pub const BASE_BUBBLE_WIDTH: i32 = 250;
-pub const BASE_BUBBLE_HEIGHT: i32 = 120;
+pub const BASE_BUBBLE_HEIGHT: i32 = 60;
 
 pub struct SpeechBubble {
     pub text: String,
@@ -78,8 +78,27 @@ impl SpeechBubble {
     }
 
     fn clean_markdown(input: &str) -> String {
-        // Very basic stripper: remove ** and __ and `
-        input.replace("**", "").replace("__", "").replace("`", "")
+        // Core stripper
+        let stripped = input.replace("**", "").replace("__", "").replace("`", "");
+
+        // Split into lines, trim each, remove empty, but allow single paragraph breaks
+        let mut result = Vec::new();
+        let mut empty_count = 0;
+
+        for line in stripped.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                empty_count += 1;
+                if empty_count == 1 {
+                    result.push(""); // Allow one empty line (paragraph break)
+                }
+            } else {
+                empty_count = 0;
+                result.push(trimmed);
+            }
+        }
+
+        result.join("\n").trim().to_string()
     }
 
     fn calculate_size(&mut self, scale: f32) {
@@ -138,7 +157,7 @@ impl SpeechBubble {
                 (text_w as i32 + padding * 2).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
 
             // Add a small safety margin (4px scaled) and ensure min base height
-            let height_buffer = (8.0 * scale) as i32;
+            let height_buffer = (6.0 * scale) as i32;
             let calc_h = (text_h as i32 + padding * 2 + tail_h + height_buffer)
                 .max((BASE_BUBBLE_HEIGHT as f32 * scale) as i32);
 

@@ -45,9 +45,15 @@ impl ChatKernel {
         // Clear volatile tool traces from previous sessions/requests
         self.memory.clear_traces().ok();
 
+        let (db_content, llm_content) = if let Some(idx) = input.find("\n\n[SYSTEM INSTRUCTION]") {
+            (input[..idx].to_string(), input.clone())
+        } else {
+            (input.clone(), input.clone())
+        };
+
         let user_msg = Message {
             role: "user".to_string(),
-            content: input,
+            content: db_content,
             tool_calls: None,
             tool_call_id: None,
         };
@@ -87,7 +93,12 @@ impl ChatKernel {
             }
 
             // INJECT CURRENT USER MESSAGE (Deferred Persistence Fix)
-            messages.push(user_msg.clone());
+            messages.push(Message {
+                role: "user".to_string(),
+                content: llm_content.clone(),
+                tool_calls: None,
+                tool_call_id: None,
+            });
             println!(
                 "[Kernel] Context prepared. Message count: {}",
                 messages.len()
@@ -245,6 +256,17 @@ impl ChatKernel {
                 return "Error generating handover summary.".to_string();
             }
         }
+    }
+
+    pub async fn handle_system_event(&self, event_context: String) -> String {
+        let prompt = format!(
+            "{}\n\n[SYSTEM INSTRUCTION] This is an autonomous system event. You are proactive. \
+            Based on the context and eveything you know, decide if you should use tools (e.g. search weather, check news) to help the user, \
+            or just provide emotional value. If the context implies a need (e.g. 'raining'), verify it with tools first if possible. \
+            Do not mention you are an AI or 'system event'. Act naturally as Aemeath.",
+            event_context
+        );
+        self.handle(prompt).await
     }
 
     async fn orchestrate_summarization(&self) -> Result<(), String> {

@@ -32,3 +32,4 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = "0.4"
 arboard = "3"
 async-trait = "0.1.89"
+sysinfo = "0.38.1"

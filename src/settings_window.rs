@@ -43,6 +43,7 @@ pub enum SettingsAction {
     SetAiL2Threshold(usize),
     SetAiTavilyKey(String),
     SetAiSystemPrompt(String),
+    SetAiInteractionFrequency(u64),
     RequestHistory,
     SetMonitor(String),
 }
@@ -212,7 +213,7 @@ impl SettingsWindow {
             );
 
             let mut found_field = false;
-            for i in 0..8 {
+            for i in 0..9 {
                 let (fx, fy, fw) = match i {
                     0 => (230.0, 30.0, 500.0),
                     1 => (230.0, 130.0, 500.0),
@@ -220,8 +221,9 @@ impl SettingsWindow {
                     3 => (230.0, 330.0, 150.0), // Smaller numeric fields
                     4 => (405.0, 330.0, 150.0),
                     5 => (580.0, 330.0, 150.0),
-                    6 => (230.0, 430.0, 500.0), // Tavily Key
-                    7 => (230.0, 530.0, 500.0), // System Prompt
+                    8 => (230.0, 430.0, 150.0), // Interaction Frequency
+                    6 => (230.0, 530.0, 500.0), // Tavily Key
+                    7 => (230.0, 630.0, 500.0), // System Prompt
                     _ => (0.0, 0.0, 0.0),
                 };
 
@@ -248,6 +250,7 @@ impl SettingsWindow {
                             3 => return SettingsAction::SetAiReactLimit(20),
                             4 => return SettingsAction::SetAiL1Threshold(10),
                             5 => return SettingsAction::SetAiL2Threshold(10),
+                            8 => return SettingsAction::SetAiInteractionFrequency(20),
                             6 => return SettingsAction::SetAiTavilyKey("".to_string()),
                             7 => return SettingsAction::SetAiSystemPrompt("".to_string()),
                             _ => {}
@@ -378,6 +381,27 @@ impl SettingsWindow {
                         7 => {
                             ai_config.system_prompt.pop();
                         }
+                        3 | 4 | 5 => {
+                            let mut s = match field_idx {
+                                3 => ai_config.react_limit.to_string(),
+                                4 => ai_config.l1_summary_threshold.to_string(),
+                                5 => ai_config.l2_merge_threshold.to_string(),
+                                _ => String::new(),
+                            };
+                            s.pop();
+                            let val = s.parse().unwrap_or(0);
+                            match field_idx {
+                                3 => ai_config.react_limit = val,
+                                4 => ai_config.l1_summary_threshold = val,
+                                5 => ai_config.l2_merge_threshold = val,
+                                _ => {}
+                            }
+                        }
+                        8 => {
+                            let mut s = ai_config.interaction_frequency.to_string();
+                            s.pop();
+                            ai_config.interaction_frequency = s.parse().unwrap_or(0);
+                        }
                         _ => {}
                     }
                     ai_config.save();
@@ -408,6 +432,10 @@ impl SettingsWindow {
                                         5 => {
                                             ai_config.l2_merge_threshold =
                                                 trimmed.parse().unwrap_or(10)
+                                        }
+                                        8 => {
+                                            ai_config.interaction_frequency =
+                                                trimmed.parse().unwrap_or(20)
                                         }
                                         6 => ai_config.tavily_api_key = trimmed,
                                         7 => ai_config.system_prompt = trimmed,
@@ -446,6 +474,13 @@ impl SettingsWindow {
                                     }
                                 }
                             }
+                            8 => {
+                                if c.chars().all(|ch| ch.is_ascii_digit()) {
+                                    let mut val_str = ai_config.interaction_frequency.to_string();
+                                    val_str.push_str(c);
+                                    ai_config.interaction_frequency = val_str.parse().unwrap_or(0);
+                                }
+                            }
                             _ => {}
                         }
                         ai_config.save();
@@ -456,7 +491,7 @@ impl SettingsWindow {
             }
             Key::Named(NamedKey::Tab) => {
                 if event.state == winit::event::ElementState::Pressed {
-                    self.focused_field = Some((field_idx + 1) % 8); // Changed from %7 to %8
+                    self.focused_field = Some((field_idx + 1) % 9);
                     self.window.request_redraw();
                     return true;
                 }
@@ -689,7 +724,7 @@ impl SettingsWindow {
                                 &mut buffer,
                                 w,
                                 (off_x) as i32,
-                                (my as i32 - sc(8.0) as i32),
+                                my as i32 - sc(8.0) as i32,
                                 sc(6.0) as u32,
                                 sc(36.0) as u32,
                                 sc(3.0) as u32,
@@ -1278,6 +1313,10 @@ impl SettingsWindow {
                         ("L2 Merge", ai_config.l2_merge_threshold.to_string()),
                         ("Tavily Key", ai_config.tavily_api_key.clone()),
                         ("System Prompt", ai_config.system_prompt.clone()),
+                        (
+                            "Interact Interval (min)",
+                            ai_config.interaction_frequency.to_string(),
+                        ),
                     ];
                     for (i, (label, val)) in fields.iter().enumerate() {
                         let (fx, fy, fw) = match i {
@@ -1287,8 +1326,9 @@ impl SettingsWindow {
                             3 => (230.0, 330.0, 150.0), // Smaller numeric fields
                             4 => (405.0, 330.0, 150.0),
                             5 => (580.0, 330.0, 150.0),
-                            6 => (230.0, 430.0, 500.0), // Tavily Key
-                            7 => (230.0, 530.0, 500.0), // System Prompt
+                            8 => (230.0, 430.0, 150.0), // New Interval
+                            6 => (230.0, 530.0, 500.0), // Tavily Key
+                            7 => (230.0, 630.0, 500.0), // System Prompt
                             _ => (0.0, 0.0, 0.0),
                         };
 
@@ -1577,7 +1617,7 @@ impl SettingsWindow {
                     // We need to recalculate the height of System Prompt to know where it ends relative to card start
                     // Use actual calculated height clamped to visual max (200.0)
                     let sys_prompt_h = sc(self.active_sys_prompt_content_height.min(200.0));
-                    let content_bottom = sy_val(120) as f32 + sc(530.0) + sys_prompt_h + sc(100.0); // Extra padding
+                    let content_bottom = sy_val(120) as f32 + sc(630.0) + sys_prompt_h + sc(100.0); // Extra padding
                     self.content_height = content_bottom - sy_val(120) as f32; // Height relative to start
 
                     self.viewport_height = h as f32;

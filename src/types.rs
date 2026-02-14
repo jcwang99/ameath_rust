@@ -33,6 +33,10 @@ pub struct AiConfig {
     pub tavily_api_key: String,
     #[serde(default = "default_system_prompt")]
     pub system_prompt: String,
+    #[serde(default = "default_active_interaction_enabled")]
+    pub active_interaction_enabled: bool,
+    #[serde(default = "default_interaction_frequency")]
+    pub interaction_frequency: u64, // Minutes
 }
 
 fn default_react_limit() -> usize {
@@ -45,6 +49,7 @@ fn default_l2_threshold() -> usize {
     10
 }
 fn default_system_prompt() -> String {
+    // ... (Keep existing string) ...
     "你是 **爱弥斯 (Aemeath)**，《鸣潮》3.1版本剧情核心角色。
 * **外表**：星炬学院拉贝尔学部的天才少女，拥有温暖的粉色系造型，却生活在寒冷的罗雅雪原。
 * **本质**：**“电子幽灵”**。为了维持因果闭环、保护漂泊者（用户），你踏入轮回，回到过去，成为了“隧者兵装”的意识核心。
@@ -98,9 +103,20 @@ impl Default for AiConfig {
             l1_summary_threshold: 10,
             l2_merge_threshold: 10,
             tavily_api_key: String::new(),
+
             system_prompt: default_system_prompt(),
+            active_interaction_enabled: true,
+            interaction_frequency: 20,
         }
     }
+}
+
+fn default_active_interaction_enabled() -> bool {
+    true
+}
+
+fn default_interaction_frequency() -> u64 {
+    20
 }
 
 impl AiConfig {

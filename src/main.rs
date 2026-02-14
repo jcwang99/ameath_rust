@@ -11,6 +11,8 @@ mod render;
 mod settings_window;
 mod types;
 mod ai;
+mod interaction;
+
 
 use chat_window::{ChatWindow, ChatAction};
 use settings_window::SettingsWindow;
@@ -206,6 +208,8 @@ fn main() {
     if music_dir.exists() {
         music_player.set_path(music_dir);
     }
+    let mut interaction_manager = interaction::InteractionManager::new(ai_config.clone());
+
     let quotes = vec![
         "哎呀，被发现了！😆",
         "别戳我啦~",
@@ -982,6 +986,12 @@ fn main() {
                                                 ai_config.save();
                                                 sw.request_redraw();
                                             }
+                                            settings_window::SettingsAction::SetAiInteractionFrequency(val) => {
+                                                ai_config.interaction_frequency = val;
+                                                interaction_manager.update_config(ai_config.clone());
+                                                ai_config.save();
+                                                sw.request_redraw();
+                                            }
                                             settings_window::SettingsAction::SetAiTavilyKey(key) => {
                                                 ai_config.tavily_api_key = key;
                                                 ai_config.save();
@@ -1043,12 +1053,13 @@ fn main() {
                                 }
                                 WindowEvent::KeyboardInput { event: key_event, .. } => {
                                     if sw.handle_key_input(&key_event, &mut ai_config, modifier_state) {
-                                        // Redraw happens inside handle_key_input
+                                        interaction_manager.update_config(ai_config.clone());
                                     }
                                 }
                                 WindowEvent::Ime(ime_event) => {
                                     if let winit::event::Ime::Commit(text) = ime_event {
                                         sw.handle_ime(&text, &mut ai_config);
+                                        interaction_manager.update_config(ai_config.clone());
                                     }
                                 }
                                 WindowEvent::CursorMoved { position, .. } => {
@@ -1191,6 +1202,26 @@ fn main() {
 
                         if let Some(msg) = music_player.update() {
                             bubble_manager.show(&msg, Duration::from_secs(4), pet.scale);
+                        }
+
+                        // Interaction Manager Update
+                        if let Some(system_event) = interaction_manager.check_for_trigger() {
+                            println!("Triggered: {}", system_event);
+                            let kernel = chat_kernel.clone(); // Use the Arc
+                            let tx = ai_tx.clone();
+                            let input = system_event;
+
+                            std::thread::spawn(move || {
+                                let rt = tokio::runtime::Runtime::new().unwrap();
+                                rt.block_on(async {
+                                    let response = kernel.handle_system_event(input).await;
+                                    let _ = tx.send(response);
+                                });
+                            });
+                            
+                            // Visual cue? Maybe thinking animation?
+                            is_thinking = true;
+                            thinking_start = Some(Instant::now());
                         }
 
                         window.set_outer_position(PhysicalPosition::new(
