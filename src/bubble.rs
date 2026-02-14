@@ -132,7 +132,7 @@ impl SpeechBubble {
             let screen_w = GetSystemMetrics(SM_CXSCREEN);
             let screen_h = GetSystemMetrics(SM_CYSCREEN);
 
-            let padding = (12.0 * scale) as i32;
+            let padding = (24.0 * scale).ceil() as i32;
             let max_w_allowed =
                 ((screen_w / 2) - padding * 2).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
 
@@ -153,13 +153,15 @@ impl SpeechBubble {
             let text_h = metrics.height;
 
             let tail_h = (20.0 * scale) as i32;
-            let calc_w =
-                (text_w as i32 + padding * 2).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
 
-            // Add a small safety margin (4px scaled) and ensure min base height
-            let height_buffer = (6.0 * scale) as i32;
-            let calc_h = (text_h as i32 + padding * 2 + tail_h + height_buffer)
-                .max((BASE_BUBBLE_HEIGHT as f32 * scale) as i32);
+            // Add buffers and use ceil for safety against floating point truncation
+            let width_buffer = (16.0 * scale).ceil() as i32;
+            let height_buffer = (32.0 * scale).ceil() as i32;
+
+            let calc_w = (text_w as i32 + padding * 2 + width_buffer)
+                .max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
+
+            let calc_h = text_h.ceil() as i32 + padding * 2 + tail_h + height_buffer;
 
             if self.current_width != calc_w || self.current_height != calc_h {
                 self.cached_bitmap = None; // Invalidate cache if size changes
@@ -318,7 +320,7 @@ impl SpeechBubble {
 
             // In windows-rs 0.52.0, ID2D1DCRenderTarget inherits from ID2D1RenderTarget methods.
             // If CreateSolidColorBrush isn't found, try ID2D1DeviceContext or call it directly.
-            let padding = (12.0 * scale) as i32;
+            let padding = (24.0 * scale).ceil() as i32;
             let rect_gdi = RECT {
                 left: padding,
                 top: padding,

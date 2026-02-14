@@ -81,10 +81,10 @@ impl InteractionManager {
         }
     }
 
-    #[allow(dead_code)]
     pub fn update_config(&mut self, config: AiConfig) {
         self.config = config;
-        self.base_interval = Duration::from_secs(self.config.interaction_frequency * 60);
+        // Enforce 1 minute minimum to avoid accidental spam during typing
+        self.base_interval = Duration::from_secs(self.config.interaction_frequency.max(1) * 60);
     }
 
     pub fn check_for_trigger(&mut self) -> Option<String> {

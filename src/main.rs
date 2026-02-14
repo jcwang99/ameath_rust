@@ -1205,23 +1205,25 @@ fn main() {
                         }
 
                         // Interaction Manager Update
-                        if let Some(system_event) = interaction_manager.check_for_trigger() {
-                            println!("Triggered: {}", system_event);
-                            let kernel = chat_kernel.clone(); // Use the Arc
-                            let tx = ai_tx.clone();
-                            let input = system_event;
+                        if !is_thinking {
+                            if let Some(system_event) = interaction_manager.check_for_trigger() {
+                                println!("Triggered: {}", system_event);
+                                let kernel = chat_kernel.clone(); // Use the Arc
+                                let tx = ai_tx.clone();
+                                let input = system_event;
 
-                            std::thread::spawn(move || {
-                                let rt = tokio::runtime::Runtime::new().unwrap();
-                                rt.block_on(async {
-                                    let response = kernel.handle_system_event(input).await;
-                                    let _ = tx.send(response);
+                                std::thread::spawn(move || {
+                                    let rt = tokio::runtime::Runtime::new().unwrap();
+                                    rt.block_on(async {
+                                        let response = kernel.handle_system_event(input).await;
+                                        let _ = tx.send(response);
+                                    });
                                 });
-                            });
-                            
-                            // Visual cue? Maybe thinking animation?
-                            is_thinking = true;
-                            thinking_start = Some(Instant::now());
+                                
+                                // Visual cue? Maybe thinking animation?
+                                is_thinking = true;
+                                thinking_start = Some(Instant::now());
+                            }
                         }
 
                         window.set_outer_position(PhysicalPosition::new(
