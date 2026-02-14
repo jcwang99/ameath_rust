@@ -155,8 +155,8 @@ impl ChatWindow {
                             return ChatAction::None;
                         }
 
-                        // Filter control characters
-                        if !c.chars().any(|ch| ch.is_control()) {
+                        // Filter control characters and Alt combinations (to prevent hotkey leakage)
+                        if !c.chars().any(|ch| ch.is_control()) && !modifiers.alt_key() {
                             self.input_text.push_str(c);
                             self.request_redraw();
                         }

@@ -1581,19 +1581,6 @@ impl SettingsWindow {
                     self.content_height = content_bottom - sy_val(120) as f32; // Height relative to start
 
                     self.viewport_height = h as f32;
-
-                    if let Some(font) = &self.font {
-                        // Self::draw_text(
-                        //     &mut buffer,
-                        //     w,
-                        //     font,
-                        //     "Note: More AI features coming soon!",
-                        //     s(230) as i32,
-                        //     card_y_raw + sc(760.0) as i32,
-                        //     sc(11.0),
-                        //     text_sec,
-                        // );
-                    }
                 }
                 // Draw Tab Header ON TOP
                 if let Some(font) = &self.font {

@@ -64,6 +64,7 @@ pub fn preprocess_frames(frames: Vec<image::Frame>) -> Vec<PreprocessedFrame> {
         .collect()
 }
 
+#[allow(dead_code)]
 pub fn load_gif_processed(path: &str) -> Vec<PreprocessedFrame> {
     let file = File::open(path).expect("Failed to open GIF");
     let decoder = GifDecoder::new(file).expect("Failed to decode GIF");
