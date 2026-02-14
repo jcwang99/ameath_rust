@@ -1,6 +1,5 @@
 use image::RgbaImage;
 
-
 pub const BASE_BUTTON_SIZE: i32 = 40;
 pub const BASE_BUTTON_PADDING: i32 = 10;
 
