@@ -29,6 +29,7 @@ pub struct SettingsWindow {
     pub cursor_pos: usize,
     pub selection_start: Option<usize>,
     pub is_dragging_text: bool,
+    pub last_cursor_action: std::time::Instant,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -83,6 +84,7 @@ impl SettingsWindow {
                     self.scroll_offset = 0.0;
                     self.cursor_pos = 0;
                     self.selection_start = None;
+                    self.last_cursor_action = std::time::Instant::now(); // Reset cursor blink on tab change
                     self.window.request_redraw();
                     if i == 3 {
                         return SettingsAction::RequestHistory;
@@ -370,6 +372,7 @@ impl SettingsWindow {
             cursor_pos: 0,
             selection_start: None,
             is_dragging_text: false,
+            last_cursor_action: std::time::Instant::now(),
         }
     }
 
@@ -449,6 +452,7 @@ impl SettingsWindow {
         if !self.is_dragging_text {
             return;
         }
+        self.last_cursor_action = std::time::Instant::now();
         let field_idx = match self.focused_field {
             Some(i) => i,
             None => {
@@ -505,6 +509,7 @@ impl SettingsWindow {
         ai_config: &mut crate::types::AiConfig,
         modifiers: winit::keyboard::ModifiersState,
     ) -> bool {
+        self.last_cursor_action = std::time::Instant::now();
         if self.current_tab != 2 {
             return false;
         }
@@ -1722,8 +1727,14 @@ impl SettingsWindow {
                                             let cursor_y = start_text_raw as f32
                                                 + line_offset
                                                 + (self.system_prompt_scroll_offset * scale);
+                                            let cursor_visible = (std::time::Instant::now()
+                                                - self.last_cursor_action)
+                                                .as_millis()
+                                                % 1000
+                                                < 500;
                                             if cursor_y >= start_text_raw as f32
                                                 && cursor_y <= (box_bottom_raw as f32 - sc(20.0))
+                                                && cursor_visible
                                             {
                                                 Self::draw_rect(
                                                     &mut buffer,
@@ -1868,7 +1879,13 @@ impl SettingsWindow {
                                         glyph_width(&g)
                                     };
                                     let cursor_x = text_start_x + lx as i32 + 1;
-                                    if cursor_x < (s(fx as u32) + input_w) as i32 {
+                                    let cursor_visible = (std::time::Instant::now()
+                                        - self.last_cursor_action)
+                                        .as_millis()
+                                        % 1000
+                                        < 500;
+                                    if cursor_x < (s(fx as u32) + input_w) as i32 && cursor_visible
+                                    {
                                         Self::draw_rect(
                                             &mut buffer,
                                             w,
@@ -1977,6 +1994,7 @@ impl SettingsWindow {
                 _ => {}
             }
             ai_config.save();
+            self.last_cursor_action = std::time::Instant::now();
             self.window.request_redraw();
             return true;
         }

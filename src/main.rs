@@ -1103,6 +1103,11 @@ fn main() {
                         window.request_redraw();
                     }
 
+                    // For Cursor Blink Anim: Redraw settings if focused
+                    if let Some(sw) = &settings_win {
+                        sw.request_redraw();
+                    }
+
                     // Handle Tray Menu Events
                     if let Ok(event) = MenuEvent::receiver().try_recv() {
                         if event.id == settings_id {
