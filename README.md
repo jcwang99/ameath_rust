@@ -55,8 +55,17 @@ git clone https://github.com/your-username/ameath_rust.git
 # 进入目录
 cd ameath_rust
 
+
 # 启动程序（唤醒爱弥斯）
 cargo run --release
+
+### 4. 打包发布 (Build for Release)
+如果要生成独立的 `.exe` 文件分享给朋友：
+```bash
+cargo build --release
+```
+生成的文件位于 `target/release/ameath-rust.exe`。
+**提示**: 所有图片资源已内置，无需复制 `assets` 文件夹。如果你想分享音乐，可以创建一个 `music` 文件夹并放入音频文件，方便用户选择。
 ```
 
 ### 3. 配置与调优
