@@ -203,7 +203,7 @@ fn main() {
 
     // AI Kernel & Channel
     let (ai_tx, ai_rx) = std::sync::mpsc::channel::<String>();
-    let chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
+    let mut chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
     let music_dir = std::path::PathBuf::from("assets/music");
     if music_dir.exists() {
         music_player.set_path(music_dir);
@@ -294,7 +294,8 @@ fn main() {
                                  thinking_start = Some(Instant::now());
                                  
                                  // Update kernel with current config if changed (re-create for now for simplicity)
-                                 let kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
+                                 chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
+                                 let kernel = chat_kernel.clone();
                                  let tx = ai_tx.clone();
                                  let input = msg.clone();
                                  
@@ -886,161 +887,169 @@ fn main() {
                                 WindowEvent::CloseRequested => {
                                     settings_win = None;
                                 }
-                                WindowEvent::MouseInput {
-                                    state: ElementState::Pressed,
+                                 WindowEvent::MouseInput {
+                                    state,
                                     button: btn,
                                     ..
                                 } => {
-                                    if let Some(pos) = settings_cursor_pos {
-                                        let is_right_click = btn == MouseButton::Right;
-                                        let action = sw.handle_click(pos.x, pos.y, is_right_click);
-                                        match action {
-                                            settings_window::SettingsAction::SetScale(s) => {
-                                                pet.scale = s;
-                                                sw.request_redraw();
-                                                window.request_redraw();
-                                            }
-                                            settings_window::SettingsAction::SetMode(m) => {
-                                                if pet.behavior_mode == BehaviorMode::Clingy
-                                                    && m != BehaviorMode::Clingy
-                                                {
-                                                    pet.state = PetState::Idle;
+                                    if state == ElementState::Pressed {
+                                        if let Some(pos) = settings_cursor_pos {
+                                            let is_right_click = btn == MouseButton::Right;
+                                            let action = sw.handle_click(pos.x, pos.y, is_right_click, &ai_config);
+                                            match action {
+                                                settings_window::SettingsAction::SetScale(s) => {
+                                                    pet.scale = s;
+                                                    sw.request_redraw();
+                                                    window.request_redraw();
                                                 }
-                                                pet.behavior_mode = m;
-                                                sw.request_redraw();
-                                            }
-                                            settings_window::SettingsAction::SetMusicPath(path) => {
-                                                music_player.set_path(path);
-                                                sw.request_redraw();
-                                            }
-                                            settings_window::SettingsAction::SetLayer(layer) => {
-                                                current_layer = layer;
-                                                let level = match layer {
-                                                    types::WindowLayer::Top => {
-                                                        WindowLevel::AlwaysOnTop
-                                                    }
-                                                    types::WindowLayer::Bottom => {
-                                                        WindowLevel::Normal // Changed from AlwaysOnBottom
-                                                    }
-                                                };
-                                                window.set_window_level(level);
-
-                                                #[cfg(target_os = "windows")]
-                                                {
-                                                    use raw_window_handle::{
-                                                        HasRawWindowHandle, RawWindowHandle,
-                                                    };
-                                                    if let RawWindowHandle::Win32(handle) =
-                                                        window.raw_window_handle()
+                                                settings_window::SettingsAction::SetMode(m) => {
+                                                    if pet.behavior_mode == BehaviorMode::Clingy
+                                                        && m != BehaviorMode::Clingy
                                                     {
-                                                        let hwnd = HWND(handle.hwnd as isize);
-                                                        let is_top =
-                                                            layer == types::WindowLayer::Top;
-                                                        apply_window_styles(hwnd, is_top);
-                                                        
-                                                        if !is_top {
-                                                            use windows::Win32::UI::WindowsAndMessaging::{
-                                                                SetWindowPos, HWND_BOTTOM, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE
-                                                            };
-                                                            unsafe {
-                                                                let _ = SetWindowPos(
-                                                                    hwnd,
-                                                                    HWND_BOTTOM,
-                                                                    0, 0, 0, 0,
-                                                                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
-                                                                );
+                                                        pet.state = PetState::Idle;
+                                                    }
+                                                    pet.behavior_mode = m;
+                                                    sw.request_redraw();
+                                                }
+                                                settings_window::SettingsAction::SetMusicPath(path) => {
+                                                    music_player.set_path(path);
+                                                    sw.request_redraw();
+                                                }
+                                                settings_window::SettingsAction::SetLayer(layer) => {
+                                                    current_layer = layer;
+                                                    let level = match layer {
+                                                        types::WindowLayer::Top => {
+                                                            WindowLevel::AlwaysOnTop
+                                                        }
+                                                        types::WindowLayer::Bottom => {
+                                                            WindowLevel::Normal // Changed from AlwaysOnBottom
+                                                        }
+                                                    };
+                                                    window.set_window_level(level);
+
+                                                    #[cfg(target_os = "windows")]
+                                                    {
+                                                        use raw_window_handle::{
+                                                            HasRawWindowHandle, RawWindowHandle,
+                                                        };
+                                                        if let RawWindowHandle::Win32(handle) =
+                                                            window.raw_window_handle()
+                                                        {
+                                                            let hwnd = HWND(handle.hwnd as isize);
+                                                            let is_top =
+                                                                layer == types::WindowLayer::Top;
+                                                            apply_window_styles(hwnd, is_top);
+                                                            
+                                                            if !is_top {
+                                                                use windows::Win32::UI::WindowsAndMessaging::{
+                                                                    SetWindowPos, HWND_BOTTOM, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE
+                                                                };
+                                                                unsafe {
+                                                                    let _ = SetWindowPos(
+                                                                        hwnd,
+                                                                        HWND_BOTTOM,
+                                                                        0, 0, 0, 0,
+                                                                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
+                                                                    );
+                                                                }
                                                             }
                                                         }
                                                     }
-                                                }
 
-                                                sw.request_redraw();
-                                            }
-                                            settings_window::SettingsAction::SetAiApiKey(key) => {
-                                                ai_config.api_key = key;
-                                                ai_config.save();
-                                                sw.request_redraw();
-                                            }
-                                            settings_window::SettingsAction::SetAiBaseUrl(url) => {
-                                                ai_config.base_url = url;
-                                                ai_config.save();
-                                                sw.request_redraw();
-                                            }
-                                            settings_window::SettingsAction::SetAiModel(model) => {
-                                                ai_config.model = model;
-                                                ai_config.save();
-                                                sw.request_redraw();
-                                            }
-                                            settings_window::SettingsAction::SetAiReactLimit(limit) => {
-                                                ai_config.react_limit = limit;
-                                                ai_config.save();
-                                                sw.request_redraw();
-                                            }
-                                            settings_window::SettingsAction::SetAiL1Threshold(t) => {
-                                                ai_config.l1_summary_threshold = t;
-                                                ai_config.save();
-                                                sw.request_redraw();
-                                            }
-                                            settings_window::SettingsAction::SetAiL2Threshold(val) => {
-                                                ai_config.l2_merge_threshold = val;
-                                                ai_config.save();
-                                                sw.request_redraw();
-                                            }
-                                            settings_window::SettingsAction::SetAiInteractionFrequency(val) => {
-                                                ai_config.interaction_frequency = val;
-                                                interaction_manager.update_config(ai_config.clone());
-                                                ai_config.save();
-                                                sw.request_redraw();
-                                            }
-                                            settings_window::SettingsAction::SetAiTavilyKey(key) => {
-                                                ai_config.tavily_api_key = key;
-                                                ai_config.save();
-                                                sw.request_redraw();
-                                            }
-                                            settings_window::SettingsAction::SetMonitor(name) => {
-                                                // Find monitor by name
-                                                let available = window.available_monitors();
-                                                if let Some(monitor) = available.into_iter().find(|m| m.name().as_ref() == Some(&name)) {
-                                                    let pos = monitor.position();
-                                                    let size = monitor.size();
-                                                    
-                                                    // Move window to center of new monitor
-                                                    // This is tricky because we need to account for DPI.
-                                                    // We can just set the position to the monitor's top-left + center offset.
-                                                    let win_size = window.inner_size();
-                                                    let center_x = pos.x + (size.width as i32 / 2) - (win_size.width as i32 / 2);
-                                                    let center_y = pos.y + (size.height as i32 / 2) - (win_size.height as i32 / 2);
-                                                    
-                                                    window.set_outer_position(winit::dpi::PhysicalPosition::new(center_x, center_y));
-                                                    
-                                                    // Update config
-                                                    window_config.monitor_name = Some(name.clone());
-                                                    window_config.save();
-                                                    
-                                                    sw.current_monitor_name = Some(name);
-                                                    
-                                                    // Update pet screen size
-                                                    pet.screen_size = (size.width as f64, size.height as f64);
-                                                    monitor_offset = (pos.x, pos.y);
-                                                    
-                                                    // Reset pet position to center to avoid getting stuck out of bounds
-                                                    pet.position.0 = (size.width as f64 - pet.window_size.0) / 2.0;
-                                                    pet.position.1 = (size.height as f64 - pet.window_size.1) / 2.0;
-                                                }
-                                            }
-                                            settings_window::SettingsAction::SetAiSystemPrompt(prompt) => {
-                                                ai_config.system_prompt = prompt;
-                                                ai_config.save();
-                                                sw.request_redraw();
-                                            }
-                                            settings_window::SettingsAction::RequestHistory => {
-                                                if let Ok(history) = chat_kernel.get_recent_history(50) {
-                                                    sw.history = history;
                                                     sw.request_redraw();
                                                 }
+                                                settings_window::SettingsAction::SetAiApiKey(key) => {
+                                                    ai_config.api_key = key;
+                                                    ai_config.save();
+                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
+                                                    sw.request_redraw();
+                                                }
+                                                settings_window::SettingsAction::SetAiBaseUrl(url) => {
+                                                    ai_config.base_url = url;
+                                                    ai_config.save();
+                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
+                                                    sw.request_redraw();
+                                                }
+                                                settings_window::SettingsAction::SetAiModel(model) => {
+                                                    ai_config.model = model;
+                                                    ai_config.save();
+                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
+                                                    sw.request_redraw();
+                                                }
+                                                settings_window::SettingsAction::SetAiReactLimit(limit) => {
+                                                    ai_config.react_limit = limit;
+                                                    ai_config.save();
+                                                    sw.request_redraw();
+                                                }
+                                                settings_window::SettingsAction::SetAiL1Threshold(t) => {
+                                                    ai_config.l1_summary_threshold = t;
+                                                    ai_config.save();
+                                                    sw.request_redraw();
+                                                }
+                                                settings_window::SettingsAction::SetAiL2Threshold(val) => {
+                                                    ai_config.l2_merge_threshold = val;
+                                                    ai_config.save();
+                                                    sw.request_redraw();
+                                                }
+                                                settings_window::SettingsAction::SetAiInteractionFrequency(val) => {
+                                                    ai_config.interaction_frequency = val;
+                                                    interaction_manager.update_config(ai_config.clone());
+                                                    ai_config.save();
+                                                    sw.request_redraw();
+                                                }
+                                                settings_window::SettingsAction::SetAiTavilyKey(key) => {
+                                                    ai_config.tavily_api_key = key;
+                                                    ai_config.save();
+                                                    sw.request_redraw();
+                                                }
+                                                settings_window::SettingsAction::SetMonitor(name) => {
+                                                    // Find monitor by name
+                                                    let available = window.available_monitors();
+                                                    if let Some(monitor) = available.into_iter().find(|m| m.name().as_ref() == Some(&name)) {
+                                                        let pos = monitor.position();
+                                                        let size = monitor.size();
+                                                        
+                                                        // Move window to center of new monitor
+                                                        // This is tricky because we need to account for DPI.
+                                                        // We can just set the position to the monitor's top-left + center offset.
+                                                        let win_size = window.inner_size();
+                                                        let center_x = pos.x + (size.width as i32 / 2) - (win_size.width as i32 / 2);
+                                                        let center_y = pos.y + (size.height as i32 / 2) - (win_size.height as i32 / 2);
+                                                        
+                                                        window.set_outer_position(winit::dpi::PhysicalPosition::new(center_x, center_y));
+                                                        
+                                                        // Update config
+                                                        window_config.monitor_name = Some(name.clone());
+                                                        window_config.save();
+                                                        
+                                                        sw.current_monitor_name = Some(name);
+                                                        
+                                                        // Update pet screen size
+                                                        pet.screen_size = (size.width as f64, size.height as f64);
+                                                        monitor_offset = (pos.x, pos.y);
+                                                        
+                                                        // Reset pet position to center to avoid getting stuck out of bounds
+                                                        pet.position.0 = (size.width as f64 - pet.window_size.0) / 2.0;
+                                                        pet.position.1 = (size.height as f64 - pet.window_size.1) / 2.0;
+                                                    }
+                                                }
+                                                settings_window::SettingsAction::SetAiSystemPrompt(prompt) => {
+                                                    ai_config.system_prompt = prompt;
+                                                    ai_config.save();
+                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
+                                                    sw.request_redraw();
+                                                }
+                                                settings_window::SettingsAction::RequestHistory => {
+                                                    if let Ok(history) = chat_kernel.get_recent_history(50) {
+                                                        sw.history = history;
+                                                        sw.request_redraw();
+                                                    }
+                                                }
+                                                settings_window::SettingsAction::None => {}
                                             }
-                                            settings_window::SettingsAction::None => {}
                                         }
+                                    } else {
+                                        sw.handle_mouse_up();
                                     }
                                 }
                                 WindowEvent::MouseWheel { delta, .. } => {
@@ -1064,6 +1073,7 @@ fn main() {
                                 }
                                 WindowEvent::CursorMoved { position, .. } => {
                                     settings_cursor_pos = Some(position);
+                                    sw.handle_mouse_move(position.x, position.y, &ai_config);
                                 }
                                 WindowEvent::RedrawRequested => {
                                     let mode_str = match pet.behavior_mode {

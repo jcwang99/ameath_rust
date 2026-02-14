@@ -26,6 +26,9 @@ pub struct SettingsWindow {
     pub available_monitors: Vec<(String, String)>,
     pub current_monitor_name: Option<String>,
     pub history_item_rects: Vec<(f64, f64, f64, f64)>, // Logical rects: x, y, w, h
+    pub cursor_pos: usize,
+    pub selection_start: Option<usize>,
+    pub is_dragging_text: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -49,7 +52,13 @@ pub enum SettingsAction {
 }
 
 impl SettingsWindow {
-    pub fn handle_click(&mut self, x: f64, y: f64, is_right_click: bool) -> SettingsAction {
+    pub fn handle_click(
+        &mut self,
+        x: f64,
+        y: f64,
+        is_right_click: bool,
+        ai_config: &crate::types::AiConfig,
+    ) -> SettingsAction {
         let size = self.window.inner_size();
         let w = size.width as f64;
         let h = size.height as f64;
@@ -72,7 +81,8 @@ impl SettingsWindow {
                     self.current_tab = i;
                     self.focused_field = None;
                     self.scroll_offset = 0.0;
-                    self.scroll_offset = 0.0;
+                    self.cursor_pos = 0;
+                    self.selection_start = None;
                     self.window.request_redraw();
                     if i == 3 {
                         return SettingsAction::RequestHistory;
@@ -263,6 +273,35 @@ impl SettingsWindow {
                             return SettingsAction::None;
                         }
                         self.focused_field = Some(i);
+                        // Coordinate to cursor logic
+                        let val = match i {
+                            0 => ai_config.api_key.clone(),
+                            1 => ai_config.base_url.clone(),
+                            2 => ai_config.model.clone(),
+                            3 => ai_config.react_limit.to_string(),
+                            4 => ai_config.l1_summary_threshold.to_string(),
+                            5 => ai_config.l2_merge_threshold.to_string(),
+                            6 => ai_config.tavily_api_key.clone(),
+                            7 => ai_config.system_prompt.clone(),
+                            8 => ai_config.interaction_frequency.to_string(),
+                            _ => String::new(),
+                        };
+
+                        if i == 7 {
+                            // Multi-line system prompt needs more complex logic, for now place at end
+                            self.cursor_pos = val.chars().count();
+                        } else {
+                            let text_x = lx - fx - 15.0; // 15.0 is horizontal padding
+                            self.cursor_pos = self.get_cursor_from_x(&val, text_x, 1.0);
+                        }
+
+                        if !is_right_click {
+                            self.selection_start = Some(self.cursor_pos);
+                            self.is_dragging_text = true;
+                        } else {
+                            self.selection_start = None;
+                            self.is_dragging_text = false;
+                        }
                         self.window.request_redraw();
                         return SettingsAction::None;
                     }
@@ -271,6 +310,8 @@ impl SettingsWindow {
 
             if !found_field {
                 self.focused_field = None;
+                self.cursor_pos = 0;
+                self.selection_start = None;
                 self.window.request_redraw();
             }
         }
@@ -326,6 +367,9 @@ impl SettingsWindow {
                 .collect(),
             current_monitor_name: None, // Will be set by main.rs on startup or selection
             history_item_rects: Vec::new(),
+            cursor_pos: 0,
+            selection_start: None,
+            is_dragging_text: false,
         }
     }
 
@@ -346,6 +390,115 @@ impl SettingsWindow {
         self.window.request_redraw();
     }
 
+    fn get_field_text(&self, idx: usize, ai_config: &crate::types::AiConfig) -> String {
+        match idx {
+            0 => ai_config.api_key.clone(),
+            1 => ai_config.base_url.clone(),
+            2 => ai_config.model.clone(),
+            3 => ai_config.react_limit.to_string(),
+            4 => ai_config.l1_summary_threshold.to_string(),
+            5 => ai_config.l2_merge_threshold.to_string(),
+            6 => ai_config.tavily_api_key.clone(),
+            7 => ai_config.system_prompt.clone(),
+            8 => ai_config.interaction_frequency.to_string(),
+            _ => String::new(),
+        }
+    }
+
+    fn set_field_text(&self, idx: usize, ai_config: &mut crate::types::AiConfig, text: String) {
+        match idx {
+            0 => ai_config.api_key = text,
+            1 => ai_config.base_url = text,
+            2 => ai_config.model = text,
+            3 => ai_config.react_limit = text.parse().unwrap_or(0),
+            4 => ai_config.l1_summary_threshold = text.parse().unwrap_or(0),
+            5 => ai_config.l2_merge_threshold = text.parse().unwrap_or(0),
+            6 => ai_config.tavily_api_key = text,
+            7 => ai_config.system_prompt = text,
+            8 => ai_config.interaction_frequency = text.parse().unwrap_or(0),
+            _ => {}
+        }
+    }
+
+    fn get_cursor_from_x(&self, text: &str, x_offset: f64, scale: f32) -> usize {
+        if let Some(font) = &self.font {
+            let sc = scale;
+            let display_chars: Vec<char> = text.chars().collect();
+            let mut best_idx = 0;
+            let mut min_diff = x_offset.abs();
+
+            for i in 1..=display_chars.len() {
+                let sub: String = display_chars[..i].iter().collect();
+                let glyphs = font
+                    .layout(&sub, Scale::uniform(sc * 14.0), point(0.0, 0.0))
+                    .collect::<Vec<_>>();
+                let w = glyph_width(&glyphs) as f64;
+                let diff = (x_offset - w).abs();
+                if diff < min_diff {
+                    min_diff = diff;
+                    best_idx = i;
+                }
+            }
+            best_idx
+        } else {
+            0
+        }
+    }
+
+    pub fn handle_mouse_move(&mut self, x: f64, _y: f64, ai_config: &crate::types::AiConfig) {
+        if !self.is_dragging_text {
+            return;
+        }
+        let field_idx = match self.focused_field {
+            Some(i) => i,
+            None => {
+                self.is_dragging_text = false;
+                return;
+            }
+        };
+
+        let size = self.window.inner_size();
+        let w = size.width as f64;
+        let h = size.height as f64;
+        let scale = (w / 800.0).min(h / 750.0);
+        let off_x = (w - 800.0 * scale) / 2.0;
+        let lx = (x - off_x) / scale;
+
+        let (fx, _, _) = match field_idx {
+            0 => (230.0, 30.0, 500.0),
+            1 => (230.0, 130.0, 500.0),
+            2 => (230.0, 230.0, 500.0),
+            3 => (230.0, 330.0, 150.0),
+            4 => (405.0, 330.0, 150.0),
+            5 => (580.0, 330.0, 150.0),
+            8 => (230.0, 430.0, 150.0),
+            6 => (230.0, 530.0, 500.0),
+            7 => (230.0, 630.0, 500.0),
+            _ => (0.0, 0.0, 0.0),
+        };
+
+        let val = self.get_field_text(field_idx, ai_config);
+        if field_idx == 7 {
+            // Multi-line skip for now
+        } else {
+            let text_x = lx - fx - 15.0;
+            self.cursor_pos = self.get_cursor_from_x(&val, text_x, 1.0);
+            self.window.request_redraw();
+        }
+    }
+
+    pub fn handle_mouse_up(&mut self) {
+        if self.is_dragging_text {
+            if let Some(start) = self.selection_start {
+                if start == self.cursor_pos {
+                    self.selection_start = None;
+                }
+            }
+            self.is_dragging_text = false;
+            self.window.request_redraw();
+        }
+    }
+
     pub fn handle_key_input(
         &mut self,
         event: &winit::event::KeyEvent,
@@ -361,144 +514,200 @@ impl SettingsWindow {
             None => return false,
         };
 
+        let text = self.get_field_text(field_idx, ai_config);
+        let mut chars: Vec<char> = text.chars().collect();
+
+        if self.cursor_pos > chars.len() {
+            self.cursor_pos = chars.len();
+        }
+
         use winit::keyboard::{Key, NamedKey};
+        let is_pressed = event.state == winit::event::ElementState::Pressed;
+        if !is_pressed {
+            return false;
+        }
+
+        let has_ctrl = modifiers.control_key() || modifiers.super_key();
+        let has_shift = modifiers.shift_key();
+
         match &event.logical_key {
+            Key::Named(NamedKey::ArrowLeft) => {
+                if has_shift {
+                    if self.selection_start.is_none() {
+                        self.selection_start = Some(self.cursor_pos);
+                    }
+                } else {
+                    self.selection_start = None;
+                }
+                if self.cursor_pos > 0 {
+                    self.cursor_pos -= 1;
+                }
+                self.window.request_redraw();
+                return true;
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                if has_shift {
+                    if self.selection_start.is_none() {
+                        self.selection_start = Some(self.cursor_pos);
+                    }
+                } else {
+                    self.selection_start = None;
+                }
+                if self.cursor_pos < chars.len() {
+                    self.cursor_pos += 1;
+                }
+                self.window.request_redraw();
+                return true;
+            }
+            Key::Named(NamedKey::Home) => {
+                if has_shift {
+                    if self.selection_start.is_none() {
+                        self.selection_start = Some(self.cursor_pos);
+                    }
+                } else {
+                    self.selection_start = None;
+                }
+                self.cursor_pos = 0;
+                self.window.request_redraw();
+                return true;
+            }
+            Key::Named(NamedKey::End) => {
+                if has_shift {
+                    if self.selection_start.is_none() {
+                        self.selection_start = Some(self.cursor_pos);
+                    }
+                } else {
+                    self.selection_start = None;
+                }
+                self.cursor_pos = chars.len();
+                self.window.request_redraw();
+                return true;
+            }
             Key::Named(NamedKey::Backspace) => {
-                if event.state == winit::event::ElementState::Pressed {
-                    match field_idx {
-                        0 => {
-                            ai_config.api_key.pop();
-                        }
-                        1 => {
-                            ai_config.base_url.pop();
-                        }
-                        2 => {
-                            ai_config.model.pop();
-                        }
-                        6 => {
-                            ai_config.tavily_api_key.pop();
-                        }
-                        7 => {
-                            ai_config.system_prompt.pop();
-                        }
-                        3 | 4 | 5 => {
-                            let mut s = match field_idx {
-                                3 => ai_config.react_limit.to_string(),
-                                4 => ai_config.l1_summary_threshold.to_string(),
-                                5 => ai_config.l2_merge_threshold.to_string(),
-                                _ => String::new(),
-                            };
-                            s.pop();
-                            let val = s.parse().unwrap_or(0);
-                            match field_idx {
-                                3 => ai_config.react_limit = val,
-                                4 => ai_config.l1_summary_threshold = val,
-                                5 => ai_config.l2_merge_threshold = val,
-                                _ => {}
+                if let Some(start) = self.selection_start {
+                    let min = start.min(self.cursor_pos);
+                    let max = start.max(self.cursor_pos);
+                    if min != max {
+                        chars.drain(min..max);
+                        self.cursor_pos = min;
+                        self.selection_start = None;
+                    } else if self.cursor_pos > 0 {
+                        chars.remove(self.cursor_pos - 1);
+                        self.cursor_pos -= 1;
+                    }
+                } else if self.cursor_pos > 0 {
+                    chars.remove(self.cursor_pos - 1);
+                    self.cursor_pos -= 1;
+                }
+                self.set_field_text(field_idx, ai_config, chars.iter().collect());
+                ai_config.save();
+                self.window.request_redraw();
+                return true;
+            }
+            Key::Named(NamedKey::Delete) => {
+                if let Some(start) = self.selection_start {
+                    let min = start.min(self.cursor_pos);
+                    let max = start.max(self.cursor_pos);
+                    if min != max {
+                        chars.drain(min..max);
+                        self.cursor_pos = min;
+                        self.selection_start = None;
+                    } else if self.cursor_pos < chars.len() {
+                        chars.remove(self.cursor_pos);
+                    }
+                } else if self.cursor_pos < chars.len() {
+                    chars.remove(self.cursor_pos);
+                }
+                self.set_field_text(field_idx, ai_config, chars.iter().collect());
+                ai_config.save();
+                self.window.request_redraw();
+                return true;
+            }
+            Key::Character(c) => {
+                if has_ctrl {
+                    if c == "a" {
+                        self.selection_start = Some(0);
+                        self.cursor_pos = chars.len();
+                        self.window.request_redraw();
+                        return true;
+                    } else if c == "c" {
+                        if let Some(start) = self.selection_start {
+                            let min = start.min(self.cursor_pos);
+                            let max = start.max(self.cursor_pos);
+                            if min != max {
+                                let selected: String = chars[min..max].iter().collect();
+                                use arboard::Clipboard;
+                                if let Ok(mut cb) = Clipboard::new() {
+                                    let _ = cb.set_text(selected);
+                                }
                             }
                         }
-                        8 => {
-                            let mut s = ai_config.interaction_frequency.to_string();
-                            s.pop();
-                            ai_config.interaction_frequency = s.parse().unwrap_or(0);
+                        return true;
+                    } else if c == "v" {
+                        use arboard::Clipboard;
+                        if let Ok(mut cb) = Clipboard::new() {
+                            if let Ok(pasted) = cb.get_text() {
+                                let trimmed = pasted.trim();
+                                let p_chars: Vec<char> = trimmed.chars().collect();
+                                if let Some(start) = self.selection_start {
+                                    let min = start.min(self.cursor_pos);
+                                    let max = start.max(self.cursor_pos);
+                                    chars.splice(min..max, p_chars.iter().cloned());
+                                    self.cursor_pos = min + p_chars.len();
+                                    self.selection_start = None;
+                                } else {
+                                    chars.splice(
+                                        self.cursor_pos..self.cursor_pos,
+                                        p_chars.iter().cloned(),
+                                    );
+                                    self.cursor_pos += p_chars.len();
+                                }
+                                self.set_field_text(field_idx, ai_config, chars.iter().collect());
+                                ai_config.save();
+                                self.window.request_redraw();
+                            }
                         }
-                        _ => {}
+                        return true;
                     }
+                }
+
+                if !c.chars().any(|ch| ch.is_control()) {
+                    let input_chars: Vec<char> = c.chars().collect();
+                    // Numeric check
+                    if (field_idx == 3 || field_idx == 4 || field_idx == 5 || field_idx == 8)
+                        && !input_chars.iter().all(|ch| ch.is_ascii_digit())
+                    {
+                        return true;
+                    }
+
+                    if let Some(start) = self.selection_start {
+                        let min = start.min(self.cursor_pos);
+                        let max = start.max(self.cursor_pos);
+                        chars.splice(min..max, input_chars.iter().cloned());
+                        self.cursor_pos = min + input_chars.len();
+                        self.selection_start = None;
+                    } else {
+                        chars.splice(
+                            self.cursor_pos..self.cursor_pos,
+                            input_chars.iter().cloned(),
+                        );
+                        self.cursor_pos += input_chars.len();
+                    }
+                    self.set_field_text(field_idx, ai_config, chars.iter().collect());
                     ai_config.save();
                     self.window.request_redraw();
                     return true;
                 }
             }
-            Key::Character(c) => {
-                if event.state == winit::event::ElementState::Pressed {
-                    let has_ctrl = modifiers.control_key() || modifiers.super_key();
-                    if c == "v" && has_ctrl {
-                        #[cfg(target_os = "windows")]
-                        {
-                            use arboard::Clipboard;
-                            if let Ok(mut clipboard) = Clipboard::new() {
-                                if let Ok(text) = clipboard.get_text() {
-                                    let limit = if field_idx == 7 { 5000 } else { 500 };
-                                    let trimmed: String = text.trim().chars().take(limit).collect();
-                                    match field_idx {
-                                        0 => ai_config.api_key = trimmed,
-                                        1 => ai_config.base_url = trimmed,
-                                        2 => ai_config.model = trimmed,
-                                        3 => ai_config.react_limit = trimmed.parse().unwrap_or(20),
-                                        4 => {
-                                            ai_config.l1_summary_threshold =
-                                                trimmed.parse().unwrap_or(10)
-                                        }
-                                        5 => {
-                                            ai_config.l2_merge_threshold =
-                                                trimmed.parse().unwrap_or(10)
-                                        }
-                                        8 => {
-                                            ai_config.interaction_frequency =
-                                                trimmed.parse().unwrap_or(20)
-                                        }
-                                        6 => ai_config.tavily_api_key = trimmed,
-                                        7 => ai_config.system_prompt = trimmed,
-                                        _ => {}
-                                    }
-                                    ai_config.save();
-                                    self.window.request_redraw();
-                                    return true;
-                                }
-                            }
-                        }
-                    }
-
-                    if !c.chars().any(|ch| ch.is_control()) {
-                        match field_idx {
-                            0 => ai_config.api_key.push_str(c),
-                            1 => ai_config.base_url.push_str(c),
-                            2 => ai_config.model.push_str(c),
-                            6 => ai_config.tavily_api_key.push_str(c),
-                            7 => ai_config.system_prompt.push_str(c),
-                            3 | 4 | 5 => {
-                                if c.chars().all(|ch| ch.is_ascii_digit()) {
-                                    let mut val_str = match field_idx {
-                                        3 => ai_config.react_limit.to_string(),
-                                        4 => ai_config.l1_summary_threshold.to_string(),
-                                        5 => ai_config.l2_merge_threshold.to_string(),
-                                        _ => String::new(),
-                                    };
-                                    val_str.push_str(c);
-                                    let val = val_str.parse().unwrap_or(0);
-                                    match field_idx {
-                                        3 => ai_config.react_limit = val,
-                                        4 => ai_config.l1_summary_threshold = val,
-                                        5 => ai_config.l2_merge_threshold = val,
-                                        _ => {}
-                                    }
-                                }
-                            }
-                            8 => {
-                                if c.chars().all(|ch| ch.is_ascii_digit()) {
-                                    let mut val_str = ai_config.interaction_frequency.to_string();
-                                    val_str.push_str(c);
-                                    ai_config.interaction_frequency = val_str.parse().unwrap_or(0);
-                                }
-                            }
-                            _ => {}
-                        }
-                        ai_config.save();
-                        self.window.request_redraw();
-                        return true;
-                    }
-                }
-            }
             Key::Named(NamedKey::Tab) => {
-                if event.state == winit::event::ElementState::Pressed {
-                    self.focused_field = Some((field_idx + 1) % 9);
-                    self.window.request_redraw();
-                    return true;
-                }
+                self.focused_field = Some((field_idx + 1) % 9);
+                self.cursor_pos = 0;
+                self.selection_start = None;
+                self.window.request_redraw();
+                return true;
             }
             _ => {}
         }
-
         false
     }
 
@@ -1385,28 +1594,28 @@ impl SettingsWindow {
 
                         // Text Drawing inside input
                         if let Some(font) = &self.font {
-                            let display_val = if val.is_empty() {
-                                if is_focused {
-                                    ""
-                                } else {
-                                    "None"
-                                }
+                            let val_chars: Vec<char> = val.chars().collect();
+                            let is_masked =
+                                (i == 0 || i == 6) && !val.is_empty() && !self.show_api_key;
+
+                            let mut display_chars: Vec<char> = if is_masked {
+                                let mask_char = if is_focused { '•' } else { '*' };
+                                std::iter::repeat(mask_char)
+                                    .take(val_chars.len().min(32))
+                                    .collect()
                             } else {
-                                val
+                                if val.is_empty() {
+                                    (if is_focused { "" } else { "None" }).chars().collect()
+                                } else {
+                                    val_chars.clone()
+                                }
                             };
+
                             let display_col = if val.is_empty() {
                                 0x00CCCCCC
                             } else {
                                 text_main
                             };
-
-                            let mut final_text =
-                                if (i == 0 || i == 6) && !val.is_empty() && !self.show_api_key {
-                                    let mask_char = if is_focused { "•" } else { "*" };
-                                    mask_char.repeat(val.len().min(32))
-                                } else {
-                                    display_val.to_string()
-                                };
 
                             if i == 0 || i == 6 {
                                 let eye_x = s(fx as u32 + fw as u32 - 45) as i32;
@@ -1425,14 +1634,9 @@ impl SettingsWindow {
                                 );
                             }
 
-                            // SAFE TRUNCATION (Fixes panic) - Skip for System Prompt (7)
-                            if i != 7 && final_text.chars().count() > 50 {
-                                final_text =
-                                    final_text.chars().take(47).collect::<String>() + "...";
-                            }
-
                             if i == 7 {
                                 // Multi-line rendering for System Prompt
+                                let final_text: String = display_chars.iter().collect();
                                 let max_width = sc(500.0 - 40.0) as u32;
                                 let lines = wrap_text(
                                     &final_text,
@@ -1489,7 +1693,57 @@ impl SettingsWindow {
                                     );
                                 }
 
-                                // Scrollbar & Cursor OUTSIDE line loop
+                                if is_focused {
+                                    let mut temp_pos = 0;
+                                    let mut cursor_found = false;
+                                    for (line_idx, line) in lines.iter().enumerate() {
+                                        let line_len = line.chars().count();
+                                        if !cursor_found
+                                            && (self.cursor_pos >= temp_pos
+                                                && self.cursor_pos <= temp_pos + line_len)
+                                        {
+                                            let offset_in_line = self.cursor_pos - temp_pos;
+                                            let line_chars: Vec<char> = line.chars().collect();
+                                            let prefix: String =
+                                                line_chars.iter().take(offset_in_line).collect();
+                                            let lx = {
+                                                let g = font
+                                                    .layout(
+                                                        &prefix,
+                                                        Scale::uniform(sc(14.0)),
+                                                        point(0.0, 0.0),
+                                                    )
+                                                    .collect::<Vec<_>>();
+                                                glyph_width(&g)
+                                            };
+                                            let cursor_x =
+                                                s(fx as u32) as i32 + sc(15.0) as i32 + lx as i32;
+                                            let line_offset = line_idx as f32 * sc(20.0);
+                                            let cursor_y = start_text_raw as f32
+                                                + line_offset
+                                                + (self.system_prompt_scroll_offset * scale);
+                                            if cursor_y >= start_text_raw as f32
+                                                && cursor_y <= (box_bottom_raw as f32 - sc(20.0))
+                                            {
+                                                Self::draw_rect(
+                                                    &mut buffer,
+                                                    w,
+                                                    cursor_x,
+                                                    cursor_y as i32,
+                                                    2,
+                                                    sc(22.0) as u32,
+                                                    primary,
+                                                    w,
+                                                    h,
+                                                );
+                                            }
+                                            cursor_found = true;
+                                        }
+                                        temp_pos += line_len;
+                                    }
+                                }
+
+                                // Scrollbar
                                 let max_sys_visual_h = sc(200.0);
                                 if full_content_h > max_sys_visual_h {
                                     let sb_w = sc(4.0) as u32;
@@ -1530,33 +1784,96 @@ impl SettingsWindow {
                                         h,
                                     );
                                 }
+                            } else {
+                                // Single line
+                                if !is_focused && display_chars.len() > 50 {
+                                    display_chars =
+                                        display_chars.iter().take(47).cloned().collect();
+                                    display_chars.extend("...".chars());
+                                }
+                                let final_text: String = display_chars.iter().collect();
+                                let text_start_x = s(fx as u32) as i32 + sc(15.0) as i32;
+                                let text_start_y = input_y_raw as i32 + sc(12.0) as i32;
 
                                 if is_focused {
-                                    let last_line = lines.last().cloned().unwrap_or_default();
-                                    let glyphs: Vec<_> = font
-                                        .layout(
-                                            &last_line,
-                                            Scale::uniform(sc(14.0)),
-                                            point(0.0, 0.0),
-                                        )
-                                        .collect();
-                                    let tw = glyph_width(&glyphs);
-                                    let cursor_x =
-                                        s(fx as u32) as i32 + sc(15.0) as i32 + tw as i32 + 2;
-                                    let cursor_y = input_y_raw
-                                        + sc(12.0 + (lines.len().saturating_sub(1)) as f32 * 20.0)
-                                            as i32;
-                                    // Adjust cursor Y for internal scroll
-                                    let cursor_draw_y = cursor_y as f32
-                                        + (self.system_prompt_scroll_offset * scale);
-                                    if cursor_draw_y >= start_text_raw as f32
-                                        && cursor_draw_y <= (box_bottom_raw as f32 - sc(20.0))
-                                    {
+                                    // Draw Selection
+                                    if let Some(sel_start_idx) = self.selection_start {
+                                        let min_idx = sel_start_idx
+                                            .min(self.cursor_pos)
+                                            .min(display_chars.len());
+                                        let max_idx = sel_start_idx
+                                            .max(self.cursor_pos)
+                                            .min(display_chars.len());
+                                        if min_idx != max_idx {
+                                            let left_s: String =
+                                                display_chars[..min_idx].iter().collect();
+                                            let mid_s: String =
+                                                display_chars[min_idx..max_idx].iter().collect();
+                                            let lx = {
+                                                let g = font
+                                                    .layout(
+                                                        &left_s,
+                                                        Scale::uniform(sc(14.0)),
+                                                        point(0.0, 0.0),
+                                                    )
+                                                    .collect::<Vec<_>>();
+                                                glyph_width(&g)
+                                            };
+                                            let mx = {
+                                                let g = font
+                                                    .layout(
+                                                        &mid_s,
+                                                        Scale::uniform(sc(14.0)),
+                                                        point(0.0, 0.0),
+                                                    )
+                                                    .collect::<Vec<_>>();
+                                                glyph_width(&g)
+                                            };
+                                            Self::draw_rect(
+                                                &mut buffer,
+                                                w,
+                                                text_start_x + lx as i32,
+                                                text_start_y,
+                                                mx,
+                                                sc(22.0) as u32,
+                                                0x00AADDFF,
+                                                w,
+                                                h,
+                                            );
+                                        }
+                                    }
+
+                                    Self::draw_text(
+                                        &mut buffer,
+                                        w,
+                                        font,
+                                        &final_text,
+                                        text_start_x,
+                                        text_start_y,
+                                        sc(14.0),
+                                        display_col,
+                                    );
+
+                                    // Draw Cursor
+                                    let cur_idx = self.cursor_pos.min(display_chars.len());
+                                    let left_s: String = display_chars[..cur_idx].iter().collect();
+                                    let lx = {
+                                        let g = font
+                                            .layout(
+                                                &left_s,
+                                                Scale::uniform(sc(14.0)),
+                                                point(0.0, 0.0),
+                                            )
+                                            .collect::<Vec<_>>();
+                                        glyph_width(&g)
+                                    };
+                                    let cursor_x = text_start_x + lx as i32 + 1;
+                                    if cursor_x < (s(fx as u32) + input_w) as i32 {
                                         Self::draw_rect(
                                             &mut buffer,
                                             w,
                                             cursor_x,
-                                            cursor_draw_y as i32,
+                                            text_start_y,
                                             2,
                                             sc(22.0) as u32,
                                             primary,
@@ -1564,46 +1881,17 @@ impl SettingsWindow {
                                             h,
                                         );
                                     }
-                                }
-                            } else {
-                                // Single line
-                                Self::draw_text(
-                                    &mut buffer,
-                                    w,
-                                    font,
-                                    &final_text,
-                                    s(fx as u32) as i32 + sc(15.0) as i32,
-                                    input_y_raw as i32 + sc(12.0) as i32,
-                                    sc(14.0),
-                                    display_col,
-                                );
-                                if is_focused {
-                                    let glyphs: Vec<_> = font
-                                        .layout(
-                                            &final_text,
-                                            Scale::uniform(sc(14.0)),
-                                            point(0.0, 0.0),
-                                        )
-                                        .collect();
-                                    let tw = if val.is_empty() {
-                                        0
-                                    } else {
-                                        glyph_width(&glyphs)
-                                    };
-                                    let cursor_x = s(fx as u32) + sc(15.0) as u32 + tw + 2;
-                                    if cursor_x < s(fx as u32) + input_w {
-                                        Self::draw_rect(
-                                            &mut buffer,
-                                            w,
-                                            cursor_x as i32,
-                                            input_y_raw + sc(12.0) as i32,
-                                            2,
-                                            sc(22.0) as u32,
-                                            primary,
-                                            w,
-                                            h,
-                                        );
-                                    }
+                                } else {
+                                    Self::draw_text(
+                                        &mut buffer,
+                                        w,
+                                        font,
+                                        &final_text,
+                                        text_start_x,
+                                        text_start_y,
+                                        sc(14.0),
+                                        display_col,
+                                    );
                                 }
                             }
                         }
