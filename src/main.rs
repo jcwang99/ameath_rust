@@ -144,6 +144,7 @@ fn main() {
     let mut chat_window = ChatWindow::new(&event_loop);
     let mut is_thinking = false;
     let mut thinking_start: Option<Instant> = None;
+    let mut monitor_offset = (0, 0); // Global offset of the current monitor
 
     let window = Rc::new(
         WindowBuilder::new()
@@ -166,6 +167,7 @@ fn main() {
              let size = monitor.size();
              let center_x = pos.x + (size.width as i32 / 2) - (win_w as i32 / 2);
              let center_y = pos.y + (size.height as i32 / 2) - (win_h as i32 / 2);
+             monitor_offset = (pos.x, pos.y);
              window.set_outer_position(winit::dpi::PhysicalPosition::new(center_x, center_y));
         }
     }
@@ -838,14 +840,34 @@ fn main() {
                                     let global_x = win_pos.x as f64 + position.x - pet_off_x;
                                     let global_y = win_pos.y as f64 + position.y - pet_off_y;
 
+                                    // Convert to local coordinates relative to current monitor
+                                    let local_x = global_x - monitor_offset.0 as f64;
+                                    let local_y = global_y - monitor_offset.1 as f64;
+
                                     if pet.state == PetState::Drag {
+                                        // Pet expects local or consistent coordinates. 
+                                        // If we started drag with global, we should continue with global?
+                                        // Actually `start_drag` stored (Global - Local). 
+                                        // Let's normalize everything to LOCAL.
+                                        // But wait, `click_start_pos` from MouseInput?
+                                        // MouseInput `click_start_pos` was derived from... let's check.
+                                        // It was derived from `GetCursorPos` which is GLOBAL.
+                                        // So `start_drag` offset is (Global - Local).
+                                        // So `update_drag` needs Global.
+                                        
+                                        // WAIT. If we change `follow_mouse` to use local, we should check `start_drag` usages.
+                                        // Let's keep specific fixes.
+                                        
                                         pet.update_drag((global_x, global_y));
                                     } else if pet.state == PetState::Clingy {
-                                        pet.follow_mouse((global_x, global_y));
+                                        pet.follow_mouse((local_x, local_y));
                                     } else if let Some(start_pos) = click_start_pos {
                                         let dx = global_x - start_pos.0;
                                         let dy = global_y - start_pos.1;
                                         if (dx * dx + dy * dy).sqrt() > 5.0 {
+                                            // start_drag offset will be (Global - Local)
+                                            // This effectively bakes 'monitor_offset' into 'drag_start_offset'
+                                            // So update_drag must also use Global.
                                             pet.start_drag(start_pos);
                                             pet.update_drag((global_x, global_y));
                                         }
@@ -989,6 +1011,11 @@ fn main() {
                                                     
                                                     // Update pet screen size
                                                     pet.screen_size = (size.width as f64, size.height as f64);
+                                                    monitor_offset = (pos.x, pos.y);
+                                                    
+                                                    // Reset pet position to center to avoid getting stuck out of bounds
+                                                    pet.position.0 = (size.width as f64 - pet.window_size.0) / 2.0;
+                                                    pet.position.1 = (size.height as f64 - pet.window_size.1) / 2.0;
                                                 }
                                             }
                                             settings_window::SettingsAction::SetAiSystemPrompt(prompt) => {
@@ -1084,14 +1111,19 @@ fn main() {
                             if pet.state == PetState::Clingy
                                 || pet.behavior_mode == BehaviorMode::Clingy
                             {
-                                pet.follow_mouse((mouse_x, mouse_y));
+                                // Pass local coordinates to pet
+                                pet.follow_mouse((
+                                    mouse_x - monitor_offset.0 as f64,
+                                    mouse_y - monitor_offset.1 as f64,
+                                ));
                             }
 
                             // Hover Logic for Menu
-                            // Pet Rect on Screen
-                            let pet_screen_x = pet.position.0;
-                            let pet_screen_y = pet.position.1;
+                            // Pet Rect on Screen (Global Coordinates)
+                            let pet_screen_x = pet.position.0 + monitor_offset.0 as f64;
+                            let pet_screen_y = pet.position.1 + monitor_offset.1 as f64;
                             let (sys_pw, sys_ph) = pet.get_scaled_size();
+
 
                             // Menu Rect (Dynamic)
                             let menu_on_right_x = pet_screen_x + sys_pw + 10.0;
@@ -1162,8 +1194,8 @@ fn main() {
                         }
 
                         window.set_outer_position(PhysicalPosition::new(
-                            (pet.position.0 - pet_off_x) as i32,
-                            (pet.position.1 - pet_off_y) as i32,
+                            monitor_offset.0 + (pet.position.0 - pet_off_x) as i32,
+                            monitor_offset.1 + (pet.position.1 - pet_off_y) as i32,
                         ));
                     }
                     last_update = Some(Instant::now());
