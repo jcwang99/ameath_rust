@@ -11,9 +11,9 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1DeviceContext, ID2D1Factory,
-    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
+    D2D1CreateFactory, ID2D1DeviceContext, ID2D1Factory, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_RENDER_TARGET_PROPERTIES,
+    D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_ROUNDED_RECT,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::DirectWrite::{
@@ -275,15 +275,15 @@ impl SpeechBubble {
             let h_usize = height as usize;
 
             let bg_color_d2d = D2D1_COLOR_F {
-                r: 0xE9 as f32 / 255.0,
-                g: 0xDE as f32 / 255.0,
-                b: 0xFF as f32 / 255.0,
+                r: 255.0 / 255.0,
+                g: 235.0 / 255.0,
+                b: 240.0 / 255.0,
                 a: 1.0,
             };
             let border_color_d2d = D2D1_COLOR_F {
-                r: 0x69 as f32 / 255.0,
-                g: 0x4B as f32 / 255.0,
-                b: 0x8A as f32 / 255.0,
+                r: 255.0 / 255.0,
+                g: 180.0 / 255.0,
+                b: 190.0 / 255.0,
                 a: 1.0,
             };
             let white_color_d2d = D2D1_COLOR_F {
@@ -336,33 +336,49 @@ impl SpeechBubble {
                     let border_brush = rt.CreateSolidColorBrush(&border_color_d2d, None).unwrap();
                     let white_brush = rt.CreateSolidColorBrush(&white_color_d2d, None).unwrap();
 
-                    let full_rect = D2D_RECT_F {
-                        left: 0.0,
-                        top: 0.0,
-                        right: width as f32,
-                        bottom: main_h as f32,
+                    let radius = 12.0 * scale;
+
+                    let outer_rounded_rect = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: 0.0,
+                            top: 0.0,
+                            right: width as f32,
+                            bottom: main_h as f32,
+                        },
+                        radiusX: radius,
+                        radiusY: radius,
+                    };
+
+                    let white_rounded_rect = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: 1.0,
+                            top: 1.0,
+                            right: (width - 1) as f32,
+                            bottom: (main_h - 1) as f32,
+                        },
+                        radiusX: radius - 1.0,
+                        radiusY: radius - 1.0,
+                    };
+
+                    let inner_rounded_rect = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: 2.0,
+                            top: 2.0,
+                            right: (width - 2) as f32,
+                            bottom: (main_h - 2) as f32,
+                        },
+                        radiusX: radius - 2.0,
+                        radiusY: radius - 2.0,
                     };
 
                     // Draw Outer Border
-                    rt.FillRectangle(&full_rect, &border_brush);
+                    rt.FillRoundedRectangle(&outer_rounded_rect, &border_brush);
 
                     // Draw White Inner Border
-                    let white_rect = D2D_RECT_F {
-                        left: 1.0,
-                        top: 1.0,
-                        right: (width - 1) as f32,
-                        bottom: (main_h - 1) as f32,
-                    };
-                    rt.FillRectangle(&white_rect, &white_brush);
+                    rt.FillRoundedRectangle(&white_rounded_rect, &white_brush);
 
                     // Draw Core Background
-                    let core_rect = D2D_RECT_F {
-                        left: 2.0,
-                        top: 2.0,
-                        right: (width - 2) as f32,
-                        bottom: (main_h - 2) as f32,
-                    };
-                    rt.FillRectangle(&core_rect, &bg_brush);
+                    rt.FillRoundedRectangle(&inner_rounded_rect, &bg_brush);
 
                     // 2. Draw Tail
                     let center_x = width as f32 / 2.0;
@@ -400,9 +416,9 @@ impl SpeechBubble {
                         let text_brush = rt
                             .CreateSolidColorBrush(
                                 &D2D1_COLOR_F {
-                                    r: 74.0 / 255.0,
-                                    g: 59.0 / 255.0,
-                                    b: 92.0 / 255.0,
+                                    r: 100.0 / 255.0,
+                                    g: 60.0 / 255.0,
+                                    b: 70.0 / 255.0,
                                     a: 1.0,
                                 },
                                 None,
