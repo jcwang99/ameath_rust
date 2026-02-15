@@ -321,13 +321,14 @@ impl SettingsWindow {
         SettingsAction::None
     }
 
-    pub fn new(event_loop: &EventLoopWindowTarget<()>) -> Self {
+    pub fn new(event_loop: &EventLoopWindowTarget<()>, icon: Option<winit::window::Icon>) -> Self {
         let window = Rc::new(
             winit::window::WindowBuilder::new()
                 .with_title("Ameath Settings")
                 .with_inner_size(winit::dpi::LogicalSize::new(800, 750))
                 .with_resizable(true)
                 .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
+                .with_window_icon(icon)
                 .build(event_loop)
                 .unwrap(),
         );

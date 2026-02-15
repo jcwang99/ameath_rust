@@ -33,3 +33,6 @@ chrono = "0.4"
 arboard = "3"
 async-trait = "0.1.89"
 sysinfo = "0.38.1"
+
+[build-dependencies]
+winres = "0.1"

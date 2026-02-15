@@ -28,7 +28,10 @@ pub enum ChatAction {
 }
 
 impl ChatWindow {
-    pub fn new<T>(event_loop: &EventLoopWindowTarget<T>) -> Self {
+    pub fn new<T>(
+        event_loop: &EventLoopWindowTarget<T>,
+        icon: Option<winit::window::Icon>,
+    ) -> Self {
         let window = WindowBuilder::new()
             .with_title("Ameath Chat")
             .with_inner_size(PhysicalSize::new(600, 60)) // Wider size: 600
@@ -36,6 +39,7 @@ impl ChatWindow {
             .with_visible(false)
             .with_window_level(WindowLevel::AlwaysOnTop)
             .with_transparent(true)
+            .with_window_icon(icon)
             .build(event_loop)
             .unwrap();
 

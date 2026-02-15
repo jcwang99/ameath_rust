@@ -43,6 +43,8 @@ use winit::platform::windows::WindowBuilderExtWindows;
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::HWND;
 
+use image::GenericImageView;
+
 fn main() {
     let event_loop = EventLoop::new().unwrap();
 
@@ -118,23 +120,16 @@ fn main() {
     let win_h = max_ph as u32 + bubble::BASE_BUBBLE_HEIGHT as u32 + 60; // More vertical space
 
     // Extract Icon before animation_map is moved into Pet
-    let icon = if let Some((right_variants, _)) = animation_map.get(&PetState::Idle) {
-        if let Some(frames) = right_variants.first() {
-            if let Some(frame) = frames.first() {
-                tray_icon::Icon::from_rgba(
-                    frame.data.clone(),
-                    frame.width as u32,
-                    frame.height as u32,
-                )
-                .ok()
-            } else {
-                None
-            }
-        } else {
-            None
-        }
+    // Load Official Icon
+    let icon_path = "assets/gifs/ameath.ico";
+    let (winit_icon, tray_icon_handle) = if let Ok(img) = image::open(icon_path) {
+        let rgba = img.to_rgba8();
+        let (width, height) = img.dimensions();
+        let w_icon = winit::window::Icon::from_rgba(rgba.clone().into_raw(), width, height).ok();
+        let t_icon = tray_icon::Icon::from_rgba(rgba.into_raw(), width, height).ok();
+        (w_icon, t_icon)
     } else {
-        None
+        (None, None)
     };
 
     let mut pet = Pet::new(animation_map, (max_pw as f64, max_ph as f64));
@@ -143,7 +138,7 @@ fn main() {
     let mut ai_config = types::AiConfig::load();
     let mut window_config = types::WindowConfig::load(); // Load window config
     let mut modifier_state = winit::keyboard::ModifiersState::default();
-    let mut chat_window = ChatWindow::new(&event_loop);
+    let mut chat_window = ChatWindow::new(&event_loop, winit_icon.clone());
     let mut is_thinking = false;
     let mut thinking_start: Option<Instant> = None;
     let mut monitor_offset = (0, 0); // Global offset of the current monitor
@@ -233,7 +228,7 @@ fn main() {
 
     // Use the first frame of idle as icon if available (MOVED UP)
 
-    let mut _tray_icon = icon.map(|i| {
+    let mut _tray_icon = tray_icon_handle.map(|i| {
         TrayIconBuilder::new()
             .with_menu(Box::new(tray_menu))
             .with_tooltip("Ameath")
@@ -744,10 +739,11 @@ fn main() {
                                                                 }
                                                                 "settings" => {
                                                                     if settings_win.is_none() {
-                                                                        let mut sw =
-                                                                            SettingsWindow::new(
-                                                                                elwt,
-                                                                            );
+                                                                         let mut sw =
+                                                                             SettingsWindow::new(
+                                                                                 elwt,
+                                                                                 winit_icon.clone(),
+                                                                             );
                                                                         sw.current_monitor_name = window_config.monitor_name.clone();
                                                                         sw.request_redraw();
                                                                         settings_win = Some(sw);
@@ -1112,7 +1108,7 @@ fn main() {
                     if let Ok(event) = MenuEvent::receiver().try_recv() {
                         if event.id == settings_id {
                             if settings_win.is_none() {
-                                let sw = SettingsWindow::new(elwt);
+                                let sw = SettingsWindow::new(elwt, winit_icon.clone());
                                 sw.request_redraw();
                                 settings_win = Some(sw);
                             } else if let Some(sw) = &settings_win {
@@ -1145,18 +1141,14 @@ fn main() {
                             }
 
                             // Hover Logic for Menu
-                            // Pet Rect on Screen (Global Coordinates)
                             let pet_screen_x = pet.position.0 + monitor_offset.0 as f64;
                             let pet_screen_y = pet.position.1 + monitor_offset.1 as f64;
                             let (sys_pw, sys_ph) = pet.get_scaled_size();
 
-
-                            // Menu Rect (Dynamic)
                             let menu_on_right_x = pet_screen_x + sys_pw + 10.0;
                             let menu_w = menu_manager.menu_width as f64;
                             let menu_h = menu_manager.menu_height as f64;
 
-                            // Check if mouse is over pet OR menu area
                             let over_pet = mouse_x >= pet_screen_x
                                 && mouse_x <= pet_screen_x + sys_pw
                                 && mouse_y >= pet_screen_y
@@ -1167,7 +1159,6 @@ fn main() {
                                 && mouse_y >= pet_screen_y
                                 && mouse_y <= pet_screen_y + menu_h;
 
-                            // Check Bubble Hover
                             let over_bubble = if let Some((bx, by, bw, bh)) = bubble_rect {
                                 mouse_x >= bx as f64 && mouse_x <= (bx + bw) as f64
                                     && mouse_y >= by as f64 && mouse_y <= (by + bh) as f64
@@ -1175,13 +1166,10 @@ fn main() {
                                 false
                             };
 
-                            // Unified Interaction Logic
-                            // User Request: Stop pet moving AND keep bubble alive if interacting with pet (or bubble/menu)
                             if over_pet || over_menu || over_bubble {
                                 is_hovered = true;
                                 bubble_manager.keep_alive();
                                 
-                                // Menu visibility logic (keep existing behavior for menu trigger)
                                 if over_pet || over_menu {
                                     menu_manager.visible = true;
                                     menu_manager.opacity = (menu_manager.opacity + 0.1).min(1.0);
@@ -1205,12 +1193,9 @@ fn main() {
                     }
 
                     if let Some(elapsed) = last_update.map(|t| t.elapsed().as_secs_f64()) {
-                        // Fix user reported teleportation bug:
-                        // Clamp dt to max 0.05s (20fps min) to prevent huge jumps after loop blocking (e.g. window dragging)
                         let dt = elapsed.min(0.05);
                         pet.update_state(dt, is_hovered);
 
-                        // Update Pomodoro State
                         if let Some(msg) = pomodoro_manager.update() {
                             bubble_manager.show(&msg, Duration::from_secs(4), pet.scale);
                         }
@@ -1219,11 +1204,9 @@ fn main() {
                             bubble_manager.show(&msg, Duration::from_secs(4), pet.scale);
                         }
 
-                        // Interaction Manager Update
                         if !is_thinking {
                             if let Some(system_event) = interaction_manager.check_for_trigger() {
-                                println!("Triggered: {}", system_event);
-                                let kernel = chat_kernel.clone(); // Use the Arc
+                                let kernel = chat_kernel.clone();
                                 let tx = ai_tx.clone();
                                 let input = system_event;
 
@@ -1235,7 +1218,6 @@ fn main() {
                                     });
                                 });
                                 
-                                // Visual cue? Maybe thinking animation?
                                 is_thinking = true;
                                 thinking_start = Some(Instant::now());
                             }
