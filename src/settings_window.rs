@@ -29,6 +29,7 @@ pub struct SettingsWindow {
     pub cursor_pos: usize,
     pub selection_start: Option<usize>,
     pub is_dragging_text: bool,
+    pub is_dragging_scrollbar: bool,
     pub last_cursor_action: std::time::Instant,
 }
 
@@ -72,6 +73,23 @@ impl SettingsWindow {
         // Map screen coordinates to logical 800x750 coordinates
         let lx = (x - off_x) / scale;
         let ly = (y - off_y) / scale;
+
+        // Global Scrollbar Drag Initiation
+        if self.content_height > self.viewport_height {
+            // Scrollbar track: lx in [780, 800], ly in [130, 730]
+            if lx >= 780.0 && lx <= 800.0 && ly >= 130.0 && ly <= 730.0 {
+                self.is_dragging_scrollbar = true;
+                // Immediate jump
+                let track_ly_start = 130.0;
+                let track_ly_end = 730.0;
+                let progress =
+                    ((ly - track_ly_start) / (track_ly_end - track_ly_start)).clamp(0.0, 1.0);
+                let max_scroll = -(self.content_height - self.viewport_height);
+                self.scroll_offset = progress as f32 * max_scroll;
+                self.window.request_redraw();
+                return SettingsAction::None;
+            }
+        }
 
         // Sidebar Tab Selection
         if lx >= 0.0 && lx < 180.0 {
@@ -373,6 +391,7 @@ impl SettingsWindow {
             cursor_pos: 0,
             selection_start: None,
             is_dragging_text: false,
+            is_dragging_scrollbar: false,
             last_cursor_action: std::time::Instant::now(),
         }
     }
@@ -449,7 +468,29 @@ impl SettingsWindow {
         }
     }
 
-    pub fn handle_mouse_move(&mut self, x: f64, _y: f64, ai_config: &crate::types::AiConfig) {
+    pub fn handle_mouse_move(&mut self, x: f64, y: f64, ai_config: &crate::types::AiConfig) {
+        let size = self.window.inner_size();
+        let w = size.width as f64;
+        let h = size.height as f64;
+        let scale = (w / 800.0).min(h / 750.0);
+        let off_x = (w - 800.0 * scale) / 2.0;
+        let off_y = (h - 750.0 * scale) / 2.0;
+        let lx = (x - off_x) / scale;
+        let ly = (y - off_y) / scale;
+
+        if self.is_dragging_scrollbar {
+            if self.content_height > self.viewport_height {
+                let track_ly_start = 130.0;
+                let track_ly_end = 730.0;
+                let progress =
+                    ((ly - track_ly_start) / (track_ly_end - track_ly_start)).clamp(0.0, 1.0);
+                let max_scroll = -(self.content_height - self.viewport_height);
+                self.scroll_offset = progress as f32 * max_scroll;
+                self.window.request_redraw();
+            }
+            return;
+        }
+
         if !self.is_dragging_text {
             return;
         }
@@ -462,12 +503,7 @@ impl SettingsWindow {
             }
         };
 
-        let size = self.window.inner_size();
-        let w = size.width as f64;
-        let h = size.height as f64;
-        let scale = (w / 800.0).min(h / 750.0);
-        let off_x = (w - 800.0 * scale) / 2.0;
-        let lx = (x - off_x) / scale;
+        let val = self.get_field_text(field_idx, ai_config);
 
         let (fx, _, _) = match field_idx {
             0 => (230.0, 30.0, 500.0),
@@ -482,7 +518,6 @@ impl SettingsWindow {
             _ => (0.0, 0.0, 0.0),
         };
 
-        let val = self.get_field_text(field_idx, ai_config);
         if field_idx == 7 {
             // Multi-line skip for now
         } else {
@@ -500,8 +535,9 @@ impl SettingsWindow {
                 }
             }
             self.is_dragging_text = false;
-            self.window.request_redraw();
         }
+        self.is_dragging_scrollbar = false;
+        self.window.request_redraw();
     }
 
     pub fn handle_key_input(
@@ -1125,7 +1161,7 @@ impl SettingsWindow {
                             }
                         }
                         self.content_height = calculated_content_height + sc(150.0); // Add bottom padding
-                        self.viewport_height = (h as f32 - start_y as f32).max(0.0);
+                        self.viewport_height = sc(600.0);
                     }
                 }
 
@@ -1134,6 +1170,11 @@ impl SettingsWindow {
                     let scroll_y = self.scroll_offset;
                     let card_w = (560.0 * scale) as u32;
                     let card1_y = (sy_val(120) as f32 + scroll_y) as i32;
+
+                    // Set viewport and content height for global scrollbar
+                    self.viewport_height = sc(600.0);
+                    // Approximation for content height, will be refined if more cards added
+                    self.content_height = sc(800.0);
 
                     Self::draw_rounded_rect(
                         &mut buffer,
@@ -1926,7 +1967,7 @@ impl SettingsWindow {
                     let content_bottom = sy_val(120) as f32 + sc(630.0) + sys_prompt_h + sc(100.0); // Extra padding
                     self.content_height = content_bottom - sy_val(120) as f32; // Height relative to start
 
-                    self.viewport_height = h as f32;
+                    self.viewport_height = sc(600.0);
                 }
                 // Draw Tab Header ON TOP
                 if let Some(font) = &self.font {
@@ -1972,6 +2013,52 @@ impl SettingsWindow {
                         sc(16.0),
                         text_sec,
                     );
+
+                    // --- DRAW GLOBAL SCROLLBAR ---
+                    if self.content_height > self.viewport_height {
+                        let sb_w = sc(6.0) as u32;
+                        let sb_h = sc(600.0) as f32; // Logical 600 height
+                        let sb_x = s(785) as i32;
+                        let sb_y = sy_val(130);
+
+                        // Track
+                        Self::draw_rounded_rect(
+                            &mut buffer,
+                            w,
+                            sb_x,
+                            sb_y as i32,
+                            sb_w,
+                            sb_h as u32,
+                            3,
+                            0x00F1F2F3,
+                            w,
+                            h,
+                        );
+
+                        // Handle
+                        let ratio = (self.viewport_height / self.content_height).clamp(0.0, 1.0);
+                        let handle_h = (sb_h * ratio).max(sc(30.0));
+                        let max_scroll = -(self.content_height - self.viewport_height);
+                        let progress = if max_scroll.abs() < 1.0 {
+                            0.0
+                        } else {
+                            (self.scroll_offset / max_scroll).clamp(0.0, 1.0)
+                        };
+
+                        let handle_y = sb_y as f32 + (sb_h - handle_h) * progress;
+                        Self::draw_rounded_rect(
+                            &mut buffer,
+                            w,
+                            sb_x,
+                            handle_y as i32,
+                            sb_w,
+                            handle_h as u32,
+                            3,
+                            0x00CCCCCC,
+                            w,
+                            h,
+                        );
+                    }
                 }
 
                 buffer.present().unwrap();
