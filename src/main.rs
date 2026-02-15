@@ -213,6 +213,7 @@ fn main() {
         music_player.set_path(music_dir);
     }
     let mut interaction_manager = interaction::InteractionManager::new(ai_config.clone());
+    let (path_tx, path_rx) = std::sync::mpsc::channel::<Option<std::path::PathBuf>>();
 
     let quotes = vec![
         "哎呀，被发现了！😆",
@@ -794,6 +795,14 @@ fn main() {
                                                     music_player.set_path(path);
                                                     sw.request_redraw();
                                                 }
+                                                settings_window::SettingsAction::SelectMusicPath => {
+                                                    let tx = path_tx.clone();
+                                                    sw.window().set_window_level(winit::window::WindowLevel::Normal);
+                                                    std::thread::spawn(move || {
+                                                        let picked = rfd::FileDialog::new().pick_folder();
+                                                        let _ = tx.send(picked);
+                                                    });
+                                                }
                                                 settings_window::SettingsAction::SetLayer(layer) => {
                                                     current_layer = layer;
                                                     let level = match layer {
@@ -934,6 +943,16 @@ fn main() {
                         thinking_start = None;
                         bubble_manager.show(&response, Duration::from_secs(6), pet.scale);
                         needs_pet_redraw = true;
+                    }
+
+                    if let Ok(path_opt) = path_rx.try_recv() {
+                        if let Some(path) = path_opt {
+                            music_player.set_path(path);
+                        }
+                        if let Some(sw) = &mut settings_win {
+                            sw.window().set_window_level(winit::window::WindowLevel::AlwaysOnTop);
+                            sw.request_redraw();
+                        }
                     }
 
                     // Settings window redraw is handled by its own event signals, 

@@ -51,6 +51,7 @@ pub enum SettingsAction {
     SetAiInteractionFrequency(u64),
     RequestHistory,
     SetMonitor(String),
+    SelectMusicPath,
 }
 
 impl SettingsWindow {
@@ -185,16 +186,7 @@ impl SettingsWindow {
                 let start_x = 230.0;
                 let btn_w = 500.0;
                 if lx >= start_x && lx <= start_x + btn_w {
-                    // Temporarily disable AlwaysOnTop so the native dialog isn't hidden
-                    self.window
-                        .set_window_level(winit::window::WindowLevel::Normal);
-                    let picked = rfd::FileDialog::new().pick_folder();
-                    self.window
-                        .set_window_level(winit::window::WindowLevel::AlwaysOnTop);
-
-                    if let Some(path) = picked {
-                        return SettingsAction::SetMusicPath(path);
-                    }
+                    return SettingsAction::SelectMusicPath;
                 }
             }
 
