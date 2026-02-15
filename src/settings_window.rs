@@ -400,6 +400,13 @@ impl SettingsWindow {
         self.window.id()
     }
 
+    pub fn next_blink_at(&self) -> std::time::Instant {
+        let elapsed_ms = self.last_cursor_action.elapsed().as_millis();
+        let current_step = elapsed_ms / 500;
+        let next_step = current_step + 1;
+        self.last_cursor_action + std::time::Duration::from_millis((next_step * 500) as u64)
+    }
+
     pub fn focus(&self) {
         self.window.focus_window();
     }
@@ -410,6 +417,10 @@ impl SettingsWindow {
     }
 
     pub fn request_redraw(&self) {
+        self.window.request_redraw();
+    }
+
+    pub fn request_redraw_actual(&self) {
         self.window.request_redraw();
     }
 

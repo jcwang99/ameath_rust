@@ -1072,6 +1072,14 @@ fn main() {
                         next_deadline = next_deadline.min(blink_deadline);
                     }
 
+                    if let Some(sw) = &settings_win {
+                        let blink_deadline = sw.next_blink_at();
+                        if Instant::now().duration_since(blink_deadline - Duration::from_millis(5)) < Duration::from_millis(10) || Instant::now() >= blink_deadline {
+                             sw.request_redraw_actual();
+                        }
+                        next_deadline = next_deadline.min(blink_deadline);
+                    }
+
                     elwt.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(next_deadline));
                 }
                 _ => {}
