@@ -308,7 +308,25 @@ impl MemoryManager {
         for row in rows {
             history.push(row?);
         }
-        Ok(history)
+
+        // Optimize: Group by "Exchange" (User followed by responses) and reverse groups
+        let mut grouped = Vec::new();
+        let mut current_group = Vec::new();
+        for item in history {
+            // A new group starts with a "user" message
+            if item.0 == "user" && !current_group.is_empty() {
+                grouped.push(current_group);
+                current_group = Vec::new();
+            }
+            current_group.push(item);
+        }
+        if !current_group.is_empty() {
+            grouped.push(current_group);
+        }
+
+        grouped.reverse(); // Newest groups first
+
+        Ok(grouped.into_iter().flatten().collect())
     }
 
     pub fn prune_layers(&self, keep_count: usize) -> Result<()> {
