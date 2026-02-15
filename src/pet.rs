@@ -267,4 +267,26 @@ impl Pet {
 
         &frames[self.current_frame_idx % frames.len()]
     }
+
+    pub fn next_frame_at(&self) -> Instant {
+        let (right_variants, left_variants) = &self
+            .animations
+            .get(&self.state)
+            .unwrap_or(&self.animations[&PetState::Idle]);
+        let variants = if self.facing_right {
+            right_variants
+        } else {
+            left_variants
+        };
+        if variants.is_empty() {
+            return Instant::now() + Duration::from_millis(16);
+        }
+        let variant_idx = self.current_anim_variant.min(variants.len() - 1);
+        let frames = &variants[variant_idx];
+        if frames.is_empty() {
+            return Instant::now() + Duration::from_millis(16);
+        }
+        let frame = &frames[self.current_frame_idx % frames.len()];
+        self.last_frame_time + frame.delay
+    }
 }

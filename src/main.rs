@@ -189,13 +189,16 @@ fn main() {
     }
 
     #[cfg(target_os = "windows")]
-    {
+    let mut render_ctx = {
         use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
         if let RawWindowHandle::Win32(handle) = window.raw_window_handle() {
             let hwnd = HWND(handle.hwnd as isize);
             apply_window_styles(hwnd, true); // Initial application
+            Some(render::RenderContext::new(hwnd))
+        } else {
+            None
         }
-    }
+    };
 
     let mut bubble_manager = bubble::SpeechBubble::new();
     let mut pomodoro_manager = pomodoro::Pomodoro::new();
@@ -285,7 +288,7 @@ fn main() {
             }
 
             match event {
-                Event::WindowEvent { event, window_id } => {
+                Event::WindowEvent { window_id, event } => {
                     if let WindowEvent::ModifiersChanged(modifiers) = &event {
                         modifier_state = modifiers.state();
                     }
@@ -623,15 +626,11 @@ fn main() {
 
                                 #[cfg(target_os = "windows")]
                                 {
-                                    if let RawWindowHandle::Win32(handle) = window.raw_window_handle() {
-                                        let hwnd = HWND(handle.hwnd as isize);
+                                    if let RawWindowHandle::Win32(_) = window.raw_window_handle() {
                                         unsafe {
-                                            render::update_layered_window_scaled(
-                                                hwnd,
-                                                &composite_data,
-                                                win_w as i32,
-                                                win_h as i32,
-                                            );
+                                            if let Some(ctx) = &mut render_ctx {
+                                                ctx.update(&composite_data, win_w as i32, win_h as i32);
+                                            }
                                         }
                                     }
                                 }
@@ -929,21 +928,22 @@ fn main() {
                     }
                 }
                 Event::AboutToWait => {
+                    let mut needs_pet_redraw = false;
                     if let Ok(response) = ai_rx.try_recv() {
                         is_thinking = false;
                         thinking_start = None;
                         bubble_manager.show(&response, Duration::from_secs(6), pet.scale);
-                        window.request_redraw();
+                        needs_pet_redraw = true;
                     }
 
-                    if let Some(sw) = &settings_win {
-                        sw.request_redraw();
-                    }
+                    // Settings window redraw is handled by its own event signals, 
+                    // removing the blanket sw.request_redraw() here for performance.
 
                     if let Ok(event) = MenuEvent::receiver().try_recv() {
                         if event.id == settings_id {
                             if settings_win.is_none() {
                                 let sw = SettingsWindow::new(elwt, winit_icon.clone());
+                                // Redraw only once on creation
                                 sw.request_redraw();
                                 settings_win = Some(sw);
                             } else if let Some(sw) = &settings_win {
@@ -985,16 +985,22 @@ fn main() {
                                 is_hovered = true;
                                 bubble_manager.keep_alive();
                                 if over_pet || over_menu {
+                                    if !menu_manager.visible || menu_manager.opacity < 1.0 {
+                                        needs_pet_redraw = true;
+                                    }
                                     menu_manager.visible = true;
                                     menu_manager.opacity = (menu_manager.opacity + 0.1).min(1.0);
                                     menu_visible_timer = Some(Instant::now());
                                 }
                             } else {
                                 if menu_visible_timer.map_or(true, |t| t.elapsed() > Duration::from_secs(5)) {
-                                    menu_manager.opacity = (menu_manager.opacity - 0.05).max(0.0);
-                                    if menu_manager.opacity <= 0.0 {
-                                        menu_manager.visible = false;
-                                        menu_visible_timer = None;
+                                    if menu_manager.opacity > 0.0 {
+                                        needs_pet_redraw = true;
+                                        menu_manager.opacity = (menu_manager.opacity - 0.05).max(0.0);
+                                        if menu_manager.opacity <= 0.0 {
+                                            menu_manager.visible = false;
+                                            menu_visible_timer = None;
+                                        }
                                     }
                                 }
                             }
@@ -1027,9 +1033,37 @@ fn main() {
                             monitor_offset.0 + (pet.position.0 - pet_off_x) as i32,
                             monitor_offset.1 + (pet.position.1 - pet_off_y) as i32,
                         ));
+                        
+                        // Redraw if anything is active or animation frame changed
+                        if is_thinking || pet.state != PetState::Idle || is_hovered || menu_manager.opacity > 0.0 || bubble_manager.is_visible() || Instant::now() >= pet.next_frame_at() {
+                            needs_pet_redraw = true;
+                        }
                     }
                     last_update = Some(Instant::now());
-                    window.request_redraw();
+                    
+                    if needs_pet_redraw {
+                        window.request_redraw();
+                    }
+                    
+                    // --- OPTIMIZATION: Precise scheduling ---
+                    let mut next_deadline = Instant::now() + Duration::from_millis(16); // Default 60fps cap
+                    
+                    if is_thinking {
+                        // Loading GIF is ~10fps (100ms)
+                        next_deadline = next_deadline.min(Instant::now() + Duration::from_millis(100));
+                    }
+                    
+                    if pet.state != PetState::Drag {
+                        let pet_deadline = pet.next_frame_at();
+                        next_deadline = next_deadline.min(pet_deadline);
+                    }
+
+                    // If menu is fading, we need high frequency
+                    if menu_manager.opacity > 0.0 && menu_manager.opacity < 1.0 {
+                        next_deadline = next_deadline.min(Instant::now() + Duration::from_millis(16));
+                    }
+
+                    elwt.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(next_deadline));
                 }
                 _ => {}
             }
