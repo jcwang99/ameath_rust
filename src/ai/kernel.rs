@@ -197,7 +197,15 @@ impl ChatKernel {
 
             if let Some(content) = final_response {
                 // Orchestrate summarization (L1 -> L2) if needed
-                self.orchestrate_summarization().await.ok();
+                let kernel_clone = Arc::new(Self {
+                    config: self.config.clone(),
+                    client: self.client.clone(),
+                    memory: Arc::clone(&self.memory),
+                    skills: self.skills.clone(),
+                });
+                tokio::spawn(async move {
+                    kernel_clone.orchestrate_summarization().await.ok();
+                });
                 return content;
             }
 

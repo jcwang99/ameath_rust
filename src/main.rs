@@ -49,6 +49,9 @@ use windows::Win32::Foundation::HWND;
 use image::GenericImageView;
 
 fn main() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+
     let event_loop = EventLoop::new().unwrap();
 
     // Global Hotkey Setup
@@ -300,12 +303,9 @@ fn main() {
                                  let tx = ai_tx.clone();
                                  let input = msg.clone();
                                  
-                                 std::thread::spawn(move || {
-                                     let rt = tokio::runtime::Runtime::new().unwrap();
-                                     rt.block_on(async {
-                                         let response = kernel.handle(input).await;
-                                         let _ = tx.send(response);
-                                     });
+                                 tokio::spawn(async move {
+                                     let response = kernel.handle(input).await;
+                                     let _ = tx.send(response);
                                  });
 
                                  window.request_redraw();
@@ -1015,12 +1015,9 @@ fn main() {
                                 let kernel = chat_kernel.clone();
                                 let tx = ai_tx.clone();
                                 let input = system_event;
-                                std::thread::spawn(move || {
-                                    let rt = tokio::runtime::Runtime::new().unwrap();
-                                    rt.block_on(async {
-                                        let response = kernel.handle_system_event(input).await;
-                                        let _ = tx.send(response);
-                                    });
+                                tokio::spawn(async move {
+                                    let response = kernel.handle_system_event(input).await;
+                                    let _ = tx.send(response);
                                 });
                                 is_thinking = true;
                                 thinking_start = Some(Instant::now());

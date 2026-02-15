@@ -15,6 +15,7 @@ pub trait Skill: Send + Sync {
     fn to_tool(&self) -> Value;
 }
 
+#[derive(Clone)]
 pub struct SkillManager {
     skills: HashMap<String, Arc<dyn Skill>>,
 }

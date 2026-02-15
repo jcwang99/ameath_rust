@@ -41,6 +41,10 @@ pub struct SpeechBubble {
     cached_bitmap: Option<(Vec<u8>, i32, i32, f32)>,
     #[cfg(target_os = "windows")]
     cached_layout: Option<windows::Win32::Graphics::DirectWrite::IDWriteTextLayout>,
+    #[cfg(target_os = "windows")]
+    cached_format: Option<windows::Win32::Graphics::DirectWrite::IDWriteTextFormat>,
+    #[cfg(target_os = "windows")]
+    cached_rt: Option<windows::Win32::Graphics::Direct2D::ID2D1DCRenderTarget>,
 }
 
 #[cfg(target_os = "windows")]
@@ -71,6 +75,10 @@ impl SpeechBubble {
             cached_bitmap: None,
             #[cfg(target_os = "windows")]
             cached_layout: None,
+            #[cfg(target_os = "windows")]
+            cached_format: None,
+            #[cfg(target_os = "windows")]
+            cached_rt: None,
         }
     }
 
@@ -131,24 +139,27 @@ impl SpeechBubble {
             let dwrite_factory = get_dwrite_factory();
 
             let font_size = 18.0 * scale;
-            let text_format = dwrite_factory
-                .CreateTextFormat(
-                    windows::core::w!("Segoe UI Emoji"),
-                    None,
-                    DWRITE_FONT_WEIGHT_BOLD,
-                    DWRITE_FONT_STYLE_NORMAL,
-                    DWRITE_FONT_STRETCH_NORMAL,
-                    font_size,
-                    windows::core::w!(""),
-                )
-                .unwrap();
+            let text_format = if let Some(ref fmt) = self.cached_format {
+                fmt.clone()
+            } else {
+                let fmt = dwrite_factory
+                    .CreateTextFormat(
+                        windows::core::w!("Segoe UI Emoji"),
+                        None,
+                        DWRITE_FONT_WEIGHT_BOLD,
+                        DWRITE_FONT_STYLE_NORMAL,
+                        DWRITE_FONT_STRETCH_NORMAL,
+                        font_size,
+                        windows::core::w!(""),
+                    )
+                    .unwrap();
 
-            text_format
-                .SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)
-                .unwrap();
-            text_format
-                .SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)
-                .unwrap();
+                fmt.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER).unwrap();
+                fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)
+                    .unwrap();
+                self.cached_format = Some(fmt.clone());
+                fmt
+            };
 
             // Dynamic Sizing based on Screen Metrics
             let screen_w = GetSystemMetrics(SM_CXSCREEN);
@@ -288,39 +299,23 @@ impl SpeechBubble {
             let main_h = height - tail_h;
 
             // --- Text and Shape Rendering (Direct2D) ---
-            let dwrite_factory = get_dwrite_factory();
             let d2d_factory = get_d2d_factory();
 
-            let font_size = 18.0 * scale;
-            let text_format = dwrite_factory
-                .CreateTextFormat(
-                    windows::core::w!("Segoe UI Emoji"),
-                    None,
-                    DWRITE_FONT_WEIGHT_BOLD,
-                    DWRITE_FONT_STYLE_NORMAL,
-                    DWRITE_FONT_STRETCH_NORMAL,
-                    font_size,
-                    windows::core::w!(""),
-                )
-                .unwrap();
-
-            text_format
-                .SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)
-                .unwrap();
-            text_format
-                .SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)
-                .unwrap();
-
-            let props = D2D1_RENDER_TARGET_PROPERTIES {
-                r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
-                pixelFormat: D2D1_PIXEL_FORMAT {
-                    format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
-                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-                },
-                ..Default::default()
+            let dc_rt = if let Some(ref rt) = self.cached_rt {
+                rt.clone()
+            } else {
+                let props = D2D1_RENDER_TARGET_PROPERTIES {
+                    r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                    pixelFormat: D2D1_PIXEL_FORMAT {
+                        format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+                        alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                    },
+                    ..Default::default()
+                };
+                let rt = d2d_factory.CreateDCRenderTarget(&props).unwrap();
+                self.cached_rt = Some(rt.clone());
+                rt
             };
-
-            let dc_rt: ID2D1DCRenderTarget = d2d_factory.CreateDCRenderTarget(&props).unwrap();
 
             // In windows-rs 0.52.0, ID2D1DCRenderTarget inherits from ID2D1RenderTarget methods.
             // If CreateSolidColorBrush isn't found, try ID2D1DeviceContext or call it directly.

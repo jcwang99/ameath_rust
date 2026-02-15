@@ -26,6 +26,7 @@ pub struct ToolFunction {
     pub arguments: String,
 }
 
+#[derive(Clone)]
 pub struct OpenAiClient {
     config: AiConfig,
     http_client: reqwest::Client,
