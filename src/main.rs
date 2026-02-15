@@ -41,6 +41,9 @@ use winit::{
 use winit::platform::windows::WindowBuilderExtWindows;
 
 #[cfg(target_os = "windows")]
+use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
+
+#[cfg(target_os = "windows")]
 use windows::Win32::Foundation::HWND;
 
 use image::GenericImageView;
@@ -252,6 +255,9 @@ fn main() {
     let mut current_layer = types::WindowLayer::Top;
     let mut bubble_rect: Option<(i32, i32, i32, i32)> = None;
 
+    let mut composite_data: Vec<u8> = Vec::new();
+    let mut pomodoro_data: Vec<u8> = Vec::new();
+
     event_loop
         .run(move |event, elwt| {
             elwt.set_control_flow(ControlFlow::Poll);
@@ -288,7 +294,7 @@ fn main() {
                                  is_thinking = true;
                                  thinking_start = Some(Instant::now());
                                  
-                                 // Update kernel with current config if changed (re-create for now for simplicity)
+                                 // Update kernel with current config if changed
                                  chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
                                  let kernel = chat_kernel.clone();
                                  let tx = ai_tx.clone();
@@ -308,7 +314,7 @@ fn main() {
                                  window.request_redraw();
                              }
                              ChatAction::None => {}
-                        }
+                         }
                     } else if window_id == window.id() {
                         match event {
                             WindowEvent::CloseRequested => elwt.exit(),
@@ -326,11 +332,7 @@ fn main() {
                                 let mut loading_w = 0;
                                 let mut loading_h = 0;
                                 if is_thinking && !loading_frames.is_empty() {
-                                    let frame_idx = (Instant::now().duration_since(thinking_start.unwrap_or(Instant::now())).as_millis() / 100) as usize % loading_frames.len();
-                                    let _frame = &loading_frames[frame_idx]; // Just need index for later maybe, or just validation
-
                                     // Cap loading size to roughly 32x32 scaled
-                                    // We ignore original frame size and force scaling to 32x32 * draw_scale
                                     let target_size = 32.0 * draw_scale;
                                     loading_w = target_size as i32;
                                     loading_h = target_size as i32;
@@ -339,10 +341,8 @@ fn main() {
                                 // Recalculate scaled dimensions for bubble and pomodoro
                                 let current_bubble_w = bubble_manager.current_width;
                                 let mut current_bubble_h = bubble_manager.current_height;
-                                let current_pomodoro_w =
-                                    (pomodoro::BASE_POMODORO_WIDTH as f32 * pet.scale) as i32;
-                                let mut current_pomodoro_h =
-                                    (pomodoro::BASE_POMODORO_HEIGHT as f32 * pet.scale) as i32;
+                                let current_pomodoro_w = (pomodoro::BASE_POMODORO_WIDTH as f32 * pet.scale) as i32;
+                                let mut current_pomodoro_h = (pomodoro::BASE_POMODORO_HEIGHT as f32 * pet.scale) as i32;
 
                                 // Menu visibility logic
                                 let menu_w = if menu_manager.visible || menu_manager.opacity > 0.0 {
@@ -351,45 +351,33 @@ fn main() {
                                     0
                                 };
 
-                                if bubble_manager.is_visible() {
-                                    // already calculated
-                                } else {
+                                if !bubble_manager.is_visible() {
                                     current_bubble_h = 0;
-                                };
+                                }
 
                                 if !pomodoro_manager.visible {
                                     current_pomodoro_h = 0;
-                                };
+                                }
 
-                                // Layout Strategy: Robust Relative Positioning
-                                // 1. Determine local pet-centric layout
+                                // Layout Strategy
                                 let padding_edge = 40.0;
                                 let gap_between = 10.0 * pet.scale as f64;
 
-                                // Centers are relative to pet x=0
                                 let pet_cx = cur_pw / 2.0;
                                 let b_left = pet_cx - current_bubble_w as f64 / 2.0;
                                 let p_left = pet_cx - current_pomodoro_w as f64 / 2.0;
 
-                                // Find minimum left to avoid clipping
                                 let min_left = 0.0f64.min(b_left).min(p_left);
                                 let pet_x = padding_edge - min_left;
 
-                                // Calculate total width
                                 let pet_right = pet_x + cur_pw;
-                                let menu_area_right = pet_right
-                                    + gap_between
-                                    + menu_w as f64
-                                    + (20.0 * pet.scale as f64);
-                                let bubble_right =
-                                    pet_x + b_left + current_bubble_w as f64 + padding_edge;
-                                let pomodoro_right =
-                                    pet_x + p_left + current_pomodoro_w as f64 + padding_edge;
+                                let menu_area_right = pet_right + gap_between + menu_w as f64 + (20.0 * pet.scale as f64);
+                                let bubble_right = pet_x + b_left + current_bubble_w as f64 + padding_edge;
+                                let pomodoro_right = pet_x + p_left + current_pomodoro_w as f64 + padding_edge;
 
-                                let win_w = (menu_area_right.max(bubble_right).max(pomodoro_right)
-                                    + 20.0) as u32;
+                                let win_w = (menu_area_right.max(bubble_right).max(pomodoro_right) + 20.0) as u32;
 
-                                // Determine space needed above pet
+
                                 let padding_top = 40.0;
                                 let mut extras_h = 0.0;
                                 
@@ -406,8 +394,6 @@ fn main() {
                                 pet_off_x = pet_x;
                                 pet_off_y = padding_top + extras_h;
 
-                                // win_h must fit the pet + padding_bottom
-                                // padding_bottom must fit the menu
                                 let base_padding_bottom = 20.0 * pet.scale as f64;
                                 let menu_h = if menu_manager.visible || menu_manager.opacity > 0.0 {
                                     menu_manager.menu_height as f64
@@ -418,10 +404,11 @@ fn main() {
 
                                 let win_h = (pet_off_y + cur_ph + padding_bottom + 40.0) as u32;
 
-                                // Update window size
-                                let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(
-                                    win_w, win_h,
-                                ));
+                                // --- OPTIMIZATION: Only resize if dimensions change ---
+                                let current_size = window.inner_size();
+                                if current_size.width != win_w || current_size.height != win_h {
+                                    let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(win_w, win_h));
+                                }
 
                                 let loading_y = if is_thinking {
                                     pet_off_y - gap_between - loading_h as f64
@@ -445,46 +432,71 @@ fn main() {
                                     pet_off_y - gap_between - current_pomodoro_h as f64
                                 };
 
-                                // Alignment coordinates
                                 let bx = (pet_off_x + b_left) as i32;
                                 let px = (pet_off_x + p_left) as i32;
                                 let menu_x = (pet_off_x + cur_pw + gap_between) as i32;
                                 let menu_y = pet_off_y as i32;
                                 let loading_x = (pet_off_x + cur_pw/2.0 - loading_w as f64 / 2.0) as i32;
 
-                                let mut composite_data =
-                                    vec![0u8; win_w as usize * win_h as usize * 4usize];
+                                let total_size = win_w as usize * win_h as usize * 4usize;
+                                if composite_data.len() != total_size {
+                                    composite_data.resize(total_size, 0);
+                                }
+                                composite_data.fill(0);
 
-                                // 1. Draw Pet
+                                let win_w_usize = win_w as usize;
+                                let win_h_usize = win_h as usize;
+
+                                // 1. Draw Pet (Optimized row-based copy if scale=1.0)
                                 let frame = pet.current_frame();
-                                for y in 0..(cur_ph as u32) {
-                                    for x in 0..(cur_pw as u32) {
-                                        let src_x = (x as f32 / draw_scale) as u32;
-                                        let src_y = (y as f32 / draw_scale) as u32;
-                                        if src_x >= frame.width as u32
-                                            || src_y >= frame.height as u32
-                                        {
-                                            continue;
+                                let dest_y_start = pet_off_y as usize;
+                                let dest_x_start = pet_off_x as usize;
+
+                                if (draw_scale - 1.0).abs() < 0.001 {
+                                    // FAST PATH: Direct row copies
+                                    let fw = frame.width as usize;
+                                    let fh = frame.height as usize;
+                                    for y in 0..fh {
+                                        let dy = dest_y_start + y;
+                                        if dy < win_h_usize {
+                                            let src_row = &frame.data[y * fw * 4..(y + 1) * fw * 4];
+                                            let dest_idx = (dy * win_w_usize + dest_x_start) * 4;
+                                            if dest_x_start + fw <= win_w_usize {
+                                                for x in 0..fw {
+                                                    let s_idx = x * 4;
+                                                    let a = src_row[s_idx + 3];
+                                                    if a > 0 {
+                                                        let d_idx = dest_idx + x * 4;
+                                                        composite_data[d_idx..d_idx+4].copy_from_slice(&src_row[s_idx..s_idx+4]);
+                                                    }
+                                                }
+                                            }
                                         }
-
-                                        let src_idx = (src_y as usize * frame.width as usize
-                                            + src_x as usize)
-                                            * 4usize;
-                                        let dest_x = (x as f64 + pet_off_x) as u32;
-                                        let dest_y = (y as f64 + pet_off_y) as u32;
-
-                                        if dest_x < win_w && dest_y < win_h {
-                                            let dest_idx = (dest_y as usize * win_w as usize
-                                                + dest_x as usize)
-                                                * 4usize;
-                                            let alpha = frame.data[src_idx + 3];
-                                            if alpha > 0 {
-                                                composite_data[dest_idx] = frame.data[src_idx];
-                                                composite_data[dest_idx + 1] =
-                                                    frame.data[src_idx + 1];
-                                                composite_data[dest_idx + 2] =
-                                                    frame.data[src_idx + 2];
-                                                composite_data[dest_idx + 3] = alpha;
+                                    }
+                                } else {
+                                    // Scaled path
+                                    let fw = frame.width as usize;
+                                    let fh = frame.height as usize;
+                                    for y in 0..(cur_ph as u32) {
+                                        let src_y = (y as f32 / draw_scale) as usize;
+                                        if src_y >= fh { continue; }
+                                        let dy = (y as f64 + pet_off_y) as usize;
+                                        if dy >= win_h_usize { continue; }
+                                        let src_row_idx = src_y * fw * 4;
+                                        let dest_row_start = dy * win_w_usize * 4;
+                                        for x in 0..(cur_pw as u32) {
+                                            let src_x = (x as f32 / draw_scale) as usize;
+                                            if src_x >= fw { continue; }
+                                            let dx = (x as f64 + pet_off_x) as usize;
+                                            if dx >= win_w_usize { continue; }
+                                            let s_idx = src_row_idx + src_x * 4;
+                                            let a = frame.data[s_idx + 3];
+                                            if a > 0 {
+                                                let d_idx = dest_row_start + dx * 4;
+                                                composite_data[d_idx] = frame.data[s_idx];
+                                                composite_data[d_idx + 1] = frame.data[s_idx + 1];
+                                                composite_data[d_idx + 2] = frame.data[s_idx + 2];
+                                                composite_data[d_idx + 3] = a;
                                             }
                                         }
                                     }
@@ -495,16 +507,15 @@ fn main() {
                                      let frame_idx = (Instant::now().duration_since(thinking_start.unwrap_or(Instant::now())).as_millis() / 100) as usize % loading_frames.len();
                                      let frame = &loading_frames[frame_idx];
                                      
-                                     // Render scaled
                                      let ly = loading_y as i32;
                                      if ly >= 0 && loading_w > 0 && loading_h > 0 {
-                                         // Calculate scale ratios
                                          let scale_x = frame.width as f32 / loading_w as f32;
                                          let scale_y = frame.height as f32 / loading_h as f32;
+                                         let lw_usize = loading_w as usize;
+                                         let lh_usize = loading_h as usize;
 
-                                         for y in 0..loading_h as usize {
-                                             for x in 0..loading_w as usize {
-                                                  // Sample from source using ratios
+                                         for y in 0..lh_usize {
+                                             for x in 0..lw_usize {
                                                  let src_x = (x as f32 * scale_x) as u32;
                                                  let src_y = (y as f32 * scale_y) as u32;
                                                  
@@ -517,15 +528,14 @@ fn main() {
                                                   if dest_x_i32 >= 0 && dest_x_i32 < win_w as i32 && dest_y_i32 >= 0 && dest_y_i32 < win_h as i32 {
                                                      let dest_x = dest_x_i32 as usize;
                                                      let dest_y = dest_y_i32 as usize;
-                                                     let dest_idx = (dest_y * win_w as usize + dest_x) * 4;
+                                                     let dest_idx = (dest_y * win_w_usize + dest_x) * 4;
                                                      let alpha = frame.data[src_idx + 3];
                                                      if alpha > 0 {
                                                          composite_data[dest_idx] = frame.data[src_idx];
                                                          composite_data[dest_idx + 1] = frame.data[src_idx + 1];
                                                          composite_data[dest_idx + 2] = frame.data[src_idx + 2];
-                                                         // Use u16 to prevent overflow when adding alpha
-                                                         let new_alpha = composite_data[dest_idx + 3] as u16 + alpha as u16;
-                                                         composite_data[dest_idx + 3] = new_alpha.min(255) as u8;
+                                                         let new_alpha = (composite_data[dest_idx + 3] as u16 + alpha as u16).min(255) as u8;
+                                                         composite_data[dest_idx + 3] = new_alpha;
                                                      }
                                                   }
                                              }
@@ -533,42 +543,30 @@ fn main() {
                                      }
                                 }
 
-                                // 2. Draw Bubble
+                                // 2. Draw Bubble (Optimized with row copies)
                                 if bubble_manager.is_visible() {
-                                    let mut b_buf = vec![
-                                        0u8;
-                                        (current_bubble_w * current_bubble_h * 4)
-                                            as usize
-                                    ];
-                                    bubble_manager.render_to_buffer(b_buf.as_mut_ptr(), pet.scale);
+                                    bubble_manager.render_to_buffer(std::ptr::null_mut(), pet.scale);
 
                                     let by = bubble_y as i32;
                                     bubble_rect = Some((bx, by, current_bubble_w, current_bubble_h));
 
                                     if by >= 0 {
-                                        for y in 0..current_bubble_h as usize {
-                                            for x in 0..current_bubble_w as usize {
-                                                let src_idx =
-                                                    (y * current_bubble_w as usize + x) * 4;
-                                                let dest_x = bx as usize + x;
-                                                let dest_y = by as usize + y;
-                                                if dest_x < win_w as usize
-                                                    && dest_y < win_h as usize
-                                                {
-                                                    let dest_idx =
-                                                        (dest_y * win_w as usize + dest_x) * 4;
-                                                    let alpha = b_buf[src_idx + 3] as f32 / 255.0;
-                                                    if alpha > 0.0 {
-                                                        composite_data[dest_idx] = b_buf[src_idx];
-                                                        composite_data[dest_idx + 1] =
-                                                            b_buf[src_idx + 1];
-                                                        composite_data[dest_idx + 2] =
-                                                            b_buf[src_idx + 2];
-                                                        composite_data[dest_idx + 3] = 255.min(
-                                                            composite_data[dest_idx + 3] as u16
-                                                                + b_buf[src_idx + 3] as u16,
-                                                        )
-                                                            as u8;
+                                        if let Some(b_pixels) = bubble_manager.pixel_data() {
+                                            let bw = current_bubble_w as usize;
+                                            let bh = current_bubble_h as usize;
+                                            for y in 0..bh {
+                                                let dy = (by + y as i32) as usize;
+                                                if dy < win_h_usize {
+                                                    let src_idx = y * bw * 4;
+                                                    let bx_usize = bx as usize;
+                                                    let dest_idx = (dy * win_w_usize + bx_usize) * 4;
+                                                    for x in 0..bw {
+                                                        let s = src_idx + x * 4;
+                                                        let a = b_pixels[s + 3];
+                                                        if a > 0 {
+                                                            let d = dest_idx + x * 4;
+                                                            composite_data[d..d+4].copy_from_slice(&b_pixels[s..s+4]);
+                                                        }
                                                     }
                                                 }
                                             }
@@ -576,43 +574,35 @@ fn main() {
                                     }
                                 }
 
-                                // 2.5 Draw Pomodoro
+                                // 2.5 Draw Pomodoro (Optimized with persistent buffer and row copies)
                                 if pomodoro_manager.visible {
-                                    let mut p_buf = vec![
-                                        0u8;
-                                        (current_pomodoro_w * current_pomodoro_h * 4)
-                                            as usize
-                                    ];
-                                    // let _ = pomodoro_manager.update(); // MOVED TO AboutToWait
-                                    pomodoro_manager
-                                        .render_to_buffer(p_buf.as_mut_ptr(), pet.scale);
+                                    let p_size = (current_pomodoro_w * current_pomodoro_h * 4) as usize;
+                                    if pomodoro_data.len() != p_size {
+                                        pomodoro_data.resize(p_size, 0);
+                                    }
+                                    pomodoro_manager.render_to_buffer(pomodoro_data.as_mut_ptr(), pet.scale);
 
                                     let py = pomodoro_y as i32;
-
                                     if py >= 0 {
-                                        for y in 0..current_pomodoro_h as usize {
-                                            for x in 0..current_pomodoro_w as usize {
-                                                let src_idx =
-                                                    (y * current_pomodoro_w as usize + x) * 4;
-                                                let dest_x = px as usize + x;
-                                                let dest_y = py as usize + y;
-                                                if dest_x < win_w as usize
-                                                    && dest_y < win_h as usize
-                                                {
-                                                    let dest_idx =
-                                                        (dest_y * win_w as usize + dest_x) * 4;
-                                                    let alpha = p_buf[src_idx + 3] as f32 / 255.0;
-                                                    if alpha > 0.0 {
-                                                        composite_data[dest_idx] = p_buf[src_idx];
-                                                        composite_data[dest_idx + 1] =
-                                                            p_buf[src_idx + 1];
-                                                        composite_data[dest_idx + 2] =
-                                                            p_buf[src_idx + 2];
-                                                        composite_data[dest_idx + 3] = 255.min(
-                                                            composite_data[dest_idx + 3] as u16
-                                                                + p_buf[src_idx + 3] as u16,
-                                                        )
-                                                            as u8;
+                                        let pw = current_pomodoro_w as usize;
+                                        let ph = current_pomodoro_h as usize;
+                                        let px_usize = px as usize;
+                                        for y in 0..ph {
+                                            let dy = (py + y as i32) as usize;
+                                            if dy < win_h_usize {
+                                                let src_idx = y * pw * 4;
+                                                let dest_idx = (dy * win_w_usize + px_usize) * 4;
+                                                for x in 0..pw {
+                                                    let s = src_idx + x * 4;
+                                                    let a = pomodoro_data[s + 3];
+                                                    if a > 0 {
+                                                        let d = dest_idx + x * 4;
+                                                        // Simple additive alpha for pomodoro if needed, or just copy
+                                                        composite_data[d] = pomodoro_data[s];
+                                                        composite_data[d+1] = pomodoro_data[s+1];
+                                                        composite_data[d+2] = pomodoro_data[s+2];
+                                                        let new_a = (composite_data[d+3] as u16 + a as u16).min(255) as u8;
+                                                        composite_data[d+3] = new_a;
                                                     }
                                                 }
                                             }
@@ -633,10 +623,7 @@ fn main() {
 
                                 #[cfg(target_os = "windows")]
                                 {
-                                    use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
-                                    if let RawWindowHandle::Win32(handle) =
-                                        window.raw_window_handle()
-                                    {
+                                    if let RawWindowHandle::Win32(handle) = window.raw_window_handle() {
                                         let hwnd = HWND(handle.hwnd as isize);
                                         unsafe {
                                             render::update_layered_window_scaled(
@@ -645,9 +632,6 @@ fn main() {
                                                 win_w as i32,
                                                 win_h as i32,
                                             );
-
-                                            // Re-assert TopMost if needed
-                                            // Removed SetWindowPos from here, moving to AboutToWait for resilience
                                         }
                                     }
                                 }
@@ -658,12 +642,10 @@ fn main() {
                                         ElementState::Pressed => {
                                             if let Some(pos) = last_cursor_pos {
                                                 if let Ok(win_pos) = window.outer_position() {
-                                                    // Adjust global_pos to be relative to the pet's top-left corner
                                                     let global_pos = (
                                                         win_pos.x as f64 + pos.x - pet_off_x,
                                                         win_pos.y as f64 + pos.y - pet_off_y,
                                                     );
-                                                    // Don't call start_drag yet, just record start
                                                     click_start_time = Some(Instant::now());
                                                     click_start_pos = Some(global_pos);
                                                 }
@@ -671,18 +653,12 @@ fn main() {
                                         }
                                         ElementState::Released => {
                                             let mut is_click = false;
-                                            if let (Some(start_time), Some(start_pos)) =
-                                                (click_start_time, click_start_pos)
-                                            {
-                                                if start_time.elapsed() < Duration::from_millis(200)
-                                                {
+                                            if let (Some(start_time), Some(start_pos)) = (click_start_time, click_start_pos) {
+                                                if start_time.elapsed() < Duration::from_millis(200) {
                                                     if let Some(pos) = last_cursor_pos {
-                                                        if let Ok(win_pos) = window.outer_position()
-                                                        {
-                                                            let global_x = win_pos.x as f64 + pos.x
-                                                                - pet_off_x;
-                                                            let global_y = win_pos.y as f64 + pos.y
-                                                                - pet_off_y;
+                                                        if let Ok(win_pos) = window.outer_position() {
+                                                            let global_x = win_pos.x as f64 + pos.x - pet_off_x;
+                                                            let global_y = win_pos.y as f64 + pos.y - pet_off_y;
                                                             let dx = global_x - start_pos.0;
                                                             let dy = global_y - start_pos.1;
                                                             if (dx * dx + dy * dy).sqrt() < 5.0 {
@@ -694,106 +670,56 @@ fn main() {
                                             }
 
                                             if is_click {
-                                                let _now = Instant::now();
-
-                                                // Single Click handling for Menu
                                                 if menu_manager.visible {
                                                     if let Some(pos) = last_cursor_pos {
-                                                        let (cur_pw, cur_ph) =
-                                                            pet.get_scaled_size();
-                                                        let menu_x =
-                                                            (pet_off_x + cur_pw + 10.0) as i32;
+                                                        let (cur_pw, _cur_ph) = pet.get_scaled_size();
+                                                        let menu_x = (pet_off_x + cur_pw + 10.0) as i32;
                                                         let menu_y = pet_off_y as i32;
 
-                                                        if let Some(action) = menu_manager
-                                                            .check_hit(pos.x, pos.y, menu_x, menu_y)
-                                                        {
+                                                        if let Some(action) = menu_manager.check_hit(pos.x, pos.y, menu_x, menu_y) {
                                                             match action.as_str() {
                                                                 "chat" => {
-                                                                    // Center on screen
                                                                     if let Some(monitor) = window.current_monitor() {
                                                                         let scale_factor = monitor.scale_factor();
                                                                         let m_size = monitor.size();
                                                                         let m_pos = monitor.position();
-                                                                        
                                                                         let chat_w = 300.0;
                                                                         let chat_h = 60.0;
-                                                                        
-                                                                        // Convert monitor physical dimensions to logical
                                                                         let m_w_logical = m_size.width as f64 / scale_factor;
                                                                         let m_h_logical = m_size.height as f64 / scale_factor;
                                                                         let m_x_logical = m_pos.x as f64 / scale_factor;
                                                                         let m_y_logical = m_pos.y as f64 / scale_factor;
-
-                                                                        // Calculate center of the monitor in logical coordinates
                                                                         let center_x = m_x_logical + (m_w_logical / 2.0) - (chat_w / 2.0);
                                                                         let center_y = m_y_logical + (m_h_logical / 2.0) - (chat_h / 2.0);
-                                                                        
                                                                         chat_window.show(winit::dpi::LogicalPosition::new(center_x, center_y));
-                                                                    } else if let Ok(win_pos) = window.outer_position() {
-                                                                         // Fallback near pet if no monitor found
-                                                                         let chat_x = win_pos.x as f64 + pet_off_x;
-                                                                         let chat_y = win_pos.y as f64 + pet_off_y + cur_ph + 10.0;
-                                                                         chat_window.show(winit::dpi::LogicalPosition::new(chat_x, chat_y));
                                                                     }
                                                                 }
                                                                 "settings" => {
                                                                     if settings_win.is_none() {
-                                                                         let mut sw =
-                                                                             SettingsWindow::new(
-                                                                                 elwt,
-                                                                                 winit_icon.clone(),
-                                                                             );
-                                                                        sw.current_monitor_name = window_config.monitor_name.clone();
-                                                                        sw.request_redraw();
-                                                                        settings_win = Some(sw);
-                                                                    } else {
-                                                                        if let Some(sw) =
-                                                                            &settings_win
-                                                                        {
-                                                                            sw.focus();
-                                                                        }
+                                                                         let mut sw = SettingsWindow::new(elwt, winit_icon.clone());
+                                                                         sw.current_monitor_name = window_config.monitor_name.clone();
+                                                                         sw.request_redraw();
+                                                                         settings_win = Some(sw);
+                                                                    } else if let Some(sw) = &settings_win {
+                                                                        sw.focus();
                                                                     }
                                                                 }
                                                                 "pomodoro" => {
-                                                                    if let Some(msg) =
-                                                                        pomodoro_manager.update()
-                                                                    {
-                                                                        bubble_manager.show(
-                                                                            &msg,
-                                                                            Duration::from_secs(4),
-                                                                            pet.scale,
-                                                                        );
+                                                                    if let Some(msg) = pomodoro_manager.update() {
+                                                                        bubble_manager.show(&msg, Duration::from_secs(4), pet.scale);
                                                                     }
-
                                                                     if pomodoro_manager.toggle() {
-                                                                        bubble_manager.show(
-                                                                            "Pomodoro Started! 🍅",
-                                                                            Duration::from_secs(2),
-                                                                            pet.scale,
-                                                                        );
+                                                                        bubble_manager.show("Pomodoro Started! 🍅", Duration::from_secs(2), pet.scale);
                                                                     } else {
-                                                                        bubble_manager.show(
-                                                                            "Pomodoro Stopped.",
-                                                                            Duration::from_secs(2),
-                                                                            pet.scale,
-                                                                        );
+                                                                        bubble_manager.show("Pomodoro Stopped.", Duration::from_secs(2), pet.scale);
                                                                     }
                                                                 }
                                                                 "music" => {
                                                                     music_player.toggle();
                                                                     if music_player.is_playing() {
-                                                                        bubble_manager.show(
-                                                                            "Music Started! 🎵",
-                                                                            Duration::from_secs(2),
-                                                                            pet.scale,
-                                                                        );
+                                                                        bubble_manager.show("Music Started! 🎵", Duration::from_secs(2), pet.scale);
                                                                     } else {
-                                                                        bubble_manager.show(
-                                                                            "Music Paused ⏸️",
-                                                                            Duration::from_secs(2),
-                                                                            pet.scale,
-                                                                        );
+                                                                        bubble_manager.show("Music Paused ⏸️", Duration::from_secs(2), pet.scale);
                                                                     }
                                                                 }
                                                                 "exit" => elwt.exit(),
@@ -803,27 +729,11 @@ fn main() {
                                                     }
                                                 }
 
-                                                // Random Interaction
                                                 if !is_click {
-                                                    // Drag ended
                                                     pet.end_drag();
                                                 } else {
-                                                    // If not clicking menu (and menu checking didn't consume it?), play quote
-                                                    // Logic: if menu hit, we handled it. If not, play quote?
-                                                    // Simplified:
-                                                    if let Some(&quote) =
-                                                        rand::seq::SliceRandom::choose(
-                                                            &quotes[..],
-                                                            &mut rand::thread_rng(),
-                                                        )
-                                                    {
-                                                        // Only show quote if we didn't just click a menu button?
-                                                        // For now, let's allow overlapping interactions or refine later.
-                                                        bubble_manager.show(
-                                                            quote,
-                                                            Duration::from_secs(4),
-                                                            pet.scale,
-                                                        );
+                                                    if let Some(&quote) = rand::seq::SliceRandom::choose(&quotes[..], &mut rand::thread_rng()) {
+                                                        bubble_manager.show(quote, Duration::from_secs(4), pet.scale);
                                                     }
                                                 }
                                             } else {
@@ -840,25 +750,10 @@ fn main() {
                                 if let Ok(win_pos) = window.outer_position() {
                                     let global_x = win_pos.x as f64 + position.x - pet_off_x;
                                     let global_y = win_pos.y as f64 + position.y - pet_off_y;
-
-                                    // Convert to local coordinates relative to current monitor
                                     let local_x = global_x - monitor_offset.0 as f64;
                                     let local_y = global_y - monitor_offset.1 as f64;
 
                                     if pet.state == PetState::Drag {
-                                        // Pet expects local or consistent coordinates. 
-                                        // If we started drag with global, we should continue with global?
-                                        // Actually `start_drag` stored (Global - Local). 
-                                        // Let's normalize everything to LOCAL.
-                                        // But wait, `click_start_pos` from MouseInput?
-                                        // MouseInput `click_start_pos` was derived from... let's check.
-                                        // It was derived from `GetCursorPos` which is GLOBAL.
-                                        // So `start_drag` offset is (Global - Local).
-                                        // So `update_drag` needs Global.
-                                        
-                                        // WAIT. If we change `follow_mouse` to use local, we should check `start_drag` usages.
-                                        // Let's keep specific fixes.
-                                        
                                         pet.update_drag((global_x, global_y));
                                     } else if pet.state == PetState::Clingy {
                                         pet.follow_mouse((local_x, local_y));
@@ -866,9 +761,6 @@ fn main() {
                                         let dx = global_x - start_pos.0;
                                         let dy = global_y - start_pos.1;
                                         if (dx * dx + dy * dy).sqrt() > 5.0 {
-                                            // start_drag offset will be (Global - Local)
-                                            // This effectively bakes 'monitor_offset' into 'drag_start_offset'
-                                            // So update_drag must also use Global.
                                             pet.start_drag(start_pos);
                                             pet.update_drag((global_x, global_y));
                                         }
@@ -880,14 +772,8 @@ fn main() {
                     } else if let Some(sw) = &mut settings_win {
                         if window_id == sw.id() {
                             match event {
-                                WindowEvent::CloseRequested => {
-                                    settings_win = None;
-                                }
-                                 WindowEvent::MouseInput {
-                                    state,
-                                    button: btn,
-                                    ..
-                                } => {
+                                WindowEvent::CloseRequested => { settings_win = None; }
+                                WindowEvent::MouseInput { state, button: btn, .. } => {
                                     if state == ElementState::Pressed {
                                         if let Some(pos) = settings_cursor_pos {
                                             let is_right_click = btn == MouseButton::Right;
@@ -899,9 +785,7 @@ fn main() {
                                                     window.request_redraw();
                                                 }
                                                 settings_window::SettingsAction::SetMode(m) => {
-                                                    if pet.behavior_mode == BehaviorMode::Clingy
-                                                        && m != BehaviorMode::Clingy
-                                                    {
+                                                    if pet.behavior_mode == BehaviorMode::Clingy && m != BehaviorMode::Clingy {
                                                         pet.state = PetState::Idle;
                                                     }
                                                     pet.behavior_mode = m;
@@ -914,44 +798,17 @@ fn main() {
                                                 settings_window::SettingsAction::SetLayer(layer) => {
                                                     current_layer = layer;
                                                     let level = match layer {
-                                                        types::WindowLayer::Top => {
-                                                            WindowLevel::AlwaysOnTop
-                                                        }
-                                                        types::WindowLayer::Bottom => {
-                                                            WindowLevel::Normal // Changed from AlwaysOnBottom
-                                                        }
+                                                        types::WindowLayer::Top => WindowLevel::AlwaysOnTop,
+                                                        types::WindowLayer::Bottom => WindowLevel::Normal,
                                                     };
                                                     window.set_window_level(level);
-
                                                     #[cfg(target_os = "windows")]
                                                     {
-                                                        use raw_window_handle::{
-                                                            HasRawWindowHandle, RawWindowHandle,
-                                                        };
-                                                        if let RawWindowHandle::Win32(handle) =
-                                                            window.raw_window_handle()
-                                                        {
+                                                        if let RawWindowHandle::Win32(handle) = window.raw_window_handle() {
                                                             let hwnd = HWND(handle.hwnd as isize);
-                                                            let is_top =
-                                                                layer == types::WindowLayer::Top;
-                                                            apply_window_styles(hwnd, is_top);
-                                                            
-                                                            if !is_top {
-                                                                use windows::Win32::UI::WindowsAndMessaging::{
-                                                                    SetWindowPos, HWND_BOTTOM, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE
-                                                                };
-                                                                unsafe {
-                                                                    let _ = SetWindowPos(
-                                                                        hwnd,
-                                                                        HWND_BOTTOM,
-                                                                        0, 0, 0, 0,
-                                                                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
-                                                                    );
-                                                                }
-                                                            }
+                                                            apply_window_styles(hwnd, layer == types::WindowLayer::Top);
                                                         }
                                                     }
-
                                                     sw.request_redraw();
                                                 }
                                                 settings_window::SettingsAction::SetAiApiKey(key) => {
@@ -999,32 +856,19 @@ fn main() {
                                                     sw.request_redraw();
                                                 }
                                                 settings_window::SettingsAction::SetMonitor(name) => {
-                                                    // Find monitor by name
                                                     let available = window.available_monitors();
                                                     if let Some(monitor) = available.into_iter().find(|m| m.name().as_ref() == Some(&name)) {
                                                         let pos = monitor.position();
                                                         let size = monitor.size();
-                                                        
-                                                        // Move window to center of new monitor
-                                                        // This is tricky because we need to account for DPI.
-                                                        // We can just set the position to the monitor's top-left + center offset.
                                                         let win_size = window.inner_size();
                                                         let center_x = pos.x + (size.width as i32 / 2) - (win_size.width as i32 / 2);
                                                         let center_y = pos.y + (size.height as i32 / 2) - (win_size.height as i32 / 2);
-                                                        
                                                         window.set_outer_position(winit::dpi::PhysicalPosition::new(center_x, center_y));
-                                                        
-                                                        // Update config
                                                         window_config.monitor_name = Some(name.clone());
                                                         window_config.save();
-                                                        
                                                         sw.current_monitor_name = Some(name);
-                                                        
-                                                        // Update pet screen size
                                                         pet.screen_size = (size.width as f64, size.height as f64);
                                                         monitor_offset = (pos.x, pos.y);
-                                                        
-                                                        // Reset pet position to center to avoid getting stuck out of bounds
                                                         pet.position.0 = (size.width as f64 - pet.window_size.0) / 2.0;
                                                         pet.position.1 = (size.height as f64 - pet.window_size.1) / 2.0;
                                                     }
@@ -1077,13 +921,7 @@ fn main() {
                                         BehaviorMode::Active => "Active",
                                         BehaviorMode::Clingy => "Clingy",
                                     };
-                                    sw.redraw(
-                                        pet.scale,
-                                        mode_str,
-                                        music_player.music_path.as_deref(),
-                                        current_layer,
-                                        &ai_config,
-                                    );
+                                    sw.redraw(pet.scale, mode_str, music_player.music_path.as_deref(), current_layer, &ai_config);
                                 }
                                 _ => {}
                             }
@@ -1091,7 +929,6 @@ fn main() {
                     }
                 }
                 Event::AboutToWait => {
-                    // Handle AI responses
                     if let Ok(response) = ai_rx.try_recv() {
                         is_thinking = false;
                         thinking_start = None;
@@ -1099,12 +936,10 @@ fn main() {
                         window.request_redraw();
                     }
 
-                    // For Cursor Blink Anim: Redraw settings if focused
                     if let Some(sw) = &settings_win {
                         sw.request_redraw();
                     }
 
-                    // Handle Tray Menu Events
                     if let Ok(event) = MenuEvent::receiver().try_recv() {
                         if event.id == settings_id {
                             if settings_win.is_none() {
@@ -1129,59 +964,33 @@ fn main() {
                             let mouse_x = pt.x as f64;
                             let mouse_y = pt.y as f64;
 
-                            // Clingy Logic
-                            if pet.state == PetState::Clingy
-                                || pet.behavior_mode == BehaviorMode::Clingy
-                            {
-                                // Pass local coordinates to pet
-                                pet.follow_mouse((
-                                    mouse_x - monitor_offset.0 as f64,
-                                    mouse_y - monitor_offset.1 as f64,
-                                ));
+                            if pet.state == PetState::Clingy || pet.behavior_mode == BehaviorMode::Clingy {
+                                pet.follow_mouse((mouse_x - monitor_offset.0 as f64, mouse_y - monitor_offset.1 as f64));
                             }
 
-                            // Hover Logic for Menu
                             let pet_screen_x = pet.position.0 + monitor_offset.0 as f64;
                             let pet_screen_y = pet.position.1 + monitor_offset.1 as f64;
                             let (sys_pw, sys_ph) = pet.get_scaled_size();
-
                             let menu_on_right_x = pet_screen_x + sys_pw + 10.0;
                             let menu_w = menu_manager.menu_width as f64;
                             let menu_h = menu_manager.menu_height as f64;
 
-                            let over_pet = mouse_x >= pet_screen_x
-                                && mouse_x <= pet_screen_x + sys_pw
-                                && mouse_y >= pet_screen_y
-                                && mouse_y <= pet_screen_y + sys_ph;
-
-                            let over_menu = mouse_x >= menu_on_right_x
-                                && mouse_x <= menu_on_right_x + menu_w
-                                && mouse_y >= pet_screen_y
-                                && mouse_y <= pet_screen_y + menu_h;
-
+                            let over_pet = mouse_x >= pet_screen_x && mouse_x <= pet_screen_x + sys_pw && mouse_y >= pet_screen_y && mouse_y <= pet_screen_y + sys_ph;
+                            let over_menu = mouse_x >= menu_on_right_x && mouse_x <= menu_on_right_x + menu_w && mouse_y >= pet_screen_y && mouse_y <= pet_screen_y + menu_h;
                             let over_bubble = if let Some((bx, by, bw, bh)) = bubble_rect {
-                                mouse_x >= bx as f64 && mouse_x <= (bx + bw) as f64
-                                    && mouse_y >= by as f64 && mouse_y <= (by + bh) as f64
-                            } else {
-                                false
-                            };
+                                mouse_x >= bx as f64 && mouse_x <= (bx + bw) as f64 && mouse_y >= by as f64 && mouse_y <= (by + bh) as f64
+                            } else { false };
 
                             if over_pet || over_menu || over_bubble {
                                 is_hovered = true;
                                 bubble_manager.keep_alive();
-                                
                                 if over_pet || over_menu {
                                     menu_manager.visible = true;
                                     menu_manager.opacity = (menu_manager.opacity + 0.1).min(1.0);
                                     menu_visible_timer = Some(Instant::now());
                                 }
                             } else {
-                                let should_fade = match menu_visible_timer {
-                                    Some(t) => t.elapsed() > Duration::from_secs(5),
-                                    None => true,
-                                };
-
-                                if should_fade {
+                                if menu_visible_timer.map_or(true, |t| t.elapsed() > Duration::from_secs(5)) {
                                     menu_manager.opacity = (menu_manager.opacity - 0.05).max(0.0);
                                     if menu_manager.opacity <= 0.0 {
                                         menu_manager.visible = false;
@@ -1195,21 +1004,17 @@ fn main() {
                     if let Some(elapsed) = last_update.map(|t| t.elapsed().as_secs_f64()) {
                         let dt = elapsed.min(0.05);
                         pet.update_state(dt, is_hovered);
-
                         if let Some(msg) = pomodoro_manager.update() {
                             bubble_manager.show(&msg, Duration::from_secs(4), pet.scale);
                         }
-
                         if let Some(msg) = music_player.update() {
                             bubble_manager.show(&msg, Duration::from_secs(4), pet.scale);
                         }
-
                         if !is_thinking {
                             if let Some(system_event) = interaction_manager.check_for_trigger() {
                                 let kernel = chat_kernel.clone();
                                 let tx = ai_tx.clone();
                                 let input = system_event;
-
                                 std::thread::spawn(move || {
                                     let rt = tokio::runtime::Runtime::new().unwrap();
                                     rt.block_on(async {
@@ -1217,12 +1022,10 @@ fn main() {
                                         let _ = tx.send(response);
                                     });
                                 });
-                                
                                 is_thinking = true;
                                 thinking_start = Some(Instant::now());
                             }
                         }
-
                         window.set_outer_position(PhysicalPosition::new(
                             monitor_offset.0 + (pet.position.0 - pet_off_x) as i32,
                             monitor_offset.1 + (pet.position.1 - pet_off_y) as i32,

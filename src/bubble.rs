@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
@@ -6,7 +7,7 @@ use windows::core::ComInterface;
 use windows::Win32::Foundation::{HANDLE, HWND, RECT};
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F,
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::{
@@ -17,8 +18,8 @@ use windows::Win32::Graphics::Direct2D::{
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL,
-    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_BOLD, DWRITE_MEASURING_MODE_NATURAL,
-    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
+    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_BOLD, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+    DWRITE_TEXT_ALIGNMENT_CENTER,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Gdi::{
@@ -38,6 +39,26 @@ pub struct SpeechBubble {
     pub current_height: i32,
     // Add cache: (pixel_data, width, height, scale)
     cached_bitmap: Option<(Vec<u8>, i32, i32, f32)>,
+    #[cfg(target_os = "windows")]
+    cached_layout: Option<windows::Win32::Graphics::DirectWrite::IDWriteTextLayout>,
+}
+
+#[cfg(target_os = "windows")]
+static DWRITE_FACTORY: OnceLock<IDWriteFactory> = OnceLock::new();
+#[cfg(target_os = "windows")]
+static D2D_FACTORY: OnceLock<ID2D1Factory> = OnceLock::new();
+
+#[cfg(target_os = "windows")]
+fn get_dwrite_factory() -> &'static IDWriteFactory {
+    DWRITE_FACTORY
+        .get_or_init(|| unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).unwrap() })
+}
+
+#[cfg(target_os = "windows")]
+fn get_d2d_factory() -> &'static ID2D1Factory {
+    D2D_FACTORY.get_or_init(|| unsafe {
+        D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).unwrap()
+    })
 }
 
 impl SpeechBubble {
@@ -48,6 +69,8 @@ impl SpeechBubble {
             current_width: BASE_BUBBLE_WIDTH,
             current_height: BASE_BUBBLE_HEIGHT,
             cached_bitmap: None,
+            #[cfg(target_os = "windows")]
+            cached_layout: None,
         }
     }
 
@@ -104,9 +127,8 @@ impl SpeechBubble {
     fn calculate_size(&mut self, scale: f32) {
         #[cfg(target_os = "windows")]
         unsafe {
-            // Use DirectWrite for measurement to match Direct2D rendering perfectly
-            let dwrite_factory: IDWriteFactory =
-                DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).unwrap();
+            // Use Cached DirectWrite Factory
+            let dwrite_factory = get_dwrite_factory();
 
             let font_size = 18.0 * scale;
             let text_format = dwrite_factory
@@ -163,6 +185,12 @@ impl SpeechBubble {
 
             let calc_h = text_h.ceil() as i32 + padding * 2 + tail_h + height_buffer;
 
+            // --- CRITICAL: Re-constrain layout to expected interior size for centering ---
+            let _ = text_layout.SetMaxWidth((calc_w - padding * 2) as f32);
+            let _ = text_layout.SetMaxHeight((calc_h - padding * 2 - tail_h) as f32);
+
+            self.cached_layout = Some(text_layout);
+
             if self.current_width != calc_w || self.current_height != calc_h {
                 self.cached_bitmap = None; // Invalidate cache if size changes
             }
@@ -179,12 +207,20 @@ impl SpeechBubble {
         }
     }
 
+    pub fn pixel_data(&self) -> Option<&[u8]> {
+        self.cached_bitmap
+            .as_ref()
+            .map(|(data, _, _, _)| data.as_slice())
+    }
+
     pub fn render_to_buffer(&mut self, buffer_ptr: *mut u8, scale: f32) {
         // Check cache
         if let Some((ref data, w, h, s)) = self.cached_bitmap {
             if w == self.current_width && h == self.current_height && (s - scale).abs() < 0.001 {
-                unsafe {
-                    std::ptr::copy_nonoverlapping(data.as_ptr(), buffer_ptr, data.len());
+                if !buffer_ptr.is_null() {
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(data.as_ptr(), buffer_ptr, data.len());
+                    }
                 }
                 return;
             }
@@ -215,77 +251,45 @@ impl SpeechBubble {
             let mut bits = std::ptr::null_mut();
             let h_bitmap =
                 CreateDIBSection(hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, HANDLE(0), 0).unwrap();
-            let old_bitmap = SelectObject(hdc_mem, h_bitmap);
 
-            // --- Manual Pixel Art Drawing ---
+            if bits.is_null() || h_bitmap.is_invalid() {
+                let _ = DeleteDC(hdc_mem);
+                ReleaseDC(HWND(0), hdc_screen);
+                return;
+            }
+
+            let old_bitmap = SelectObject(hdc_mem, h_bitmap);
             let pixel_ptr = bits as *mut u8;
             let w_usize = width as usize;
             let h_usize = height as usize;
 
-            let bg_color = [0xE9, 0xDE, 0xFF, 0xFF]; // Soft Purple
-            let border_color = [0x69, 0x4B, 0x8A, 0xFF]; // Darker Purple border
-            let white_color = [0xFF, 0xFF, 0xFF, 0xFF];
+            let bg_color_d2d = D2D1_COLOR_F {
+                r: 0xE9 as f32 / 255.0,
+                g: 0xDE as f32 / 255.0,
+                b: 0xFF as f32 / 255.0,
+                a: 1.0,
+            };
+            let border_color_d2d = D2D1_COLOR_F {
+                r: 0x69 as f32 / 255.0,
+                g: 0x4B as f32 / 255.0,
+                b: 0x8A as f32 / 255.0,
+                a: 1.0,
+            };
+            let white_color_d2d = D2D1_COLOR_F {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 1.0,
+            };
 
             std::ptr::write_bytes(pixel_ptr, 0, w_usize * h_usize * 4);
 
             let tail_h = (20.0 * scale) as i32;
             let main_h = height - tail_h;
 
-            for y in 0..main_h {
-                for x in 0..width {
-                    let idx = (y * width + x) as usize * 4;
-                    if x == 0 || x == width - 1 || y == 0 || y == main_h - 1 {
-                        *pixel_ptr.add(idx) = border_color[0];
-                        *pixel_ptr.add(idx + 1) = border_color[1];
-                        *pixel_ptr.add(idx + 2) = border_color[2];
-                        *pixel_ptr.add(idx + 3) = 255;
-                    } else if x == 1 || x == width - 2 || y == 1 || y == main_h - 2 {
-                        *pixel_ptr.add(idx) = white_color[0];
-                        *pixel_ptr.add(idx + 1) = white_color[1];
-                        *pixel_ptr.add(idx + 2) = white_color[2];
-                        *pixel_ptr.add(idx + 3) = 255;
-                    } else {
-                        *pixel_ptr.add(idx) = bg_color[0];
-                        *pixel_ptr.add(idx + 1) = bg_color[1];
-                        *pixel_ptr.add(idx + 2) = bg_color[2];
-                        *pixel_ptr.add(idx + 3) = 255;
-                    }
-                }
-            }
-
-            // Tail
-            let center_x = width / 2;
-            for y in main_h..height {
-                let ty = y - main_h;
-                if ty < (15.0 * scale) as i32 {
-                    let hw_val = (8.0 * scale) as i32;
-                    let half_w = hw_val - (ty / 2);
-                    for x in (center_x - half_w)..(center_x + half_w + 1) {
-                        if x < 0 || x >= width {
-                            continue;
-                        }
-                        let idx = (y * width + x) as usize * 4;
-                        let rel_x = x - center_x;
-                        if rel_x.abs() == half_w || ty == ((15.0 * scale) as i32 - 1) {
-                            *pixel_ptr.add(idx) = border_color[0];
-                            *pixel_ptr.add(idx + 1) = border_color[1];
-                            *pixel_ptr.add(idx + 2) = border_color[2];
-                            *pixel_ptr.add(idx + 3) = 255;
-                        } else {
-                            *pixel_ptr.add(idx) = bg_color[0];
-                            *pixel_ptr.add(idx + 1) = bg_color[1];
-                            *pixel_ptr.add(idx + 2) = bg_color[2];
-                            *pixel_ptr.add(idx + 3) = 255;
-                        }
-                    }
-                }
-            }
-
-            // --- Text Rendering (v3: DirectWrite/Direct2D for Color Emoji) ---
-            let dwrite_factory: IDWriteFactory =
-                DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).unwrap();
-            let d2d_factory: ID2D1Factory =
-                D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).unwrap();
+            // --- Text and Shape Rendering (Direct2D) ---
+            let dwrite_factory = get_dwrite_factory();
+            let d2d_factory = get_d2d_factory();
 
             let font_size = 18.0 * scale;
             let text_format = dwrite_factory
@@ -322,56 +326,116 @@ impl SpeechBubble {
             // If CreateSolidColorBrush isn't found, try ID2D1DeviceContext or call it directly.
             let padding = (24.0 * scale).ceil() as i32;
             let rect_gdi = RECT {
-                left: padding,
-                top: padding,
-                right: width - padding,
-                bottom: main_h - padding,
+                left: 0,
+                top: 0,
+                right: width,
+                bottom: height, // Bind to FULL height including tail
             };
 
-            dc_rt.BindDC(HDC(hdc_mem.0), &rect_gdi).unwrap();
+            if dc_rt.BindDC(HDC(hdc_mem.0), &rect_gdi).is_ok() {
+                if let Ok(rt) = dc_rt.cast::<ID2D1DeviceContext>() {
+                    rt.BeginDraw();
 
-            // Direct2D methods in windows-rs are sometimes provided via traits if not on the struct.
-            // But usually they are on the struct. Let's try to cast to ID2D1DeviceContext which is more robust.
-            if let Ok(rt) = dc_rt.cast::<ID2D1DeviceContext>() {
-                rt.BeginDraw();
+                    // 1. Draw Background
+                    let bg_brush = rt.CreateSolidColorBrush(&bg_color_d2d, None).unwrap();
+                    let border_brush = rt.CreateSolidColorBrush(&border_color_d2d, None).unwrap();
+                    let white_brush = rt.CreateSolidColorBrush(&white_color_d2d, None).unwrap();
 
-                let text_rect = D2D_RECT_F {
-                    left: 0.0,
-                    top: 0.0,
-                    right: (width - padding * 2) as f32,
-                    bottom: (main_h - padding * 2) as f32,
-                };
+                    let full_rect = D2D_RECT_F {
+                        left: 0.0,
+                        top: 0.0,
+                        right: width as f32,
+                        bottom: main_h as f32,
+                    };
 
-                let brush = rt
-                    .CreateSolidColorBrush(
-                        &D2D1_COLOR_F {
-                            r: 74.0 / 255.0,
-                            g: 59.0 / 255.0,
-                            b: 92.0 / 255.0,
-                            a: 1.0,
-                        },
-                        None,
-                    )
-                    .unwrap();
+                    // Draw Outer Border
+                    rt.FillRectangle(&full_rect, &border_brush);
 
-                let wide_text: Vec<u16> = self.text.encode_utf16().collect();
-                rt.DrawText(
-                    &wide_text,
-                    &text_format,
-                    &text_rect,
-                    &brush,
-                    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-                    DWRITE_MEASURING_MODE_NATURAL,
-                );
+                    // Draw White Inner Border
+                    let white_rect = D2D_RECT_F {
+                        left: 1.0,
+                        top: 1.0,
+                        right: (width - 1) as f32,
+                        bottom: (main_h - 1) as f32,
+                    };
+                    rt.FillRectangle(&white_rect, &white_brush);
 
-                rt.EndDraw(None, None).unwrap();
+                    // Draw Core Background
+                    let core_rect = D2D_RECT_F {
+                        left: 2.0,
+                        top: 2.0,
+                        right: (width - 2) as f32,
+                        bottom: (main_h - 2) as f32,
+                    };
+                    rt.FillRectangle(&core_rect, &bg_brush);
+
+                    // 2. Draw Tail
+                    let center_x = width as f32 / 2.0;
+                    let hw_val = 8.0 * scale;
+                    let ty_val = 15.0 * scale;
+
+                    if let Ok(path) = d2d_factory.CreatePathGeometry() {
+                        if let Ok(sink) = path.Open() {
+                            sink.BeginFigure(
+                                D2D_POINT_2F {
+                                    x: center_x - hw_val,
+                                    y: main_h as f32 - 1.0,
+                                },
+                                windows::Win32::Graphics::Direct2D::Common::D2D1_FIGURE_BEGIN_FILLED,
+                            );
+                            sink.AddLine(D2D_POINT_2F {
+                                x: center_x + hw_val,
+                                y: main_h as f32 - 1.0,
+                            });
+                            sink.AddLine(D2D_POINT_2F {
+                                x: center_x,
+                                y: (main_h as f32 + ty_val),
+                            });
+                            sink.EndFigure(
+                                windows::Win32::Graphics::Direct2D::Common::D2D1_FIGURE_END_CLOSED,
+                            );
+                            sink.Close().unwrap();
+                        }
+                        rt.FillGeometry(&path, &bg_brush, None);
+                        rt.DrawGeometry(&path, &border_brush, 1.0, None);
+                    }
+
+                    // 3. Draw Text
+                    if let Some(layout) = &self.cached_layout {
+                        let text_brush = rt
+                            .CreateSolidColorBrush(
+                                &D2D1_COLOR_F {
+                                    r: 74.0 / 255.0,
+                                    g: 59.0 / 255.0,
+                                    b: 92.0 / 255.0,
+                                    a: 1.0,
+                                },
+                                None,
+                            )
+                            .unwrap();
+
+                        rt.DrawTextLayout(
+                            D2D_POINT_2F {
+                                x: padding as f32,
+                                y: padding as f32,
+                            },
+                            layout,
+                            &text_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                        );
+                    }
+
+                    rt.EndDraw(None, None).unwrap();
+                }
             }
 
             GdiFlush();
 
             // --- Copy out to buffer AND Cache ---
             let byte_count = w_usize * h_usize * 4;
-            std::ptr::copy_nonoverlapping(pixel_ptr, buffer_ptr, byte_count);
+            if !buffer_ptr.is_null() {
+                std::ptr::copy_nonoverlapping(pixel_ptr, buffer_ptr, byte_count);
+            }
 
             // Create Vector for cache
             let mut cache_vec = Vec::with_capacity(byte_count);
@@ -382,6 +446,10 @@ impl SpeechBubble {
 
             SelectObject(hdc_mem, old_bitmap);
             let _ = DeleteObject(h_bitmap);
+            // h_bitmap is actually the return of CreateDIBSection.
+            // Wait, in the previous code it was h_bitmap.
+            // Actually in windows-rs, CreateDIBSection returns HBITMAP.
+            // But let's be careful.
             let _ = DeleteDC(hdc_mem);
             ReleaseDC(HWND(0), hdc_screen);
         }
