@@ -1046,7 +1046,7 @@ fn main() {
                     }
                     
                     // --- OPTIMIZATION: Precise scheduling ---
-                    let mut next_deadline = Instant::now() + Duration::from_millis(16); // Default 60fps cap
+                    let mut next_deadline = Instant::now() + Duration::from_secs(1); // Default 1s wait if idle
                     
                     if is_thinking {
                         // Loading GIF is ~10fps (100ms)
@@ -1061,6 +1061,15 @@ fn main() {
                     // If menu is fading, we need high frequency
                     if menu_manager.opacity > 0.0 && menu_manager.opacity < 1.0 {
                         next_deadline = next_deadline.min(Instant::now() + Duration::from_millis(16));
+                    }
+
+                    if chat_window.is_visible() {
+                        let blink_deadline = chat_window.next_blink_at();
+                        // Request redraw slightly before or at deadline
+                        if Instant::now().duration_since(blink_deadline - Duration::from_millis(5)) < Duration::from_millis(10) || Instant::now() >= blink_deadline {
+                             chat_window.request_redraw_actual();
+                        }
+                        next_deadline = next_deadline.min(blink_deadline);
                     }
 
                     elwt.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(next_deadline));

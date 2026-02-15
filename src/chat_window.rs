@@ -19,6 +19,7 @@ pub struct ChatWindow {
     input_text: String,
     is_visible: bool,
     last_size: Option<(u32, u32)>,
+    cursor_blink_start: std::time::Instant,
 }
 
 pub enum ChatAction {
@@ -63,11 +64,23 @@ impl ChatWindow {
             input_text: String::new(),
             is_visible: false,
             last_size: None,
+            cursor_blink_start: std::time::Instant::now(),
         }
     }
 
     pub fn id(&self) -> winit::window::WindowId {
         self.window.id()
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.is_visible
+    }
+
+    pub fn next_blink_at(&self) -> std::time::Instant {
+        let elapsed_ms = self.cursor_blink_start.elapsed().as_millis();
+        let current_step = elapsed_ms / 500;
+        let next_step = current_step + 1;
+        self.cursor_blink_start + std::time::Duration::from_millis((next_step * 500) as u64)
     }
 
     pub fn show(&mut self, position: LogicalPosition<f64>) {
@@ -79,6 +92,7 @@ impl ChatWindow {
 
         self.is_visible = true;
         self.input_text.clear();
+        self.cursor_blink_start = std::time::Instant::now();
         self.request_redraw();
     }
 
@@ -93,6 +107,10 @@ impl ChatWindow {
         }
     }
 
+    pub fn request_redraw_actual(&self) {
+        self.window.request_redraw();
+    }
+
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -102,6 +120,7 @@ impl ChatWindow {
             WindowEvent::Ime(ime) => match ime {
                 winit::event::Ime::Commit(text) => {
                     self.input_text.push_str(text);
+                    self.cursor_blink_start = std::time::Instant::now();
                     self.request_redraw();
                 }
                 _ => {}
@@ -140,6 +159,7 @@ impl ChatWindow {
                     }
                     Key::Named(NamedKey::Backspace) => {
                         self.input_text.pop();
+                        self.cursor_blink_start = std::time::Instant::now();
                         self.request_redraw();
                     }
                     Key::Character(c) => {
@@ -162,11 +182,13 @@ impl ChatWindow {
                         // Filter control characters and Alt combinations (to prevent hotkey leakage)
                         if !c.chars().any(|ch| ch.is_control()) && !modifiers.alt_key() {
                             self.input_text.push_str(c);
+                            self.cursor_blink_start = std::time::Instant::now();
                             self.request_redraw();
                         }
                     }
                     Key::Named(NamedKey::Space) => {
                         self.input_text.push(' ');
+                        self.cursor_blink_start = std::time::Instant::now();
                         self.request_redraw();
                     }
                     _ => {}
@@ -290,20 +312,17 @@ impl ChatWindow {
             }
         }
 
-        // Draw cursor at end of last line
+        // Draw blinking cursor at end of last line
         let last_line_idx = lines.len() - 1;
         let last_line = &lines[last_line_idx];
-        let y_pos = padding + v_metrics.ascent + (last_line_idx as f32 * line_height);
-        let offset = point(padding, y_pos);
 
-        let cursor_x = if let Some(last) = self.font.layout(last_line, scale, offset).last() {
-            last.pixel_bounding_box()
-                .map(|bb| bb.max.x)
-                .unwrap_or(padding as i32)
-                + 2
-        } else {
-            padding as i32
-        };
+        // Calculate cursor_x correctly even for spaces
+        let mut cursor_x_accum = padding;
+        for c in last_line.chars() {
+            let glyph = self.font.glyph(c).scaled(scale);
+            cursor_x_accum += glyph.h_metrics().advance_width;
+        }
+        let cursor_x = cursor_x_accum as i32 + 2;
 
         let cursor_h = 24; // approx line height
         let cursor_y = (padding + (last_line_idx as f32 * line_height)) as i32;
@@ -314,12 +333,17 @@ impl ChatWindow {
             winit::dpi::PhysicalSize::new(2.0, cursor_h as f64),
         );
 
-        for y in cursor_y..(cursor_y + cursor_h) {
-            for x in cursor_x..(cursor_x + 2) {
-                if x < buf_w as i32 && y < buf_h as i32 {
-                    let idx = y as usize * buf_w + x as usize;
-                    if idx < buffer.len() {
-                        buffer[idx] = cursor_color;
+        let elapsed = self.cursor_blink_start.elapsed().as_millis();
+        let cursor_visible = (elapsed % 1000) < 500;
+
+        if cursor_visible {
+            for y in cursor_y..(cursor_y + cursor_h) {
+                for x in cursor_x..(cursor_x + 2) {
+                    if x < buf_w as i32 && y < buf_h as i32 {
+                        let idx = y as usize * buf_w + x as usize;
+                        if idx < buffer.len() {
+                            buffer[idx] = cursor_color;
+                        }
                     }
                 }
             }
