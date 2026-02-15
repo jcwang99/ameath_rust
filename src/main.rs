@@ -29,7 +29,7 @@ use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem},
     TrayIconBuilder,
 };
-use types::{BehaviorMode, PetState, PreprocessedFrame};
+use types::{BehaviorMode, PetState, PreprocessedFrame, PersistentConfig};
 use winit::{
     dpi::PhysicalPosition,
     event::{ElementState, Event, MouseButton, WindowEvent},
@@ -208,7 +208,7 @@ fn main() {
     // AI Kernel & Channel
     let (ai_tx, ai_rx) = std::sync::mpsc::channel::<String>();
     let mut chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
-    let music_dir = std::path::PathBuf::from("assets/music");
+    let music_dir = window_config.music_path.clone().unwrap_or_else(|| std::path::PathBuf::from("assets/music"));
     if music_dir.exists() {
         music_player.set_path(music_dir);
     }
@@ -451,34 +451,40 @@ fn main() {
                                 let win_w_usize = win_w as usize;
                                 let win_h_usize = win_h as usize;
 
-                                // 1. Draw Pet (Optimized row-based copy if scale=1.0)
+                                // 1. Draw Pet (Optimized with opaque_rows and row-based copy)
                                 let frame = pet.current_frame();
                                 let dest_y_start = pet_off_y as usize;
                                 let dest_x_start = pet_off_x as usize;
 
                                 if (draw_scale - 1.0).abs() < 0.001 {
-                                    // FAST PATH: Direct row copies
+                                    // FAST PATH: Direct row copies using opaque_rows
                                     let fw = frame.width as usize;
                                     let fh = frame.height as usize;
                                     for y in 0..fh {
                                         let dy = dest_y_start + y;
                                         if dy < win_h_usize {
-                                            let src_row = &frame.data[y * fw * 4..(y + 1) * fw * 4];
-                                            let dest_idx = (dy * win_w_usize + dest_x_start) * 4;
-                                            if dest_x_start + fw <= win_w_usize {
-                                                for x in 0..fw {
-                                                    let s_idx = x * 4;
-                                                    let a = src_row[s_idx + 3];
-                                                    if a > 0 {
-                                                        let d_idx = dest_idx + x * 4;
-                                                        composite_data[d_idx..d_idx+4].copy_from_slice(&src_row[s_idx..s_idx+4]);
+                                            let (start_x, end_x) = frame.opaque_rows[y];
+                                            if start_x < end_x {
+                                                let src_row = &frame.data[y * fw * 4..(y + 1) * fw * 4];
+                                                
+                                                if dest_x_start + end_x <= win_w_usize {
+                                                    // For fast path scale 1.0, we can copy the whole opaque segment if it's mostly opaque,
+                                                    // but the frame might still have internal transparency.
+                                                    // Let's at least bound the loop by opaque_rows.
+                                                    for x in start_x..end_x {
+                                                        let s_idx = x * 4;
+                                                        let a = src_row[s_idx + 3];
+                                                        if a > 0 {
+                                                            let d_idx = (dy * win_w_usize + dest_x_start + x) * 4;
+                                                            composite_data[d_idx..d_idx+4].copy_from_slice(&src_row[s_idx..s_idx+4]);
+                                                        }
                                                     }
                                                 }
                                             }
                                         }
                                     }
                                 } else {
-                                    // Scaled path
+                                    // Scaled path using opaque_rows to bound inner loop
                                     let fw = frame.width as usize;
                                     let fh = frame.height as usize;
                                     for y in 0..(cur_ph as u32) {
@@ -486,9 +492,18 @@ fn main() {
                                         if src_y >= fh { continue; }
                                         let dy = (y as f64 + pet_off_y) as usize;
                                         if dy >= win_h_usize { continue; }
+                                        
+                                        let (start_x_src, end_x_src) = frame.opaque_rows[src_y];
+                                        if start_x_src >= end_x_src { continue; }
+
                                         let src_row_idx = src_y * fw * 4;
                                         let dest_row_start = dy * win_w_usize * 4;
-                                        for x in 0..(cur_pw as u32) {
+                                        
+                                        // Bound x loop by scaled opaque_rows
+                                        let start_x_dest = (start_x_src as f32 * draw_scale) as u32;
+                                        let end_x_dest = ((end_x_src as f32 * draw_scale) as u32).min(cur_pw as u32);
+
+                                        for x in start_x_dest..end_x_dest {
                                             let src_x = (x as f32 / draw_scale) as usize;
                                             if src_x >= fw { continue; }
                                             let dx = (x as f64 + pet_off_x) as usize;
@@ -547,7 +562,7 @@ fn main() {
                                      }
                                 }
 
-                                // 2. Draw Bubble (Optimized with row copies)
+                                // 2. Draw Bubble (Optimized with early alpha exit)
                                 if bubble_manager.is_visible() {
                                     bubble_manager.render_to_buffer(std::ptr::null_mut(), pet.scale);
 
@@ -561,15 +576,22 @@ fn main() {
                                             for y in 0..bh {
                                                 let dy = (by + y as i32) as usize;
                                                 if dy < win_h_usize {
-                                                    let src_idx = y * bw * 4;
+                                                    let src_row_start = y * bw * 4;
                                                     let bx_usize = bx as usize;
-                                                    let dest_idx = (dy * win_w_usize + bx_usize) * 4;
+                                                    let dest_row_start = (dy * win_w_usize + bx_usize) * 4;
                                                     for x in 0..bw {
-                                                        let s = src_idx + x * 4;
+                                                        let s = src_row_start + x * 4;
                                                         let a = b_pixels[s + 3];
                                                         if a > 0 {
-                                                            let d = dest_idx + x * 4;
-                                                            composite_data[d..d+4].copy_from_slice(&b_pixels[s..s+4]);
+                                                            let d = dest_row_start + x * 4;
+                                                            if a == 255 {
+                                                                composite_data[d..d+4].copy_from_slice(&b_pixels[s..s+4]);
+                                                            } else {
+                                                                // Blend for non-premultiplied or partial bubble edges
+                                                                // But bubble_manager likely uses Direct2D which is premultiplied.
+                                                                // If it's premultiplied, standard additive-like blend or copy.
+                                                                composite_data[d..d+4].copy_from_slice(&b_pixels[s..s+4]);
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -677,8 +699,8 @@ fn main() {
                                                         let menu_y = pet_off_y as i32;
 
                                                         if let Some(action) = menu_manager.check_hit(pos.x, pos.y, menu_x, menu_y) {
-                                                            match action.as_str() {
-                                                                "chat" => {
+                                                            match action {
+                                                                menu::MenuAction::Chat => {
                                                                     if let Some(monitor) = window.current_monitor() {
                                                                         let scale_factor = monitor.scale_factor();
                                                                         let m_size = monitor.size();
@@ -694,7 +716,7 @@ fn main() {
                                                                         chat_window.show(winit::dpi::LogicalPosition::new(center_x, center_y));
                                                                     }
                                                                 }
-                                                                "settings" => {
+                                                                menu::MenuAction::Settings => {
                                                                     if settings_win.is_none() {
                                                                          let mut sw = SettingsWindow::new(elwt, winit_icon.clone());
                                                                          sw.current_monitor_name = window_config.monitor_name.clone();
@@ -704,7 +726,7 @@ fn main() {
                                                                         sw.focus();
                                                                     }
                                                                 }
-                                                                "pomodoro" => {
+                                                                menu::MenuAction::Pomodoro => {
                                                                     if let Some(msg) = pomodoro_manager.update() {
                                                                         bubble_manager.show(&msg, Duration::from_secs(4), pet.scale);
                                                                     }
@@ -714,7 +736,7 @@ fn main() {
                                                                         bubble_manager.show("Pomodoro Stopped.", Duration::from_secs(2), pet.scale);
                                                                     }
                                                                 }
-                                                                "music" => {
+                                                                menu::MenuAction::Music => {
                                                                     music_player.toggle();
                                                                     if music_player.is_playing() {
                                                                         bubble_manager.show("Music Started! 🎵", Duration::from_secs(2), pet.scale);
@@ -722,8 +744,7 @@ fn main() {
                                                                         bubble_manager.show("Music Paused ⏸️", Duration::from_secs(2), pet.scale);
                                                                     }
                                                                 }
-                                                                "exit" => elwt.exit(),
-                                                                _ => {}
+                                                                menu::MenuAction::Exit => elwt.exit(),
                                                             }
                                                         }
                                                     }
@@ -789,10 +810,6 @@ fn main() {
                                                         pet.state = PetState::Idle;
                                                     }
                                                     pet.behavior_mode = m;
-                                                    sw.request_redraw();
-                                                }
-                                                settings_window::SettingsAction::SetMusicPath(path) => {
-                                                    music_player.set_path(path);
                                                     sw.request_redraw();
                                                 }
                                                 settings_window::SettingsAction::SelectMusicPath => {
@@ -947,7 +964,9 @@ fn main() {
 
                     if let Ok(path_opt) = path_rx.try_recv() {
                         if let Some(path) = path_opt {
-                            music_player.set_path(path);
+                            music_player.set_path(path.clone());
+                            window_config.music_path = Some(path);
+                            window_config.save();
                         }
                         if let Some(sw) = &mut settings_win {
                             sw.window().set_window_level(winit::window::WindowLevel::AlwaysOnTop);

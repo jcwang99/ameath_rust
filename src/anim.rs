@@ -30,6 +30,11 @@ pub fn flip_frame_horizontal(frame: &PreprocessedFrame) -> PreprocessedFrame {
         height: frame.height,
         data: new_data,
         delay: frame.delay,
+        opaque_rows: frame
+            .opaque_rows
+            .iter()
+            .map(|(start, end)| (width - end, width - start))
+            .collect(),
     }
 }
 
@@ -44,14 +49,27 @@ pub fn preprocess_frames(frames: Vec<image::Frame>) -> Vec<PreprocessedFrame> {
             let height = buffer.height() as i32;
 
             let mut data = Vec::with_capacity((width * height * 4) as usize);
-            for pixel in buffer.pixels() {
-                let [r, g, b, a] = pixel.0;
-                // Premultiply alpha & BGRA for Windows
-                let alpha_factor = a as f64 / 255.0;
-                data.push((b as f64 * alpha_factor) as u8);
-                data.push((g as f64 * alpha_factor) as u8);
-                data.push((r as f64 * alpha_factor) as u8);
-                data.push(a as u8);
+            let mut opaque_rows = Vec::with_capacity(height as usize);
+
+            for y in 0..height {
+                let mut start_x = width as usize;
+                let mut end_x = 0;
+                for x in 0..width {
+                    let pixel = buffer.get_pixel(x as u32, y as u32);
+                    let [r, g, b, a] = pixel.0;
+
+                    if a > 0 {
+                        start_x = start_x.min(x as usize);
+                        end_x = end_x.max(x as usize + 1);
+                    }
+
+                    // Premultiply alpha & BGRA for Windows (using integer math for performance)
+                    data.push(((b as u16 * a as u16 + 127) / 255) as u8);
+                    data.push(((g as u16 * a as u16 + 127) / 255) as u8);
+                    data.push(((r as u16 * a as u16 + 127) / 255) as u8);
+                    data.push(a);
+                }
+                opaque_rows.push((start_x, end_x));
             }
 
             PreprocessedFrame {
@@ -59,6 +77,7 @@ pub fn preprocess_frames(frames: Vec<image::Frame>) -> Vec<PreprocessedFrame> {
                 height,
                 data,
                 delay,
+                opaque_rows,
             }
         })
         .collect()

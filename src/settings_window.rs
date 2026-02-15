@@ -1,3 +1,4 @@
+use crate::types::PersistentConfig;
 use rusttype::{point, Font, Scale};
 use softbuffer::{Context, Surface};
 use std::fs;
@@ -38,7 +39,6 @@ pub enum SettingsAction {
     None,
     SetScale(f32),
     SetMode(crate::types::BehaviorMode),
-    SetMusicPath(std::path::PathBuf),
     SetLayer(crate::types::WindowLayer),
     SetAiApiKey(String),
     SetAiBaseUrl(String),

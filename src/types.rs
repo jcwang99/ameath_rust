@@ -8,6 +8,7 @@ pub struct PreprocessedFrame {
     pub height: i32,
     pub data: Vec<u8>,
     pub delay: Duration,
+    pub opaque_rows: Vec<(usize, usize)>, // (start_x, end_x) for each row
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -119,37 +120,6 @@ fn default_interaction_frequency() -> u64 {
     20
 }
 
-impl AiConfig {
-    pub fn load() -> Self {
-        let path = Self::path();
-        if path.exists() {
-            if let Ok(content) = fs::read_to_string(path) {
-                if let Ok(config) = serde_json::from_str::<Self>(&content) {
-                    return config;
-                }
-            }
-        }
-        Self::default()
-    }
-
-    pub fn save(&self) {
-        let path = Self::path();
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        if let Ok(content) = serde_json::to_string_pretty(self) {
-            let _ = fs::write(path, content);
-        }
-    }
-
-    fn path() -> PathBuf {
-        let mut path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-        path.pop();
-        path.push("ai_config.json");
-        path
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BehaviorMode {
     Quiet,
@@ -166,16 +136,32 @@ pub enum WindowLayer {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WindowConfig {
     pub monitor_name: Option<String>,
+    pub music_path: Option<PathBuf>,
 }
 
 impl Default for WindowConfig {
     fn default() -> Self {
-        Self { monitor_name: None }
+        Self {
+            monitor_name: None,
+            music_path: None,
+        }
     }
 }
 
-impl WindowConfig {
-    pub fn load() -> Self {
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+
+pub trait PersistentConfig: Serialize + DeserializeOwned + Default {
+    fn filename() -> &'static str;
+
+    fn path() -> PathBuf {
+        let mut path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+        path.pop();
+        path.push(Self::filename());
+        path
+    }
+
+    fn load() -> Self {
         let path = Self::path();
         if path.exists() {
             if let Ok(content) = fs::read_to_string(path) {
@@ -187,7 +173,7 @@ impl WindowConfig {
         Self::default()
     }
 
-    pub fn save(&self) {
+    fn save(&self) {
         let path = Self::path();
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
@@ -196,11 +182,16 @@ impl WindowConfig {
             let _ = fs::write(path, content);
         }
     }
+}
 
-    fn path() -> PathBuf {
-        let mut path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-        path.pop();
-        path.push("window_config.json");
-        path
+impl PersistentConfig for AiConfig {
+    fn filename() -> &'static str {
+        "ai_config.json"
+    }
+}
+
+impl PersistentConfig for WindowConfig {
+    fn filename() -> &'static str {
+        "window_config.json"
     }
 }

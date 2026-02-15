@@ -3,13 +3,22 @@ use image::RgbaImage;
 pub const BASE_BUTTON_SIZE: i32 = 40;
 pub const BASE_BUTTON_PADDING: i32 = 10;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuAction {
+    Chat,
+    Music,
+    Pomodoro,
+    Settings,
+    Exit,
+}
+
 pub struct MenuButton {
-    pub id: String,
+    pub id: MenuAction,
     pub base_icon: RgbaImage,
 }
 
 pub struct ScaledButton {
-    pub id: String,
+    pub id: MenuAction,
     pub rect: (i32, i32, i32, i32),
     pub icon: RgbaImage,
 }
@@ -28,27 +37,39 @@ impl QuickMenu {
     pub fn new() -> Self {
         let mut base_buttons = Vec::new();
 
-        let icon_data: [(&[u8], &str); 5] = [
-            (include_bytes!("../assets/icons/speech-bubble.png"), "chat"),
-            (include_bytes!("../assets/icons/music.png"), "music"),
-            (include_bytes!("../assets/icons/time-left.png"), "pomodoro"),
-            (include_bytes!("../assets/icons/gear.png"), "settings"),
-            (include_bytes!("../assets/icons/switch.png"), "exit"),
+        let icon_data: [(&[u8], MenuAction); 5] = [
+            (
+                include_bytes!("../assets/icons/speech-bubble.png"),
+                MenuAction::Chat,
+            ),
+            (
+                include_bytes!("../assets/icons/music.png"),
+                MenuAction::Music,
+            ),
+            (
+                include_bytes!("../assets/icons/time-left.png"),
+                MenuAction::Pomodoro,
+            ),
+            (
+                include_bytes!("../assets/icons/gear.png"),
+                MenuAction::Settings,
+            ),
+            (
+                include_bytes!("../assets/icons/switch.png"),
+                MenuAction::Exit,
+            ),
         ];
 
         for (bytes, id) in icon_data {
             let base_icon = match image::load_from_memory(bytes) {
                 Ok(img) => img.to_rgba8(),
                 Err(e) => {
-                    eprintln!("Failed to load embedded icon {}: {}", id, e);
+                    eprintln!("Failed to load embedded icon {:?}: {}", id, e);
                     RgbaImage::from_fn(64, 64, |_, _| image::Rgba([255, 0, 255, 255]))
                 }
             };
 
-            base_buttons.push(MenuButton {
-                id: id.to_string(),
-                base_icon,
-            });
+            base_buttons.push(MenuButton { id, base_icon });
         }
 
         let mut menu = Self {
@@ -85,20 +106,20 @@ impl QuickMenu {
         self.scaled_buttons.clear();
 
         let mut y = padding;
-        let x = padding; // Centered? width = size + 2*padding. So x=padding centers it.
+        let x = padding;
 
         for btn in &self.base_buttons {
-            // Resize icon
+            // Resize icon - Using Triangle filter for better performance on small icons
             let icon = image::DynamicImage::ImageRgba8(btn.base_icon.clone())
                 .resize(
                     btn_size as u32,
                     btn_size as u32,
-                    image::imageops::FilterType::Lanczos3,
+                    image::imageops::FilterType::Triangle,
                 )
                 .to_rgba8();
 
             self.scaled_buttons.push(ScaledButton {
-                id: btn.id.clone(),
+                id: btn.id,
                 rect: (x, y, x + btn_size, y + btn_size),
                 icon,
             });
@@ -134,16 +155,12 @@ impl QuickMenu {
 
                 let idx = (screen_y * win_w + screen_x) as usize * 4;
                 if idx + 3 < buffer.len() {
-                    // Simple composite? Or fill?
-                    // Let's fill for now, assuming it's drawn on top
                     if buffer[idx + 3] == 0 {
-                        // If transparent, just set
                         buffer[idx] = bg_b;
                         buffer[idx + 1] = bg_g;
                         buffer[idx + 2] = bg_r;
                         buffer[idx + 3] = bg_a;
                     } else {
-                        // Blend
                         let src_a = bg_a as u32;
                         let inv_a = 255 - src_a;
                         let dst_b = buffer[idx] as u32;
@@ -195,7 +212,7 @@ impl QuickMenu {
         }
     }
 
-    pub fn check_hit(&self, mx: f64, my: f64, menu_x: i32, menu_y: i32) -> Option<String> {
+    pub fn check_hit(&self, mx: f64, my: f64, menu_x: i32, menu_y: i32) -> Option<MenuAction> {
         if !self.visible {
             return None;
         }
@@ -213,7 +230,7 @@ impl QuickMenu {
                 && rel_y >= btn.rect.1
                 && rel_y < btn.rect.3
             {
-                return Some(btn.id.clone());
+                return Some(btn.id);
             }
         }
         None
