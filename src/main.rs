@@ -8,14 +8,16 @@ mod music_player;
 mod pet;
 mod pomodoro;
 mod render;
-mod settings_window;
+mod settings;
 mod types;
 mod ai;
 mod interaction;
+mod theme;
+mod ui_primitives;
 
 
 use chat_window::{ChatWindow, ChatAction};
-use settings_window::SettingsWindow;
+use settings::SettingsWindow;
 
 use pet::Pet;
 use std::collections::HashMap;
@@ -181,7 +183,8 @@ fn main() {
     let refresh_rate_millihertz = monitor
         .and_then(|m| m.refresh_rate_millihertz())
         .unwrap_or(60000);
-    let _fps = refresh_rate_millihertz as f64 / 1000.0;
+    let refresh_rate = refresh_rate_millihertz as f64 / 1000.0;
+    let target_frame_duration = Duration::from_nanos((1_000_000_000.0 / refresh_rate.max(30.0)) as u64);
 
     if let Some(monitor) = window.current_monitor() {
         let size = monitor.size();
@@ -253,6 +256,7 @@ fn main() {
 
     // Click detection
     let mut last_frame_idx = 0;
+    let mut last_loading_frame_idx = 0;
     let mut last_render_pet_off = (0.0, 0.0);
     let mut last_state = PetState::Idle;
     let mut last_facing_right = true;
@@ -473,19 +477,19 @@ fn main() {
                                             let is_right_click = btn == MouseButton::Right;
                                             let action = sw.handle_click(pos.x, pos.y, is_right_click, &ai_config);
                                             match action {
-                                                settings_window::SettingsAction::SetScale(s) => {
+                                                settings::SettingsAction::SetScale(s) => {
                                                     pet.scale = s;
                                                     sw.request_redraw();
                                                     window.request_redraw();
                                                 }
-                                                settings_window::SettingsAction::SetMode(m) => {
+                                                settings::SettingsAction::SetMode(m) => {
                                                     if pet.behavior_mode == BehaviorMode::Clingy && m != BehaviorMode::Clingy {
                                                         pet.state = PetState::Idle;
                                                     }
                                                     pet.behavior_mode = m;
                                                     sw.request_redraw();
                                                 }
-                                                settings_window::SettingsAction::SelectMusicPath => {
+                                                settings::SettingsAction::SelectMusicPath => {
                                                     let tx = path_tx.clone();
                                                     sw.window().set_window_level(winit::window::WindowLevel::Normal);
                                                     std::thread::spawn(move || {
@@ -493,7 +497,7 @@ fn main() {
                                                         let _ = tx.send(picked);
                                                     });
                                                 }
-                                                settings_window::SettingsAction::SetLayer(layer) => {
+                                                settings::SettingsAction::SetLayer(layer) => {
                                                     current_layer = layer;
                                                     let level = match layer {
                                                         types::WindowLayer::Top => WindowLevel::AlwaysOnTop,
@@ -509,51 +513,51 @@ fn main() {
                                                     }
                                                     sw.request_redraw();
                                                 }
-                                                settings_window::SettingsAction::SetAiApiKey(key) => {
+                                                settings::SettingsAction::SetAiApiKey(key) => {
                                                     ai_config.api_key = key;
                                                     ai_config.save();
                                                     chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
                                                     sw.request_redraw();
                                                 }
-                                                settings_window::SettingsAction::SetAiBaseUrl(url) => {
+                                                settings::SettingsAction::SetAiBaseUrl(url) => {
                                                     ai_config.base_url = url;
                                                     ai_config.save();
                                                     chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
                                                     sw.request_redraw();
                                                 }
-                                                settings_window::SettingsAction::SetAiModel(model) => {
+                                                settings::SettingsAction::SetAiModel(model) => {
                                                     ai_config.model = model;
                                                     ai_config.save();
                                                     chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
                                                     sw.request_redraw();
                                                 }
-                                                settings_window::SettingsAction::SetAiReactLimit(limit) => {
+                                                settings::SettingsAction::SetAiReactLimit(limit) => {
                                                     ai_config.react_limit = limit;
                                                     ai_config.save();
                                                     sw.request_redraw();
                                                 }
-                                                settings_window::SettingsAction::SetAiL1Threshold(t) => {
+                                                settings::SettingsAction::SetAiL1Threshold(t) => {
                                                     ai_config.l1_summary_threshold = t;
                                                     ai_config.save();
                                                     sw.request_redraw();
                                                 }
-                                                settings_window::SettingsAction::SetAiL2Threshold(val) => {
+                                                settings::SettingsAction::SetAiL2Threshold(val) => {
                                                     ai_config.l2_merge_threshold = val;
                                                     ai_config.save();
                                                     sw.request_redraw();
                                                 }
-                                                settings_window::SettingsAction::SetAiInteractionFrequency(val) => {
+                                                settings::SettingsAction::SetAiInteractionFrequency(val) => {
                                                     ai_config.interaction_frequency = val;
                                                     interaction_manager.update_config(ai_config.clone());
                                                     ai_config.save();
                                                     sw.request_redraw();
                                                 }
-                                                settings_window::SettingsAction::SetAiTavilyKey(key) => {
+                                                settings::SettingsAction::SetAiTavilyKey(key) => {
                                                     ai_config.tavily_api_key = key;
                                                     ai_config.save();
                                                     sw.request_redraw();
                                                 }
-                                                settings_window::SettingsAction::SetMonitor(name) => {
+                                                settings::SettingsAction::SetMonitor(name) => {
                                                     let available = window.available_monitors();
                                                     if let Some(monitor) = available.into_iter().find(|m| m.name().as_ref() == Some(&name)) {
                                                         let pos = monitor.position();
@@ -571,19 +575,19 @@ fn main() {
                                                         pet.position.1 = (size.height as f64 - pet.window_size.1) / 2.0;
                                                     }
                                                 }
-                                                settings_window::SettingsAction::SetAiSystemPrompt(prompt) => {
+                                                settings::SettingsAction::SetAiSystemPrompt(prompt) => {
                                                     ai_config.system_prompt = prompt;
                                                     ai_config.save();
                                                     chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
                                                     sw.request_redraw();
                                                 }
-                                                settings_window::SettingsAction::RequestHistory => {
+                                                settings::SettingsAction::RequestHistory => {
                                                     if let Ok(history) = chat_kernel.get_recent_history(50) {
                                                         sw.history = history;
                                                         sw.request_redraw();
                                                     }
                                                 }
-                                                settings_window::SettingsAction::None => {}
+                                                settings::SettingsAction::None => {}
                                             }
                                         }
                                     } else {
@@ -823,14 +827,20 @@ fn main() {
                     
                     let layout_changed = (pet_off_x - last_render_pet_off.0).abs() > 0.1 || (pet_off_y - last_render_pet_off.1).abs() > 0.1 || pos_changed;
                     
-                    if is_thinking || pet_frame_changed || layout_changed || is_hovered || 
-                       menu_manager.opacity > 0.0 || bubble_manager.is_visible() || pomodoro_manager.visible ||
+                    let loading_frame_idx = if is_thinking && !loading_frames.is_empty() {
+                        (Instant::now().duration_since(thinking_start.unwrap_or(Instant::now())).as_millis() / 100) as usize % loading_frames.len()
+                    } else { 0 };
+                    let loading_frame_changed = is_thinking && loading_frame_idx != last_loading_frame_idx;
+
+                    if needs_pet_redraw || pet_frame_changed || layout_changed || loading_frame_changed || 
                        Instant::now() >= pet.next_frame_at() {
                         needs_pet_redraw = true;
                     }
+
                     
                     if needs_pet_redraw {
                         last_frame_idx = pet.current_frame_idx;
+                        last_loading_frame_idx = loading_frame_idx;
                         last_render_pet_off = (pet_off_x, pet_off_y);
                         last_state = pet.state;
                         last_facing_right = pet.facing_right;
@@ -875,25 +885,30 @@ fn main() {
                         } else {
                             let fw = frame.width as usize;
                             let fh = frame.height as usize;
+                            let inv_scale = 1.0 / draw_scale;
+                            
                             for y in 0..(cur_ph as u32) {
-                                let src_y = (y as f32 / draw_scale) as usize;
+                                let src_y = (y as f32 * inv_scale) as usize;
                                 if src_y >= fh { continue; }
                                 let dy = (y as f64 + pet_off_y) as usize;
                                 if dy >= win_h_usize { continue; }
+                                
                                 let (start_x_src, end_x_src) = frame.opaque_rows[src_y];
                                 if start_x_src >= end_x_src { continue; }
-                                let start_x_dest = (start_x_src as f32 * draw_scale) as u32;
-                                let end_x_dest = ((end_x_src as f32 * draw_scale) as u32).min(cur_pw as u32);
+                                
+                                let start_x_dest = (start_x_src as f32 * draw_scale) as usize;
+                                let end_x_dest = ((end_x_src as f32 * draw_scale) as usize).min(cur_pw as usize);
+                                
                                 let src_row_idx = src_y * fw * 4;
+                                let dest_row_idx = dy * win_w_usize * 4;
+                                
                                 for x in start_x_dest..end_x_dest {
-                                    let src_x = (x as f32 / draw_scale) as usize;
+                                    let src_x = (x as f32 * inv_scale) as usize;
                                     if src_x >= fw { continue; }
-                                    let dx = (x as f64 + pet_off_x) as usize;
-                                    if dx >= win_w_usize { continue; }
                                     let s_idx = src_row_idx + src_x * 4;
                                     let a = frame.data[s_idx + 3];
                                     if a > 0 {
-                                        let d_idx = (dy * win_w_usize + dx) * 4;
+                                        let d_idx = dest_row_idx + (dest_x_start + x) * 4;
                                         composite_data[d_idx..d_idx+4].copy_from_slice(&frame.data[s_idx..s_idx+4]);
                                     }
                                 }
@@ -902,54 +917,67 @@ fn main() {
 
                         // 1.5 Loading
                         if is_thinking && !loading_frames.is_empty() {
-                             let f_idx = (Instant::now().duration_since(thinking_start.unwrap_or(Instant::now())).as_millis() / 100) as usize % loading_frames.len();
+                             let f_idx = loading_frame_idx;
                              let f = &loading_frames[f_idx];
                              let ly = loading_y_f as i32;
                              let lw = loading_w_f as i32;
                              let lh = loading_h_f as i32;
-                             if ly >= 0 && lw > 0 && lh > 0 {
-                                 let sx = f.width as f32 / lw as f32;
-                                 let sy = f.height as f32 / lh as f32;
-                                 for y in 0..lh as usize {
-                                     for x in 0..lw as usize {
-                                         let src_x = (x as f32 * sx) as u32;
-                                         let src_y = (y as f32 * sy) as u32;
-                                         if src_x < f.width as u32 && src_y < f.height as u32 {
-                                             let s_idx = (src_y as usize * f.width as usize + src_x as usize) * 4;
-                                             let dx_i32 = loading_x_f as i32 + x as i32;
-                                             let dy_i32 = ly + y as i32;
-                                             if dx_i32 >= 0 && dx_i32 < win_w as i32 && dy_i32 >= 0 && dy_i32 < win_h as i32 {
-                                                 let d_idx = (dy_i32 as usize * win_w_usize + dx_i32 as usize) * 4;
-                                                 let alpha = f.data[s_idx + 3];
-                                                 if alpha > 0 {
-                                                     composite_data[d_idx..d_idx+3].copy_from_slice(&f.data[s_idx..s_idx+3]);
-                                                     composite_data[d_idx + 3] = (composite_data[d_idx + 3] as u16 + alpha as u16).min(255) as u8;
-                                                 }
-                                             }
-                                         }
-                                     }
-                                 }
-                             }
+                              if ly >= 0 && lw > 0 && lh > 0 {
+                                  let sx = f.width as f32 / lw as f32;
+                                  let sy = f.height as f32 / lh as f32;
+                                  for y in 0..lh as usize {
+                                      let src_y = (y as f32 * sy) as usize;
+                                      if src_y >= f.height as usize { continue; }
+                                      let dy_i32 = ly + y as i32;
+                                      if dy_i32 < 0 || dy_i32 >= win_h as i32 { continue; }
+                                      
+                                      let src_row_off = src_y * f.width as usize * 4;
+                                      let dest_row_off = dy_i32 as usize * win_w_usize * 4;
+                                      
+                                      for x in 0..lw as usize {
+                                          let src_x = (x as f32 * sx) as usize;
+                                          if src_x < f.width as usize {
+                                              let s_idx = src_row_off + src_x * 4;
+                                              let dx_i32 = loading_x_f as i32 + x as i32;
+                                              if dx_i32 >= 0 && dx_i32 < win_w as i32 {
+                                                  let d_idx = dest_row_off + dx_i32 as usize * 4;
+                                                  let alpha = f.data[s_idx + 3];
+                                                  if alpha > 0 {
+                                                      composite_data[d_idx..d_idx+3].copy_from_slice(&f.data[s_idx..s_idx+3]);
+                                                      composite_data[d_idx + 3] = composite_data[d_idx + 3].saturating_add(alpha);
+                                                  }
+                                              }
+                                          }
+                                      }
+                                  }
+                              }
                         }
 
                         // 2. Bubble
                         if bubble_manager.is_visible() {
                             bubble_manager.render_to_buffer(std::ptr::null_mut(), pet.scale);
                             let by = bubble_y_f as i32;
-                            bubble_rect = Some((bx_f as i32, by, current_bubble_w_f as i32, current_bubble_h_f as i32));
+                            let bx = bx_f as i32;
+                            bubble_rect = Some((bx, by, current_bubble_w_f as i32, current_bubble_h_f as i32));
                             if by >= 0 {
                                 if let Some(b_pixels) = bubble_manager.pixel_data() {
                                     let bw = current_bubble_w_f as usize;
                                     let bh = current_bubble_h_f as usize;
                                     for y in 0..bh {
-                                        let dy = (by + y as i32) as usize;
+                                        let dy = by as usize + y;
                                         if dy < win_h_usize {
+                                            let src_row_off = y * bw * 4;
+                                            let dest_row_off = dy * win_w_usize * 4;
                                             for x in 0..bw {
-                                                let s = (y * bw + x) * 4;
+                                                let s = src_row_off + x * 4;
                                                 let a = b_pixels[s + 3];
                                                 if a > 0 {
-                                                    let d = (dy * win_w_usize + (bx_f as usize + x)) * 4;
-                                                    composite_data[d..d+4].copy_from_slice(&b_pixels[s..s+4]);
+                                                    let dx = bx as usize + x;
+                                                    if dx < win_w_usize {
+                                                        let d = dest_row_off + dx * 4;
+                                                        // Simple source copy for now, but with better indexing
+                                                        composite_data[d..d+4].copy_from_slice(&b_pixels[s..s+4]);
+                                                    }
                                                 }
                                             }
                                         }
@@ -964,19 +992,25 @@ fn main() {
                             if pomodoro_data.len() != p_size { pomodoro_data.resize(p_size, 0); }
                             pomodoro_manager.render_to_buffer(pomodoro_data.as_mut_ptr(), pet.scale);
                             let py = pomodoro_y_f as i32;
+                            let px = px_f as i32;
                             if py >= 0 {
                                 let pw = current_pomodoro_w_f as usize;
                                 let ph = current_pomodoro_h_f as usize;
                                 for y in 0..ph {
-                                    let dy = (py + y as i32) as usize;
+                                    let dy = py as usize + y;
                                     if dy < win_h_usize {
+                                        let src_row_off = y * pw * 4;
+                                        let dest_row_off = dy * win_w_usize * 4;
                                         for x in 0..pw {
-                                            let s = (y * pw + x) * 4;
+                                            let s = src_row_off + x * 4;
                                             let a = pomodoro_data[s + 3];
                                             if a > 0 {
-                                                let d = (dy * win_w_usize + (px_f as usize + x)) * 4;
-                                                composite_data[d..d+3].copy_from_slice(&pomodoro_data[s..s+3]);
-                                                composite_data[d+3] = (composite_data[d+3] as u16 + a as u16).min(255) as u8;
+                                                let dx = px as usize + x;
+                                                if dx < win_w_usize {
+                                                    let d = dest_row_off + dx * 4;
+                                                    composite_data[d..d+3].copy_from_slice(&pomodoro_data[s..s+3]);
+                                                    composite_data[d+3] = (composite_data[d+3] as u16 + a as u16).min(255) as u8;
+                                                }
                                             }
                                         }
                                     }
@@ -1003,21 +1037,25 @@ fn main() {
                     }
                     
                     // --- OPTIMIZATION: Precise scheduling ---
-                    let mut next_deadline = Instant::now() + Duration::from_secs(1); // Default 1s wait if idle
-                    
-                    if is_thinking {
-                        // Loading GIF is ~10fps (100ms)
-                        next_deadline = next_deadline.min(Instant::now() + Duration::from_millis(100));
-                    }
+                    let mut next_deadline = Instant::now() + Duration::from_secs(1);
                     
                     if pet.state != PetState::Drag {
-                        let pet_deadline = pet.next_frame_at();
-                        next_deadline = next_deadline.min(pet_deadline);
+                        next_deadline = next_deadline.min(pet.next_frame_at());
+                    }
+                    if is_thinking {
+                        next_deadline = next_deadline.min(Instant::now() + Duration::from_millis(100));
                     }
 
-                    // If menu is fading, we need high frequency
-                    if menu_manager.opacity > 0.0 && menu_manager.opacity < 1.0 {
-                        next_deadline = next_deadline.min(Instant::now() + Duration::from_millis(16));
+                    let needs_high_freq = pet.state == PetState::Move || 
+                                         pet.state == PetState::Clingy || 
+                                         pet.state == PetState::Drag ||
+                                         menu_manager.opacity > 0.0 ||
+                                         bubble_manager.is_visible() ||
+                                         pomodoro_manager.visible ||
+                                         is_hovered;
+
+                    if needs_high_freq {
+                        next_deadline = next_deadline.min(Instant::now() + target_frame_duration);
                     }
 
                     if chat_window.is_visible() {
