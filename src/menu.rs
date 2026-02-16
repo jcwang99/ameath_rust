@@ -135,11 +135,11 @@ impl QuickMenu {
 
         let alpha_mult = self.opacity;
 
-        // Draw Background
+        // Draw Background (Glass effect: much more transparent)
         let bg_r = 0xFA;
         let bg_g = 0xF5;
         let bg_b = 0xFF;
-        let bg_a = (220.0 * alpha_mult) as u8;
+        let bg_a = (60.0 * alpha_mult) as u8;
 
         for y in 0..self.menu_height {
             let screen_y = menu_y + y;

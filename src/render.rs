@@ -38,7 +38,7 @@ impl RenderContext {
         }
     }
 
-    pub unsafe fn update(&mut self, data: &[u8], width: i32, height: i32) {
+    pub unsafe fn update(&mut self, data: &[u8], width: i32, height: i32, pos: Option<POINT>) {
         if width <= 0 || height <= 0 {
             return;
         }
@@ -92,10 +92,12 @@ impl RenderContext {
             cy: height,
         };
 
+        let ppt_dst_ptr = pos.as_ref().map(|p| p as *const POINT);
+
         let _ = UpdateLayeredWindow(
             self.hwnd,
             self.hdc_screen,
-            None,
+            ppt_dst_ptr,
             Some(&psize),
             self.hdc_mem,
             Some(&ppt_src),

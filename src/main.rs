@@ -44,7 +44,7 @@ use winit::platform::windows::WindowBuilderExtWindows;
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, POINT};
 
 use image::GenericImageView;
 
@@ -249,10 +249,16 @@ fn main() {
 
     let mut pet_off_x = 20.0;
     let mut pet_off_y = 50.0;
-    let mut last_update = Some(Instant::now());
     let mut last_cursor_pos: Option<PhysicalPosition<f64>> = None;
 
     // Click detection
+    let mut last_frame_idx = 0;
+    let mut last_render_pet_off = (0.0, 0.0);
+    let mut last_state = PetState::Idle;
+    let mut last_facing_right = true;
+    let mut last_window_pos = POINT::default();
+    let mut last_update: Option<Instant> = None;
+    let mut needs_pet_redraw = false;
     let mut click_start_time: Option<Instant> = None;
     let mut click_start_pos: Option<(f64, f64)> = None;
     let mut settings_cursor_pos: Option<PhysicalPosition<f64>> = None;
@@ -323,340 +329,7 @@ fn main() {
                         match event {
                             WindowEvent::CloseRequested => elwt.exit(),
                             WindowEvent::RedrawRequested => {
-                                let draw_scale = pet.scale.max(0.5);
-                                let (cur_pw, cur_ph) = pet.get_scaled_size();
-                                menu_manager.update_layout(draw_scale);
-
-                                // Update Thinking State (Polling)
-                                if is_thinking {
-                                    // Just keep it true until channel receives response
-                                }
-
-                                // Calc Loading GIF dimensions
-                                let mut loading_w = 0;
-                                let mut loading_h = 0;
-                                if is_thinking && !loading_frames.is_empty() {
-                                    // Cap loading size to roughly 32x32 scaled
-                                    let target_size = 32.0 * draw_scale;
-                                    loading_w = target_size as i32;
-                                    loading_h = target_size as i32;
-                                }
-
-                                // Recalculate scaled dimensions for bubble and pomodoro
-                                let current_bubble_w = bubble_manager.current_width;
-                                let mut current_bubble_h = bubble_manager.current_height;
-                                let current_pomodoro_w = (pomodoro::BASE_POMODORO_WIDTH as f32 * pet.scale) as i32;
-                                let mut current_pomodoro_h = (pomodoro::BASE_POMODORO_HEIGHT as f32 * pet.scale) as i32;
-
-                                // Menu visibility logic
-                                let menu_w = if menu_manager.visible || menu_manager.opacity > 0.0 {
-                                    menu_manager.menu_width as u32
-                                } else {
-                                    0
-                                };
-
-                                if !bubble_manager.is_visible() {
-                                    current_bubble_h = 0;
-                                }
-
-                                if !pomodoro_manager.visible {
-                                    current_pomodoro_h = 0;
-                                }
-
-                                // Layout Strategy
-                                let padding_edge = 40.0;
-                                let gap_between = 10.0 * pet.scale as f64;
-
-                                let pet_cx = cur_pw / 2.0;
-                                let b_left = pet_cx - current_bubble_w as f64 / 2.0;
-                                let p_left = pet_cx - current_pomodoro_w as f64 / 2.0;
-
-                                let min_left = 0.0f64.min(b_left).min(p_left);
-                                let pet_x = padding_edge - min_left;
-
-                                let pet_right = pet_x + cur_pw;
-                                let menu_area_right = pet_right + gap_between + menu_w as f64 + (20.0 * pet.scale as f64);
-                                let bubble_right = pet_x + b_left + current_bubble_w as f64 + padding_edge;
-                                let pomodoro_right = pet_x + p_left + current_pomodoro_w as f64 + padding_edge;
-
-                                let win_w = (menu_area_right.max(bubble_right).max(pomodoro_right) + 20.0) as u32;
-
-
-                                let padding_top = 40.0;
-                                let mut extras_h = 0.0;
-                                
-                                if bubble_manager.is_visible() {
-                                    extras_h += current_bubble_h as f64 + gap_between;
-                                }
-                                if pomodoro_manager.visible {
-                                    extras_h += current_pomodoro_h as f64 + gap_between;
-                                }
-                                if is_thinking {
-                                    extras_h += loading_h as f64 + gap_between;
-                                }
-
-                                pet_off_x = pet_x;
-                                pet_off_y = padding_top + extras_h;
-
-                                let base_padding_bottom = 20.0 * pet.scale as f64;
-                                let menu_h = if menu_manager.visible || menu_manager.opacity > 0.0 {
-                                    menu_manager.menu_height as f64
-                                } else {
-                                    0.0
-                                };
-                                let padding_bottom = base_padding_bottom.max(menu_h - cur_ph);
-
-                                let win_h = (pet_off_y + cur_ph + padding_bottom + 40.0) as u32;
-
-                                // --- OPTIMIZATION: Only resize if dimensions change ---
-                                let current_size = window.inner_size();
-                                if current_size.width != win_w || current_size.height != win_h {
-                                    let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(win_w, win_h));
-                                }
-
-                                let loading_y = if is_thinking {
-                                    pet_off_y - gap_between - loading_h as f64
-                                } else {
-                                    pet_off_y 
-                                };
-
-                                let bubble_y = if is_thinking {
-                                    loading_y - gap_between - current_bubble_h as f64
-                                } else if bubble_manager.is_visible() {
-                                    pet_off_y - gap_between - current_bubble_h as f64
-                                } else {
-                                    pet_off_y
-                                };
-
-                                let pomodoro_y = if bubble_manager.is_visible() {
-                                    bubble_y - gap_between - current_pomodoro_h as f64
-                                } else if is_thinking {
-                                    loading_y - gap_between - current_pomodoro_h as f64
-                                } else {
-                                    pet_off_y - gap_between - current_pomodoro_h as f64
-                                };
-
-                                let bx = (pet_off_x + b_left) as i32;
-                                let px = (pet_off_x + p_left) as i32;
-                                let menu_x = (pet_off_x + cur_pw + gap_between) as i32;
-                                let menu_y = pet_off_y as i32;
-                                let loading_x = (pet_off_x + cur_pw/2.0 - loading_w as f64 / 2.0) as i32;
-
-                                let total_size = win_w as usize * win_h as usize * 4usize;
-                                if composite_data.len() != total_size {
-                                    composite_data.resize(total_size, 0);
-                                }
-                                composite_data.fill(0);
-
-                                let win_w_usize = win_w as usize;
-                                let win_h_usize = win_h as usize;
-
-                                // 1. Draw Pet (Optimized with opaque_rows and row-based copy)
-                                let frame = pet.current_frame();
-                                let dest_y_start = pet_off_y as usize;
-                                let dest_x_start = pet_off_x as usize;
-
-                                if (draw_scale - 1.0).abs() < 0.001 {
-                                    // FAST PATH: Direct row copies using opaque_rows
-                                    let fw = frame.width as usize;
-                                    let fh = frame.height as usize;
-                                    for y in 0..fh {
-                                        let dy = dest_y_start + y;
-                                        if dy < win_h_usize {
-                                            let (start_x, end_x) = frame.opaque_rows[y];
-                                            if start_x < end_x {
-                                                let src_row = &frame.data[y * fw * 4..(y + 1) * fw * 4];
-                                                
-                                                if dest_x_start + end_x <= win_w_usize {
-                                                    // For fast path scale 1.0, we can copy the whole opaque segment if it's mostly opaque,
-                                                    // but the frame might still have internal transparency.
-                                                    // Let's at least bound the loop by opaque_rows.
-                                                    for x in start_x..end_x {
-                                                        let s_idx = x * 4;
-                                                        let a = src_row[s_idx + 3];
-                                                        if a > 0 {
-                                                            let d_idx = (dy * win_w_usize + dest_x_start + x) * 4;
-                                                            composite_data[d_idx..d_idx+4].copy_from_slice(&src_row[s_idx..s_idx+4]);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    // Scaled path using opaque_rows to bound inner loop
-                                    let fw = frame.width as usize;
-                                    let fh = frame.height as usize;
-                                    for y in 0..(cur_ph as u32) {
-                                        let src_y = (y as f32 / draw_scale) as usize;
-                                        if src_y >= fh { continue; }
-                                        let dy = (y as f64 + pet_off_y) as usize;
-                                        if dy >= win_h_usize { continue; }
-                                        
-                                        let (start_x_src, end_x_src) = frame.opaque_rows[src_y];
-                                        if start_x_src >= end_x_src { continue; }
-
-                                        let src_row_idx = src_y * fw * 4;
-                                        let dest_row_start = dy * win_w_usize * 4;
-                                        
-                                        // Bound x loop by scaled opaque_rows
-                                        let start_x_dest = (start_x_src as f32 * draw_scale) as u32;
-                                        let end_x_dest = ((end_x_src as f32 * draw_scale) as u32).min(cur_pw as u32);
-
-                                        for x in start_x_dest..end_x_dest {
-                                            let src_x = (x as f32 / draw_scale) as usize;
-                                            if src_x >= fw { continue; }
-                                            let dx = (x as f64 + pet_off_x) as usize;
-                                            if dx >= win_w_usize { continue; }
-                                            let s_idx = src_row_idx + src_x * 4;
-                                            let a = frame.data[s_idx + 3];
-                                            if a > 0 {
-                                                let d_idx = dest_row_start + dx * 4;
-                                                composite_data[d_idx] = frame.data[s_idx];
-                                                composite_data[d_idx + 1] = frame.data[s_idx + 1];
-                                                composite_data[d_idx + 2] = frame.data[s_idx + 2];
-                                                composite_data[d_idx + 3] = a;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // 1.5 Draw Loading
-                                if is_thinking && !loading_frames.is_empty() {
-                                     let frame_idx = (Instant::now().duration_since(thinking_start.unwrap_or(Instant::now())).as_millis() / 100) as usize % loading_frames.len();
-                                     let frame = &loading_frames[frame_idx];
-                                     
-                                     let ly = loading_y as i32;
-                                     if ly >= 0 && loading_w > 0 && loading_h > 0 {
-                                         let scale_x = frame.width as f32 / loading_w as f32;
-                                         let scale_y = frame.height as f32 / loading_h as f32;
-                                         let lw_usize = loading_w as usize;
-                                         let lh_usize = loading_h as usize;
-
-                                         for y in 0..lh_usize {
-                                             for x in 0..lw_usize {
-                                                 let src_x = (x as f32 * scale_x) as u32;
-                                                 let src_y = (y as f32 * scale_y) as u32;
-                                                 
-                                                 if src_x >= frame.width as u32 || src_y >= frame.height as u32 { continue; }
-                                                 
-                                                 let src_idx = (src_y as usize * frame.width as usize + src_x as usize) * 4;
-                                                 let dest_x_i32 = loading_x + x as i32;
-                                                 let dest_y_i32 = ly + y as i32;
-                                                 
-                                                  if dest_x_i32 >= 0 && dest_x_i32 < win_w as i32 && dest_y_i32 >= 0 && dest_y_i32 < win_h as i32 {
-                                                     let dest_x = dest_x_i32 as usize;
-                                                     let dest_y = dest_y_i32 as usize;
-                                                     let dest_idx = (dest_y * win_w_usize + dest_x) * 4;
-                                                     let alpha = frame.data[src_idx + 3];
-                                                     if alpha > 0 {
-                                                         composite_data[dest_idx] = frame.data[src_idx];
-                                                         composite_data[dest_idx + 1] = frame.data[src_idx + 1];
-                                                         composite_data[dest_idx + 2] = frame.data[src_idx + 2];
-                                                         let new_alpha = (composite_data[dest_idx + 3] as u16 + alpha as u16).min(255) as u8;
-                                                         composite_data[dest_idx + 3] = new_alpha;
-                                                     }
-                                                  }
-                                             }
-                                         }
-                                     }
-                                }
-
-                                // 2. Draw Bubble (Optimized with early alpha exit)
-                                if bubble_manager.is_visible() {
-                                    bubble_manager.render_to_buffer(std::ptr::null_mut(), pet.scale);
-
-                                    let by = bubble_y as i32;
-                                    bubble_rect = Some((bx, by, current_bubble_w, current_bubble_h));
-
-                                    if by >= 0 {
-                                        if let Some(b_pixels) = bubble_manager.pixel_data() {
-                                            let bw = current_bubble_w as usize;
-                                            let bh = current_bubble_h as usize;
-                                            for y in 0..bh {
-                                                let dy = (by + y as i32) as usize;
-                                                if dy < win_h_usize {
-                                                    let src_row_start = y * bw * 4;
-                                                    let bx_usize = bx as usize;
-                                                    let dest_row_start = (dy * win_w_usize + bx_usize) * 4;
-                                                    for x in 0..bw {
-                                                        let s = src_row_start + x * 4;
-                                                        let a = b_pixels[s + 3];
-                                                        if a > 0 {
-                                                            let d = dest_row_start + x * 4;
-                                                            if a == 255 {
-                                                                composite_data[d..d+4].copy_from_slice(&b_pixels[s..s+4]);
-                                                            } else {
-                                                                // Blend for non-premultiplied or partial bubble edges
-                                                                // But bubble_manager likely uses Direct2D which is premultiplied.
-                                                                // If it's premultiplied, standard additive-like blend or copy.
-                                                                composite_data[d..d+4].copy_from_slice(&b_pixels[s..s+4]);
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // 2.5 Draw Pomodoro (Optimized with persistent buffer and row copies)
-                                if pomodoro_manager.visible {
-                                    let p_size = (current_pomodoro_w * current_pomodoro_h * 4) as usize;
-                                    if pomodoro_data.len() != p_size {
-                                        pomodoro_data.resize(p_size, 0);
-                                    }
-                                    pomodoro_manager.render_to_buffer(pomodoro_data.as_mut_ptr(), pet.scale);
-
-                                    let py = pomodoro_y as i32;
-                                    if py >= 0 {
-                                        let pw = current_pomodoro_w as usize;
-                                        let ph = current_pomodoro_h as usize;
-                                        let px_usize = px as usize;
-                                        for y in 0..ph {
-                                            let dy = (py + y as i32) as usize;
-                                            if dy < win_h_usize {
-                                                let src_idx = y * pw * 4;
-                                                let dest_idx = (dy * win_w_usize + px_usize) * 4;
-                                                for x in 0..pw {
-                                                    let s = src_idx + x * 4;
-                                                    let a = pomodoro_data[s + 3];
-                                                    if a > 0 {
-                                                        let d = dest_idx + x * 4;
-                                                        // Simple additive alpha for pomodoro if needed, or just copy
-                                                        composite_data[d] = pomodoro_data[s];
-                                                        composite_data[d+1] = pomodoro_data[s+1];
-                                                        composite_data[d+2] = pomodoro_data[s+2];
-                                                        let new_a = (composite_data[d+3] as u16 + a as u16).min(255) as u8;
-                                                        composite_data[d+3] = new_a;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // 3. Draw Menu
-                                if menu_manager.visible || menu_manager.opacity > 0.0 {
-                                    menu_manager.render(
-                                        composite_data.as_mut_slice(),
-                                        win_w as i32,
-                                        win_h as i32,
-                                        menu_x,
-                                        menu_y,
-                                    );
-                                }
-
-                                #[cfg(target_os = "windows")]
-                                {
-                                    if let RawWindowHandle::Win32(_) = window.raw_window_handle() {
-                                        unsafe {
-                                            if let Some(ctx) = &mut render_ctx {
-                                                ctx.update(&composite_data, win_w as i32, win_h as i32);
-                                            }
-                                        }
-                                    }
-                                }
+                                needs_pet_redraw = true;
                             }
                             WindowEvent::MouseInput { state, button, .. } => {
                                 if button == MouseButton::Left {
@@ -954,7 +627,6 @@ fn main() {
                     }
                 }
                 Event::AboutToWait => {
-                    let mut needs_pet_redraw = false;
                     if let Ok(response) = ai_rx.try_recv() {
                         is_thinking = false;
                         thinking_start = None;
@@ -1047,7 +719,9 @@ fn main() {
 
                     if let Some(elapsed) = last_update.map(|t| t.elapsed().as_secs_f64()) {
                         let dt = elapsed.min(0.05);
-                        pet.update_state(dt, is_hovered);
+                        // Only pause logic if hovered and NOT in Clingy mode
+                        let is_paused = is_hovered && pet.state != PetState::Clingy && pet.behavior_mode != BehaviorMode::Clingy;
+                        pet.update_state(dt, is_paused);
                         if let Some(msg) = pomodoro_manager.update() {
                             bubble_manager.show(&msg, Duration::from_secs(4), pet.scale);
                         }
@@ -1067,20 +741,265 @@ fn main() {
                                 thinking_start = Some(Instant::now());
                             }
                         }
-                        window.set_outer_position(PhysicalPosition::new(
-                            monitor_offset.0 + (pet.position.0 - pet_off_x) as i32,
-                            monitor_offset.1 + (pet.position.1 - pet_off_y) as i32,
-                        ));
-                        
-                        // Redraw if anything is active or animation frame changed
-                        if is_thinking || pet.state != PetState::Idle || is_hovered || menu_manager.opacity > 0.0 || bubble_manager.is_visible() || Instant::now() >= pet.next_frame_at() {
-                            needs_pet_redraw = true;
-                        }
                     }
                     last_update = Some(Instant::now());
+
+                    // --- GLOBAL LAYOUT CALCULATION (Runs every frame to ensure perfect sync) ---
+                    let draw_scale = pet.scale.max(0.5);
+                    let (cur_pw, cur_ph) = pet.get_scaled_size();
+                    
+                    let mut loading_w_f = 0.0;
+                    let mut loading_h_f = 0.0;
+                    if is_thinking && !loading_frames.is_empty() {
+                        loading_w_f = 32.0 * draw_scale as f64;
+                        loading_h_f = 32.0 * draw_scale as f64;
+                    }
+
+                    let current_bubble_w_f = if bubble_manager.is_visible() { bubble_manager.current_width as f64 } else { 0.0 };
+                    let current_bubble_h_f = if bubble_manager.is_visible() { bubble_manager.current_height as f64 } else { 0.0 };
+                    let current_pomodoro_w_f = if pomodoro_manager.visible { (pomodoro::BASE_POMODORO_WIDTH as f32 * pet.scale) as f64 } else { 0.0 };
+                    let current_pomodoro_h_f = if pomodoro_manager.visible { (pomodoro::BASE_POMODORO_HEIGHT as f32 * pet.scale) as f64 } else { 0.0 };
+
+                    let menu_w_f = if menu_manager.visible || menu_manager.opacity > 0.0 { menu_manager.menu_width as f64 } else { 0.0 };
+                    let menu_h_f_val = if menu_manager.visible || menu_manager.opacity > 0.0 { menu_manager.menu_height as f64 } else { 0.0 };
+
+                    let gap_between = 10.0 * pet.scale as f64;
+                    let pet_cx = cur_pw / 2.0;
+                    let b_left = pet_cx - current_bubble_w_f / 2.0;
+                    let p_left = pet_cx - current_pomodoro_w_f / 2.0;
+                    let min_left = 0.0f64.min(b_left).min(p_left);
+                    
+                    let padding_edge_v = 40.0;
+                    pet_off_x = padding_edge_v - min_left;
+
+                    let padding_top_v = 40.0;
+                    let mut extras_h = 0.0;
+                    if bubble_manager.is_visible() { extras_h += current_bubble_h_f + gap_between; }
+                    if pomodoro_manager.visible { extras_h += current_pomodoro_h_f + gap_between; }
+                    if is_thinking { extras_h += loading_h_f + gap_between; }
+
+                    pet_off_y = padding_top_v + extras_h;
+
+                    let loading_y_f = if is_thinking { pet_off_y - gap_between - loading_h_f } else { pet_off_y };
+                    let bubble_y_f = if is_thinking { loading_y_f - gap_between - current_bubble_h_f } 
+                                   else if bubble_manager.is_visible() { pet_off_y - gap_between - current_bubble_h_f } 
+                                   else { pet_off_y };
+                    let pomodoro_y_f = if bubble_manager.is_visible() { bubble_y_f - gap_between - current_pomodoro_h_f }
+                                     else if is_thinking { loading_y_f - gap_between - current_pomodoro_h_f }
+                                     else { pet_off_y - gap_between - current_pomodoro_h_f };
+
+                    let loading_x_f = pet_off_x + cur_pw/2.0 - loading_w_f / 2.0;
+                    let bx_f = pet_off_x + b_left;
+                    let px_f = pet_off_x + p_left;
+                    let menu_x_f = pet_off_x + cur_pw + gap_between;
+                    let menu_y_f = pet_off_y;
+
+                    let pet_right = pet_off_x + cur_pw;
+                    let menu_area_right_f = pet_right + gap_between + menu_w_f + (20.0 * pet.scale as f64);
+                    let bubble_right_f = pet_off_x + b_left + current_bubble_w_f + padding_edge_v;
+                    let pomodoro_right_f = pet_off_x + p_left + current_pomodoro_w_f + padding_edge_v;
+                    let win_w_f = (menu_area_right_f.max(bubble_right_f).max(pomodoro_right_f) + 20.0) as u32;
+
+                    let base_padding_bottom_v = 20.0 * pet.scale as f64;
+                    let padding_bottom_v = base_padding_bottom_v.max(menu_h_f_val - cur_ph);
+                    let win_h_f = (pet_off_y + cur_ph + padding_bottom_v + 40.0) as u32;
+                    // --- END GLOBAL LAYOUT ---
+
+                    let target_x = monitor_offset.0 + (pet.position.0 - pet_off_x) as i32;
+                    let target_y = monitor_offset.1 + (pet.position.1 - pet_off_y) as i32;
+                    let target_pos = POINT { x: target_x, y: target_y };
+
+                    let mut pos_changed = false;
+                    #[cfg(target_os = "windows")]
+                    {
+                        if (target_x != last_window_pos.x) || (target_y != last_window_pos.y) {
+                            pos_changed = true;
+                        }
+                    }
+                    
+                    let pet_frame_changed = pet.current_frame_idx != last_frame_idx 
+                        || pet.state != last_state 
+                        || pet.facing_right != last_facing_right;
+                    
+                    let layout_changed = (pet_off_x - last_render_pet_off.0).abs() > 0.1 || (pet_off_y - last_render_pet_off.1).abs() > 0.1 || pos_changed;
+                    
+                    if is_thinking || pet_frame_changed || layout_changed || is_hovered || 
+                       menu_manager.opacity > 0.0 || bubble_manager.is_visible() || pomodoro_manager.visible ||
+                       Instant::now() >= pet.next_frame_at() {
+                        needs_pet_redraw = true;
+                    }
                     
                     if needs_pet_redraw {
-                        window.request_redraw();
+                        last_frame_idx = pet.current_frame_idx;
+                        last_render_pet_off = (pet_off_x, pet_off_y);
+                        last_state = pet.state;
+                        last_facing_right = pet.facing_right;
+                        last_window_pos = target_pos;
+                        
+                        // --- SYNCHRONOUS RENDER START ---
+                        menu_manager.update_layout(draw_scale);
+
+                        let win_w = win_w_f;
+                        let win_h = win_h_f;
+
+                        let total_size = win_w as usize * win_h as usize * 4usize;
+                        if composite_data.len() != total_size { composite_data.resize(total_size, 0); }
+                        composite_data.fill(0);
+
+                        let win_w_usize = win_w as usize;
+                        let win_h_usize = win_h as usize;
+
+                        // 1. Draw Pet
+                        let frame = pet.current_frame();
+                        let dest_y_start = pet_off_y as usize;
+                        let dest_x_start = pet_off_x as usize;
+                        if (draw_scale - 1.0).abs() < 0.001 {
+                            let fw = frame.width as usize;
+                            let fh = frame.height as usize;
+                            for y in 0..fh {
+                                let dy = dest_y_start + y;
+                                if dy < win_h_usize {
+                                    let (start_x, end_x) = frame.opaque_rows[y];
+                                    if start_x < end_x {
+                                        let src_row = &frame.data[y * fw * 4..(y + 1) * fw * 4];
+                                        for x in start_x..end_x {
+                                            let s_idx = x * 4;
+                                            if src_row[s_idx + 3] > 0 {
+                                                let d_idx = (dy * win_w_usize + dest_x_start + x) * 4;
+                                                composite_data[d_idx..d_idx+4].copy_from_slice(&src_row[s_idx..s_idx+4]);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            let fw = frame.width as usize;
+                            let fh = frame.height as usize;
+                            for y in 0..(cur_ph as u32) {
+                                let src_y = (y as f32 / draw_scale) as usize;
+                                if src_y >= fh { continue; }
+                                let dy = (y as f64 + pet_off_y) as usize;
+                                if dy >= win_h_usize { continue; }
+                                let (start_x_src, end_x_src) = frame.opaque_rows[src_y];
+                                if start_x_src >= end_x_src { continue; }
+                                let start_x_dest = (start_x_src as f32 * draw_scale) as u32;
+                                let end_x_dest = ((end_x_src as f32 * draw_scale) as u32).min(cur_pw as u32);
+                                let src_row_idx = src_y * fw * 4;
+                                for x in start_x_dest..end_x_dest {
+                                    let src_x = (x as f32 / draw_scale) as usize;
+                                    if src_x >= fw { continue; }
+                                    let dx = (x as f64 + pet_off_x) as usize;
+                                    if dx >= win_w_usize { continue; }
+                                    let s_idx = src_row_idx + src_x * 4;
+                                    let a = frame.data[s_idx + 3];
+                                    if a > 0 {
+                                        let d_idx = (dy * win_w_usize + dx) * 4;
+                                        composite_data[d_idx..d_idx+4].copy_from_slice(&frame.data[s_idx..s_idx+4]);
+                                    }
+                                }
+                            }
+                        }
+
+                        // 1.5 Loading
+                        if is_thinking && !loading_frames.is_empty() {
+                             let f_idx = (Instant::now().duration_since(thinking_start.unwrap_or(Instant::now())).as_millis() / 100) as usize % loading_frames.len();
+                             let f = &loading_frames[f_idx];
+                             let ly = loading_y_f as i32;
+                             let lw = loading_w_f as i32;
+                             let lh = loading_h_f as i32;
+                             if ly >= 0 && lw > 0 && lh > 0 {
+                                 let sx = f.width as f32 / lw as f32;
+                                 let sy = f.height as f32 / lh as f32;
+                                 for y in 0..lh as usize {
+                                     for x in 0..lw as usize {
+                                         let src_x = (x as f32 * sx) as u32;
+                                         let src_y = (y as f32 * sy) as u32;
+                                         if src_x < f.width as u32 && src_y < f.height as u32 {
+                                             let s_idx = (src_y as usize * f.width as usize + src_x as usize) * 4;
+                                             let dx_i32 = loading_x_f as i32 + x as i32;
+                                             let dy_i32 = ly + y as i32;
+                                             if dx_i32 >= 0 && dx_i32 < win_w as i32 && dy_i32 >= 0 && dy_i32 < win_h as i32 {
+                                                 let d_idx = (dy_i32 as usize * win_w_usize + dx_i32 as usize) * 4;
+                                                 let alpha = f.data[s_idx + 3];
+                                                 if alpha > 0 {
+                                                     composite_data[d_idx..d_idx+3].copy_from_slice(&f.data[s_idx..s_idx+3]);
+                                                     composite_data[d_idx + 3] = (composite_data[d_idx + 3] as u16 + alpha as u16).min(255) as u8;
+                                                 }
+                                             }
+                                         }
+                                     }
+                                 }
+                             }
+                        }
+
+                        // 2. Bubble
+                        if bubble_manager.is_visible() {
+                            bubble_manager.render_to_buffer(std::ptr::null_mut(), pet.scale);
+                            let by = bubble_y_f as i32;
+                            bubble_rect = Some((bx_f as i32, by, current_bubble_w_f as i32, current_bubble_h_f as i32));
+                            if by >= 0 {
+                                if let Some(b_pixels) = bubble_manager.pixel_data() {
+                                    let bw = current_bubble_w_f as usize;
+                                    let bh = current_bubble_h_f as usize;
+                                    for y in 0..bh {
+                                        let dy = (by + y as i32) as usize;
+                                        if dy < win_h_usize {
+                                            for x in 0..bw {
+                                                let s = (y * bw + x) * 4;
+                                                let a = b_pixels[s + 3];
+                                                if a > 0 {
+                                                    let d = (dy * win_w_usize + (bx_f as usize + x)) * 4;
+                                                    composite_data[d..d+4].copy_from_slice(&b_pixels[s..s+4]);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 2.5 Pomodoro
+                        if pomodoro_manager.visible {
+                            let p_size = (current_pomodoro_w_f * current_pomodoro_h_f * 4.0) as usize;
+                            if pomodoro_data.len() != p_size { pomodoro_data.resize(p_size, 0); }
+                            pomodoro_manager.render_to_buffer(pomodoro_data.as_mut_ptr(), pet.scale);
+                            let py = pomodoro_y_f as i32;
+                            if py >= 0 {
+                                let pw = current_pomodoro_w_f as usize;
+                                let ph = current_pomodoro_h_f as usize;
+                                for y in 0..ph {
+                                    let dy = (py + y as i32) as usize;
+                                    if dy < win_h_usize {
+                                        for x in 0..pw {
+                                            let s = (y * pw + x) * 4;
+                                            let a = pomodoro_data[s + 3];
+                                            if a > 0 {
+                                                let d = (dy * win_w_usize + (px_f as usize + x)) * 4;
+                                                composite_data[d..d+3].copy_from_slice(&pomodoro_data[s..s+3]);
+                                                composite_data[d+3] = (composite_data[d+3] as u16 + a as u16).min(255) as u8;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 3. Menu
+                        if menu_manager.visible || menu_manager.opacity > 0.0 {
+                            menu_manager.render(composite_data.as_mut_slice(), win_w as i32, win_h as i32, menu_x_f as i32, menu_y_f as i32);
+                        }
+
+                        #[cfg(target_os = "windows")]
+                        {
+                            if let RawWindowHandle::Win32(_) = window.raw_window_handle() {
+                                unsafe { if let Some(ctx) = &mut render_ctx { ctx.update(&composite_data, win_w as i32, win_h as i32, Some(target_pos)); } }
+                            }
+                        }
+                        // --- SYNCHRONOUS RENDER END ---
+                    } else if pos_changed {
+                        // Only move if we didn't redraw (atomic move is handled in ctx.update above)
+                        window.set_outer_position(PhysicalPosition::new(target_pos.x, target_pos.y));
+                        last_window_pos = target_pos;
                     }
                     
                     // --- OPTIMIZATION: Precise scheduling ---
@@ -1119,6 +1038,7 @@ fn main() {
                     }
 
                     elwt.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(next_deadline));
+                    needs_pet_redraw = false;
                 }
                 _ => {}
             }

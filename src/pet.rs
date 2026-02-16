@@ -89,12 +89,15 @@ impl Pet {
     }
 
     pub fn update_state(&mut self, dt: f64, is_paused: bool) {
+        // ALWAYS advance animation, even if logic/movement is paused
+        self.advance_animation();
+
         if self.state == PetState::Drag {
             return;
         }
 
         if is_paused {
-            // Animation continues, but position/velocity logic is skipped
+            // Logic/movement is skipped, but animation already advanced above
             return;
         }
 
@@ -107,6 +110,8 @@ impl Pet {
                         self.state = PetState::Move;
                     }
                     self.current_anim_variant = 0;
+                    self.current_frame_idx = 0;
+                    self.last_frame_time = Instant::now();
                     self.timer = Instant::now();
 
                     self.state_duration = match self.behavior_mode {
@@ -139,6 +144,8 @@ impl Pet {
                 PetState::Move => {
                     self.state = PetState::Idle;
                     self.timer = Instant::now();
+                    self.current_frame_idx = 0;
+                    self.last_frame_time = Instant::now();
 
                     self.state_duration = match self.behavior_mode {
                         BehaviorMode::Quiet => {
@@ -187,9 +194,17 @@ impl Pet {
             self.position.1 += self.velocity.1 * dt;
 
             if self.velocity.0 > 0.1 {
-                self.facing_right = true;
+                if !self.facing_right {
+                    self.facing_right = true;
+                    self.current_frame_idx = 0;
+                    self.last_frame_time = Instant::now();
+                }
             } else if self.velocity.0 < -0.1 {
-                self.facing_right = false;
+                if self.facing_right {
+                    self.facing_right = false;
+                    self.current_frame_idx = 0;
+                    self.last_frame_time = Instant::now();
+                }
             }
 
             if let Some((tx, ty)) = self.target_position {
@@ -225,6 +240,39 @@ impl Pet {
         }
     }
 
+    pub fn advance_animation(&mut self) {
+        let (right_variants, left_variants) = &self.animations[&self.state];
+        let variants = if self.facing_right {
+            right_variants
+        } else {
+            left_variants
+        };
+        if variants.is_empty() {
+            return;
+        }
+
+        let variant_idx = self.current_anim_variant.min(variants.len() - 1);
+        let frames = &variants[variant_idx];
+        if frames.is_empty() {
+            return;
+        }
+
+        let now = Instant::now();
+        let mut frame = &frames[self.current_frame_idx % frames.len()];
+
+        // Catch up with frames (handles skips if dt was large or redraws slow)
+        while now.duration_since(self.last_frame_time) >= frame.delay {
+            self.last_frame_time += frame.delay;
+            self.current_frame_idx = (self.current_frame_idx + 1) % frames.len();
+            frame = &frames[self.current_frame_idx % frames.len()];
+
+            // Safety break to prevent infinite loop if delay is 0
+            if frame.delay.as_millis() == 0 {
+                break;
+            }
+        }
+    }
+
     pub fn follow_mouse(&mut self, mouse_pos: (f64, f64)) {
         self.state = PetState::Clingy;
         self.target_position = Some(mouse_pos);
@@ -256,15 +304,6 @@ impl Pet {
             0
         };
         let frames = &variants[variant_idx];
-
-        let now = Instant::now();
-        let frame = &frames[self.current_frame_idx % frames.len()];
-
-        if now.duration_since(self.last_frame_time) >= frame.delay {
-            self.current_frame_idx = (self.current_frame_idx + 1) % frames.len();
-            self.last_frame_time = now;
-        }
-
         &frames[self.current_frame_idx % frames.len()]
     }
 
