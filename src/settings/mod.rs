@@ -984,14 +984,9 @@ impl SettingsWindow {
                             let content = &self.history[i].1;
                             let item_h_fixed_sc = 180.0 * scale as f32;
                             let max_width = (450.0 * scale) as u32;
-                            let lines = wrap_text(
-                                content,
-                                &[],
-                                Scale::uniform(16.0 * scale as f32),
-                                max_width,
-                            );
-                            let line_h = 20.0 * scale as f32;
-                            let full_h = (lines.len() as f32 * line_h).max(line_h);
+                            let (_, full_h) =
+                                get_metrics_dw(content, 16.0 * scale as f32, max_width);
+                            let full_h = full_h.max(20.0 * scale as f32);
                             let view_h = item_h_fixed_sc - (40.0 * scale as f32);
 
                             if full_h > view_h {

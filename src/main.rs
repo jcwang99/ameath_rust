@@ -18,6 +18,7 @@ mod ui_primitives;
 
 use chat_window::{ChatWindow, ChatAction};
 use settings::SettingsWindow;
+use rayon::prelude::*;
 
 use pet::Pet;
 use std::collections::HashMap;
@@ -157,8 +158,15 @@ fn main() {
     }
     window.set_visible(true);
 
-    // Initial frame duration (will be updated dynamically)
+    // Initial frame duration (will be updated dynamically based on monitor)
     let mut target_frame_duration = Duration::from_nanos(1_000_000_000 / 60);
+    if let Some(monitor) = window.current_monitor() {
+        if let Some(refresh) = monitor.refresh_rate_millihertz() {
+            // millihertz to duration: 1_000_000_000_000 / mHz = nanos
+            target_frame_duration = Duration::from_nanos(1_000_000_000_000 / refresh as u64);
+            println!("Detected monitor refresh rate: {} Hz", refresh as f32 / 1000.0);
+        }
+    }
 
     if let Some(monitor) = window.current_monitor() {
         let size = monitor.size();
@@ -439,6 +447,14 @@ fn main() {
                                             pet.start_drag(start_pos);
                                             pet.update_drag((global_x, global_y));
                                         }
+                                    }
+                                }
+                            }
+                            WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                                if let Some(monitor) = window.current_monitor() {
+                                    if let Some(refresh) = monitor.refresh_rate_millihertz() {
+                                        target_frame_duration = Duration::from_nanos(1_000_000_000_000 / refresh as u64);
+                                        println!("Monitor changed, new refresh rate: {} Hz", refresh as f32 / 1000.0);
                                     }
                                 }
                             }
@@ -879,69 +895,76 @@ fn main() {
                         if (draw_scale - 1.0).abs() < 0.001 {
                             let fw = frame.width as usize;
                             let fh = frame.height as usize;
-                            for y in 0..fh {
-                                let dy = dest_y_start + y;
-                                if dy < win_h_usize {
-                                    let (start_x_unflipped, end_x_unflipped) = frame.opaque_rows[y];
-                                    if start_x_unflipped < end_x_unflipped {
-                                        let src_row = &decompressed_frame_buffer[y * fw * 4..(y + 1) * fw * 4];
-                                        
-                                        // Calculate actual dest range based on flipping
-                                        let (start_x, end_x) = if facing_right {
-                                            (start_x_unflipped, end_x_unflipped)
-                                        } else {
-                                            (fw - end_x_unflipped, fw - start_x_unflipped)
-                                        };
-
-                                        for x in start_x..end_x {
-                                            let src_x = if facing_right { x } else { fw - 1 - x };
-                                            let s_idx = src_x * 4;
-                                            if src_row[s_idx + 3] > 0 {
-                                                let d_idx = (dy * win_w_usize + dest_x_start + x) * 4;
-                                                composite_data[d_idx..d_idx+4].copy_from_slice(&src_row[s_idx..s_idx+4]);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                                        // Parallelized source copy using rayon
+                                        composite_data
+                                            .par_chunks_mut(win_w_usize * 4)
+                                            .enumerate()
+                                            .skip(dest_y_start)
+                                            .take(fh)
+                                            .for_each(|(dy, dest_row): (usize, &mut [u8])| {
+                                                let y = dy - dest_y_start;
+                                                let (start_x_unflipped, end_x_unflipped) = frame.opaque_rows[y];
+                                                if start_x_unflipped < end_x_unflipped {
+                                                    let src_row = &decompressed_frame_buffer[y * fw * 4..(y + 1) * fw * 4];
+                                                    let (start_x, end_x) = if facing_right {
+                                                        (start_x_unflipped, end_x_unflipped)
+                                                    } else {
+                                                        (fw - end_x_unflipped, fw - start_x_unflipped)
+                                                    };
+                                                    for x in start_x..end_x {
+                                                        let src_x = if facing_right { x } else { fw - 1 - x };
+                                                        let s_idx = src_x * 4;
+                                                        if src_row[s_idx + 3] > 0 {
+                                                            let d_idx = (dest_x_start + x) * 4;
+                                                            if d_idx + 4 <= dest_row.len() {
+                                                                dest_row[d_idx..d_idx+4].copy_from_slice(&src_row[s_idx..s_idx+4]);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            });
                         } else {
                             let fw = frame.width as usize;
                             let fh = frame.height as usize;
                             let inv_scale = 1.0 / draw_scale;
                             
-                            for y in 0..(cur_ph as u32) {
-                                let src_y = (y as f32 * inv_scale) as usize;
-                                if src_y >= fh { continue; }
-                                let dy = (y as f64 + pet_off_y) as usize;
-                                if dy >= win_h_usize { continue; }
-                                
-                                let (start_x_src_unflipped, end_x_src_unflipped) = frame.opaque_rows[src_y];
-                                if start_x_src_unflipped >= end_x_src_unflipped { continue; }
-                                
-                                // Destinations range for this row
-                                let start_x_dest = 0;
-                                let end_x_dest = cur_pw as usize;
-                                
-                                let src_row_idx = src_y * fw * 4;
-                                let dest_row_idx = dy * win_w_usize * 4;
-                                
-                                for x in start_x_dest..end_x_dest {
-                                    let src_x_f32 = x as f32 * inv_scale;
-                                    let src_x = if facing_right {
-                                        src_x_f32 as usize
-                                    } else {
-                                        (fw as f32 - 1.0 - src_x_f32) as usize
-                                    };
+                                // Parallelized scaled source copy using rayon
+                                composite_data
+                                    .par_chunks_mut(win_w_usize * 4)
+                                    .enumerate()
+                                    .for_each(|(dy, dest_row): (usize, &mut [u8])| {
+                                        let y_f32 = (dy as f64 - pet_off_y) as f32;
+                                        if y_f32 < 0.0 || y_f32 >= cur_ph as f32 { return; }
+                                        let y = y_f32 as usize;
+                                        let src_y = (y as f32 * inv_scale) as usize;
+                                        if src_y >= fh { return; }
 
-                                    if src_x >= fw { continue; }
-                                    let s_idx = src_row_idx + src_x * 4;
-                                    let a = decompressed_frame_buffer[s_idx + 3];
-                                    if a > 0 {
-                                        let d_idx = dest_row_idx + (dest_x_start + x) * 4;
-                                        composite_data[d_idx..d_idx+4].copy_from_slice(&decompressed_frame_buffer[s_idx..s_idx+4]);
-                                    }
-                                }
-                            }
+                                        let (start_x_src_unflipped, end_x_src_unflipped) = frame.opaque_rows[src_y];
+                                        if start_x_src_unflipped >= end_x_src_unflipped { return; }
+
+                                        let start_x_dest = 0;
+                                        let end_x_dest = cur_pw as usize;
+                                        let src_row_idx = src_y * fw * 4;
+
+                                        for x in start_x_dest..end_x_dest {
+                                            let src_x_f32 = x as f32 * inv_scale;
+                                            let src_x = if facing_right {
+                                                src_x_f32 as usize
+                                            } else {
+                                                (fw as f32 - 1.0 - src_x_f32) as usize
+                                            };
+
+                                            if src_x >= fw { continue; }
+                                            let s_idx = src_row_idx + src_x * 4;
+                                            let a = decompressed_frame_buffer[s_idx + 3];
+                                            if a > 0 {
+                                                let d_idx = (dest_x_start + x) * 4;
+                                                if d_idx + 4 <= dest_row.len() {
+                                                    dest_row[d_idx..d_idx+4].copy_from_slice(&decompressed_frame_buffer[s_idx..s_idx+4]);
+                                                }
+                                            }
+                                        }
+                                    });
                         }
 
                         // 1.5 Loading
@@ -995,25 +1018,39 @@ fn main() {
                                 if let Some(b_pixels) = bubble_manager.pixel_data() {
                                     let bw = current_bubble_w_f as usize;
                                     let bh = current_bubble_h_f as usize;
-                                    for y in 0..bh {
-                                        let dy = by as usize + y;
-                                        if dy < win_h_usize {
-                                            let src_row_off = y * bw * 4;
-                                            let dest_row_off = dy * win_w_usize * 4;
+                                    
+                                    // Parallelized bubble compositing using rayon
+                                    composite_data
+                                        .par_chunks_mut(win_w_usize * 4)
+                                        .enumerate()
+                                        .skip(by as usize)
+                                        .take(bh)
+                                        .for_each(|(dy, dest_row): (usize, &mut [u8])| {
+                                            let y = dy - by as usize;
+                                            let src_row = &b_pixels[y * bw * 4..(y + 1) * bw * 4];
                                             for x in 0..bw {
-                                                let s = src_row_off + x * 4;
-                                                let a = b_pixels[s + 3];
-                                                if a > 0 {
+                                                let s_idx = x * 4;
+                                                let alpha = src_row[s_idx + 3];
+                                                if alpha > 0 {
                                                     let dx = bx as usize + x;
                                                     if dx < win_w_usize {
-                                                        let d = dest_row_off + dx * 4;
-                                                        // Simple source copy for now, but with better indexing
-                                                        composite_data[d..d+4].copy_from_slice(&b_pixels[s..s+4]);
+                                                        let d_off = dx * 4;
+                                                        if d_off + 4 <= dest_row.len() {
+                                                            if alpha == 255 {
+                                                                dest_row[d_off..d_off+4].copy_from_slice(&src_row[s_idx..s_idx+4]);
+                                                            } else {
+                                                                // Simple lerp alpha blending if needed (though D2D usually gives 255 for opaque areas)
+                                                                let inv_a = 255 - alpha;
+                                                                for c in 0..3 {
+                                                                    dest_row[d_off+c] = ((src_row[s_idx+c] as u32 * alpha as u32 + dest_row[d_off+c] as u32 * inv_a as u32) / 255) as u8;
+                                                                }
+                                                                dest_row[d_off+3] = 255; // Keep opaque or max
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
-                                        }
-                                    }
+                                        });
                                 }
                             }
                         }
