@@ -328,4 +328,25 @@ impl Pet {
         let frame = &frames[self.current_frame_idx % frames.len()];
         self.last_frame_time + frame.delay
     }
+
+    pub fn check_hit(&mut self, mouse_x: f64, mouse_y: f64) -> bool {
+        let (w, h) = self.get_scaled_size();
+        let rel_x = mouse_x - self.position.0;
+        let rel_y = mouse_y - self.position.1;
+
+        if rel_x < 0.0 || rel_x >= w || rel_y < 0.0 || rel_y >= h {
+            return false;
+        }
+
+        // Translate to unscaled coordinates
+        let src_x = (rel_x / self.scale as f64) as usize;
+        let src_y = (rel_y / self.scale as f64) as usize;
+
+        let frame = self.current_frame();
+        if src_y < frame.opaque_rows.len() {
+            let (start, end) = frame.opaque_rows[src_y];
+            return src_x >= start && src_x < end;
+        }
+        false
+    }
 }

@@ -274,6 +274,7 @@ fn main() {
 
     let mut composite_data: Vec<u8> = Vec::new();
     let mut pomodoro_data: Vec<u8> = Vec::new();
+    let mut is_hovered = false;
 
     event_loop
         .run(move |event, elwt| {
@@ -650,14 +651,10 @@ fn main() {
                         }
                     }
 
-                    // Settings window redraw is handled by its own event signals, 
-                    // removing the blanket sw.request_redraw() here for performance.
-
                     if let Ok(event) = MenuEvent::receiver().try_recv() {
                         if event.id == settings_id {
                             if settings_win.is_none() {
                                 let sw = SettingsWindow::new(elwt, winit_icon.clone());
-                                // Redraw only once on creation
                                 sw.request_redraw();
                                 settings_win = Some(sw);
                             } else if let Some(sw) = &settings_win {
@@ -668,87 +665,55 @@ fn main() {
                         }
                     }
 
-                    let mut is_hovered = false;
+                    let dt = last_update.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0).min(0.05);
+                    last_update = Some(Instant::now());
+
+                    // 1. Get Mouse Position
+                    #[cfg(target_os = "windows")]
+                    let mut current_mouse = (0.0, 0.0);
                     #[cfg(target_os = "windows")]
                     unsafe {
                         use windows::Win32::Foundation::POINT;
                         use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
                         let mut pt = POINT::default();
                         if GetCursorPos(&mut pt).is_ok() {
-                            let mouse_x = pt.x as f64;
-                            let mouse_y = pt.y as f64;
-
-                            if pet.state == PetState::Clingy || pet.behavior_mode == BehaviorMode::Clingy {
-                                pet.follow_mouse((mouse_x - monitor_offset.0 as f64, mouse_y - monitor_offset.1 as f64));
-                            }
-
-                            let pet_screen_x = pet.position.0 + monitor_offset.0 as f64;
-                            let pet_screen_y = pet.position.1 + monitor_offset.1 as f64;
-                            let (sys_pw, sys_ph) = pet.get_scaled_size();
-                            let menu_on_right_x = pet_screen_x + sys_pw + 10.0;
-                            let menu_w = menu_manager.menu_width as f64;
-                            let menu_h = menu_manager.menu_height as f64;
-
-                            let over_pet = mouse_x >= pet_screen_x && mouse_x <= pet_screen_x + sys_pw && mouse_y >= pet_screen_y && mouse_y <= pet_screen_y + sys_ph;
-                            let over_menu = mouse_x >= menu_on_right_x && mouse_x <= menu_on_right_x + menu_w && mouse_y >= pet_screen_y && mouse_y <= pet_screen_y + menu_h;
-                            let over_bubble = if let Some((bx, by, bw, bh)) = bubble_rect {
-                                mouse_x >= bx as f64 && mouse_x <= (bx + bw) as f64 && mouse_y >= by as f64 && mouse_y <= (by + bh) as f64
-                            } else { false };
-
-                            if over_pet || over_menu || over_bubble {
-                                is_hovered = true;
-                                bubble_manager.keep_alive();
-                                if over_pet || over_menu {
-                                    if !menu_manager.visible || menu_manager.opacity < 1.0 {
-                                        needs_pet_redraw = true;
-                                    }
-                                    menu_manager.visible = true;
-                                    menu_manager.opacity = (menu_manager.opacity + 0.1).min(1.0);
-                                    menu_visible_timer = Some(Instant::now());
-                                }
-                            } else {
-                                if menu_visible_timer.map_or(true, |t| t.elapsed() > Duration::from_secs(5)) {
-                                    if menu_manager.opacity > 0.0 {
-                                        needs_pet_redraw = true;
-                                        menu_manager.opacity = (menu_manager.opacity - 0.05).max(0.0);
-                                        if menu_manager.opacity <= 0.0 {
-                                            menu_manager.visible = false;
-                                            menu_visible_timer = None;
-                                        }
-                                    }
-                                }
-                            }
+                            current_mouse = (pt.x as f64, pt.y as f64);
                         }
                     }
 
-                    if let Some(elapsed) = last_update.map(|t| t.elapsed().as_secs_f64()) {
-                        let dt = elapsed.min(0.05);
-                        // Only pause logic if hovered and NOT in Clingy mode
-                        let is_paused = is_hovered && pet.state != PetState::Clingy && pet.behavior_mode != BehaviorMode::Clingy;
-                        pet.update_state(dt, is_paused);
-                        if let Some(msg) = pomodoro_manager.update() {
-                            bubble_manager.show(&msg, Duration::from_secs(4), pet.scale);
-                        }
-                        if let Some(msg) = music_player.update() {
-                            bubble_manager.show(&msg, Duration::from_secs(4), pet.scale);
-                        }
-                        if !is_thinking {
-                            if let Some(system_event) = interaction_manager.check_for_trigger() {
-                                let kernel = chat_kernel.clone();
-                                let tx = ai_tx.clone();
-                                let input = system_event;
-                                tokio::spawn(async move {
-                                    let response = kernel.handle_system_event(input).await;
-                                    let _ = tx.send(response);
-                                });
-                                is_thinking = true;
-                                thinking_start = Some(Instant::now());
-                            }
+                    // 2. Pet Position / Physics (Update depends on previous frame is_hovered, which is fine)
+                    if pet.state == PetState::Clingy || pet.behavior_mode == BehaviorMode::Clingy {
+                        let local_mx = current_mouse.0 - monitor_offset.0 as f64;
+                        let local_my = current_mouse.1 - monitor_offset.1 as f64;
+                        pet.follow_mouse((local_mx, local_my));
+                    }
+                    
+                    // Logic update pause check (one-frame lag for hover is intended for stability)
+                    let is_paused = is_hovered && pet.state != PetState::Clingy && pet.behavior_mode != BehaviorMode::Clingy;
+                    pet.update_state(dt, is_paused);
+
+                    // 3. Triggers
+                    if let Some(msg) = pomodoro_manager.update() {
+                        bubble_manager.show(&msg, Duration::from_secs(4), pet.scale);
+                    }
+                    if let Some(msg) = music_player.update() {
+                        bubble_manager.show(&msg, Duration::from_secs(4), pet.scale);
+                    }
+                    if !is_thinking {
+                        if let Some(system_event) = interaction_manager.check_for_trigger() {
+                            let kernel = chat_kernel.clone();
+                            let tx = ai_tx.clone();
+                            let input = system_event;
+                            tokio::spawn(async move {
+                                let response = kernel.handle_system_event(input).await;
+                                let _ = tx.send(response);
+                            });
+                            is_thinking = true;
+                            thinking_start = Some(Instant::now());
                         }
                     }
-                    last_update = Some(Instant::now());
 
-                    // --- GLOBAL LAYOUT CALCULATION (Runs every frame to ensure perfect sync) ---
+                    // 4. GLOBAL LAYOUT CALCULATION (Runs every frame to ensure perfect sync)
                     let draw_scale = pet.scale.max(0.5);
                     let (cur_pw, cur_ph) = pet.get_scaled_size();
                     
@@ -807,12 +772,61 @@ fn main() {
                     let base_padding_bottom_v = 20.0 * pet.scale as f64;
                     let padding_bottom_v = base_padding_bottom_v.max(menu_h_f_val - cur_ph);
                     let win_h_f = (pet_off_y + cur_ph + padding_bottom_v + 40.0) as u32;
-                    // --- END GLOBAL LAYOUT ---
 
                     let target_x = monitor_offset.0 + (pet.position.0 - pet_off_x) as i32;
                     let target_y = monitor_offset.1 + (pet.position.1 - pet_off_y) as i32;
                     let target_pos = POINT { x: target_x, y: target_y };
 
+                    // 5. UPDATE CACHED RECTS & HIT DETECTION
+                    if bubble_manager.is_visible() {
+                        bubble_rect = Some((bx_f as i32, bubble_y_f as i32, current_bubble_w_f as i32, current_bubble_h_f as i32));
+                    } else {
+                        bubble_rect = None;
+                    }
+
+                    let mouse_x = current_mouse.0;
+                    let mouse_y = current_mouse.1;
+                    
+                    let over_pet = pet.check_hit(mouse_x - monitor_offset.0 as f64, mouse_y - monitor_offset.1 as f64);
+                    
+                    let menu_on_right_x = target_x as f64 + menu_x_f;
+                    let menu_on_top_y = target_y as f64 + menu_y_f;
+                    let over_menu = mouse_x >= menu_on_right_x && mouse_x <= menu_on_right_x + menu_w_f && 
+                                    mouse_y >= menu_on_top_y && mouse_y <= menu_on_top_y + menu_h_f_val;
+
+                    let over_bubble = if let Some((bx, by, bw, bh)) = bubble_rect {
+                        let b_screen_x = target_x as f64 + bx as f64;
+                        let b_screen_y = target_y as f64 + by as f64;
+                        mouse_x >= b_screen_x && mouse_x <= (b_screen_x + bw as f64) && 
+                        mouse_y >= b_screen_y && mouse_y <= (b_screen_y + bh as f64)
+                    } else { false };
+
+                    is_hovered = over_pet || over_menu || over_bubble;
+                    
+                    if is_hovered {
+                        bubble_manager.keep_alive();
+                        if over_pet || over_menu {
+                            if !menu_manager.visible || menu_manager.opacity < 1.0 {
+                                needs_pet_redraw = true;
+                            }
+                            menu_manager.visible = true;
+                            menu_manager.opacity = (menu_manager.opacity + 0.1).min(1.0);
+                            menu_visible_timer = Some(Instant::now());
+                        }
+                    } else {
+                        if menu_visible_timer.map_or(true, |t| t.elapsed() > Duration::from_secs(5)) {
+                            if menu_manager.opacity > 0.0 {
+                                needs_pet_redraw = true;
+                                menu_manager.opacity = (menu_manager.opacity - 0.05).max(0.0);
+                                if menu_manager.opacity <= 0.0 {
+                                    menu_manager.visible = false;
+                                    menu_visible_timer = None;
+                                }
+                            }
+                        }
+                    }
+
+                    // 6. REDRAW STATUS CHECKS
                     let mut pos_changed = false;
                     #[cfg(target_os = "windows")]
                     {
@@ -958,7 +972,6 @@ fn main() {
                             bubble_manager.render_to_buffer(std::ptr::null_mut(), pet.scale);
                             let by = bubble_y_f as i32;
                             let bx = bx_f as i32;
-                            bubble_rect = Some((bx, by, current_bubble_w_f as i32, current_bubble_h_f as i32));
                             if by >= 0 {
                                 if let Some(b_pixels) = bubble_manager.pixel_data() {
                                     let bw = current_bubble_w_f as usize;
