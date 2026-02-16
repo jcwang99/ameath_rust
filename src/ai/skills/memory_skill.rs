@@ -17,11 +17,11 @@ impl MemorySkill {
 #[async_trait]
 impl Skill for MemorySkill {
     fn name(&self) -> &str {
-        "memory_manage"
+        "update_fact_board"
     }
 
     fn description(&self) -> &str {
-        "Manage long-term facts and user preferences in the persistent Fact Board. Use this to store key information mentioned by the user or retrieve specialized facts."
+        "Maintain the core Fact Board about the user. Use this to permanently 'learn' and 'set' important user preferences, habits, or facts, or 'get' them to provide personalized help."
     }
 
     async fn execute(&self, args: Value) -> Result<String, String> {
@@ -63,15 +63,15 @@ impl Skill for MemorySkill {
                         "action": {
                             "type": "string",
                             "enum": ["set", "get"],
-                            "description": "The action to perform: 'set' to store a fact, 'get' to retrieve one."
+                            "description": "The action: 'set' to record/update a persistent fact (e.g. user likes), 'get' to retrieve context."
                         },
                         "key": {
                             "type": "string",
-                            "description": "The unique key for the fact (e.g., 'user_name', 'favorite_color')"
+                            "description": "Unique key (e.g. 'user_taste', 'work_schedule', 'relationship_status')"
                         },
                         "value": {
                             "type": "string",
-                            "description": "The value to store (required for 'set')"
+                            "description": "The definitive fact to record (required for 'set')"
                         }
                     },
                     "required": ["action", "key"]

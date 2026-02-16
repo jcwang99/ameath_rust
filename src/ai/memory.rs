@@ -303,6 +303,34 @@ impl MemoryManager {
         Ok(())
     }
 
+    pub fn get_latest_id_for_layer(&self, layer: i32) -> Result<Option<i64>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT MAX(id) FROM conversations WHERE layer = ?1")?;
+        let id_opt: Option<i64> = stmt.query_row(params![layer], |r| r.get(0)).ok();
+        Ok(id_opt)
+    }
+
+    pub fn mark_layer_processed(&self, layer: i32, upto_id: i64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let field = match layer {
+            1 => "summarized",
+            2 => "compacted",
+            _ => return Ok(()),
+        };
+        let query = format!(
+            "UPDATE conversations SET {} = 1 WHERE layer = ?1 AND id <= ?2",
+            field
+        );
+        conn.execute(&query, params![layer, upto_id])?;
+        Ok(())
+    }
+
+    pub fn vacuum(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("VACUUM", [])?;
+        Ok(())
+    }
+
     pub fn get_recent_history(&self, limit: usize) -> Result<Vec<(String, String)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(

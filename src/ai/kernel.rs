@@ -272,8 +272,8 @@ impl ChatKernel {
     pub async fn handle_system_event(&self, event_context: String) -> String {
         let prompt = format!(
             "{}\n\n[SYSTEM INSTRUCTION] This is an autonomous system event. You are proactive. \
-            Based on the context and eveything you know, decide if you should use tools (e.g. search weather, check news) to help the user, \
-            or just provide emotional value. If the context implies a need (e.g. 'raining'), verify it with tools first if possible. \
+            Based on the context and everything you know, decide if you should use tools (e.g. search weather, check news, update_fact_board) to help the user or record new insights, \
+            or just provide emotional value. If the context implies a need or a new fact about the user, use the tools immediately. \
             Do not mention you are an AI or 'system event'. Act naturally as Aemeath.",
             event_context
         );
@@ -308,18 +308,14 @@ impl ChatKernel {
                     .add_conversation_item("assistant", &summary.content, 2)
                     .ok();
 
-                // Mark these L1 messages as summarized to prevent re-summarization
-                // In a real implementation, we'd track specific IDs. Here we approximate by marking the recent batch.
-                // For now, let's assume the memory manager handles this complexity or we live with the simplification.
-                // Actually, let's try to get IDs if possible, but get_context returns Messages without IDs.
-                // Improvement: We will rely on `prune_layers` to clean up based on count,
-                // but to correctly mark them, `get_context` should return IDs.
-                // Given the constraints, we will skip explicit ID marking here effectively relying on the FIFO nature
-                // and the fact that we summarize the "latest unsummarized".
-                // A better approach for the future: fetch IDs in `get_context`.
+                // 1. Mark L1 messages as summarized
+                if let Ok(Some(latest_id)) = self.memory.get_latest_id_for_layer(1) {
+                    self.memory.mark_layer_processed(1, latest_id).ok();
+                }
 
-                // However, we CAN prune now.
-                self.memory.prune_layers(1000).ok(); // Keep last 1000 messages/summaries per layer
+                // 2. Prune and Vacuum
+                self.memory.prune_layers(500).ok(); // Keep safety buffer of 500
+                self.memory.vacuum().ok();
             }
         }
 
