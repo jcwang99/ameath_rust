@@ -96,10 +96,14 @@ impl MemoryManager {
     }
 
     pub fn add_message(&self, msg: &Message) -> Result<()> {
+        self.add_conversation_item(&msg.role, &msg.content, 1)
+    }
+
+    pub fn add_conversation_item(&self, role: &str, content: &str, layer: i32) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO conversations (role, content, layer) VALUES (?1, ?2, 1)",
-            params![msg.role, msg.content],
+            "INSERT INTO conversations (role, content, layer) VALUES (?1, ?2, ?3)",
+            params![role, content, layer],
         )?;
         Ok(())
     }
@@ -241,6 +245,14 @@ impl MemoryManager {
         context.extend(history);
 
         Ok(context)
+    }
+
+    pub fn get_latest_l3(&self) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT content FROM summaries WHERE layer >= 3 ORDER BY id DESC LIMIT 1")?;
+        let l3_opt: Option<String> = stmt.query_row([], |r| r.get(0)).ok();
+        Ok(l3_opt)
     }
 
     pub fn set_fact(&self, key: &str, value: &str) -> Result<()> {

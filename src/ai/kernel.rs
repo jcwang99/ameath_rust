@@ -67,7 +67,10 @@ impl ChatKernel {
 
         loop {
             // Refresh context from memory (picks up new summaries and cleared traces)
-            let mut messages = self.memory.get_context(10).unwrap_or_default();
+            let mut messages = self
+                .memory
+                .get_context(self.config.l1_summary_threshold)
+                .unwrap_or_default();
 
             // Inject Base System Prompt (Configurable Persona)
             if !self.config.system_prompt.is_empty() {
@@ -301,7 +304,9 @@ impl ChatKernel {
             });
 
             if let Ok(summary) = client.chat(prompt, None).await {
-                self.memory.add_summary(&summary.content, 2).ok();
+                self.memory
+                    .add_conversation_item("assistant", &summary.content, 2)
+                    .ok();
 
                 // Mark these L1 messages as summarized to prevent re-summarization
                 // In a real implementation, we'd track specific IDs. Here we approximate by marking the recent batch.
@@ -326,6 +331,11 @@ impl ChatKernel {
                 .map_err(|e| e.to_string())?;
 
             if !l2_items.is_empty() {
+                let latest_l3 = self.memory.get_latest_l3().unwrap_or(None);
+                let l3_context = latest_l3
+                    .map(|s| format!("[Previous Long-term Memory]:\n{}\n\n", s))
+                    .unwrap_or_default();
+
                 let combined_text = l2_items
                     .iter()
                     .map(|(_, content)| content.as_str())
@@ -333,10 +343,12 @@ impl ChatKernel {
                     .join("\n\n");
 
                 let mut prompt_content = format!(
-                    "Consolidate the following intermediate summaries into a single, high-level long-term memory. \
+                    "{}Consolidate the following intermediate summaries into a single, high-level long-term memory. \
+                     Incorporate these new details into the existing memory while maintaining key historical facts. \
                      Focus on enduring facts, user patterns, and major project milestones. \
                      IMPORTANT: Your response MUST be under 1500 characters (approx. 1500 Chinese text characters).\n\n\
-                     [Intermediate Summaries]:\n{}",
+                     [New Intermediate Summaries]:\n{}",
+                    l3_context,
                     combined_text
                 );
 
