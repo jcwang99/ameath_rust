@@ -1,6 +1,5 @@
 use crate::theme::*;
 use crate::ui_primitives::*;
-use rusttype::Scale;
 
 pub struct HistoryTabState<'a> {
     pub history: &'a [(String, String)],
@@ -23,8 +22,8 @@ pub fn draw(
     let sc = |val: f32| -> f32 { val * scale };
 
     let start_y = sy_val(140);
-    let mut current_y = start_y as f32 + state.scroll_offset;
-    let mut calculated_content_height = 0.0;
+    let current_y = start_y as f32 + state.scroll_offset;
+    let calculated_content_height;
 
     state.history_item_rects.clear();
     if state.history_scroll_states.len() != state.history.len() {
@@ -32,20 +31,32 @@ pub fn draw(
     }
 
     let item_h_fixed = sc(180.0);
+    let spacing = sc(10.0);
+    let total_item_h = item_h_fixed + spacing;
 
-    for (i, (role, content)) in state.history.iter().enumerate() {
+    // 1. Efficiently pre-calculate content height and all item rects
+    calculated_content_height = state.history.len() as f32 * total_item_h;
+
+    for i in 0..state.history.iter().len() {
         let logical_y = 140.0 + (i as f64 * 190.0);
         let logical_h = 180.0;
         state
             .history_item_rects
             .push((230.0, logical_y, 730.0, logical_y + logical_h));
+    }
 
-        let y_pos = current_y;
-        calculated_content_height += item_h_fixed + sc(10.0);
-        current_y += item_h_fixed + sc(10.0);
+    // 2. Identify visible range
+    let min_y_vis = sy_val(120) as f32;
+    let max_y_vis = h as f32;
 
-        let min_y_vis = sy_val(120) as f32;
-        if (y_pos + item_h_fixed) < min_y_vis || y_pos > h as f32 {
+    // We can't easily parallelize drawing to the SAME buffer with our current primitives.
+    // However, we can parallelize the "preparation" of cards or use a targeted loop.
+    // For now, let's optimize the loop by skipping non-visible items first.
+
+    for (i, (role, content)) in state.history.iter().enumerate() {
+        let y_pos = current_y + (i as f32 * total_item_h);
+
+        if (y_pos + item_h_fixed) < min_y_vis || y_pos > max_y_vis {
             continue;
         }
 
@@ -80,37 +91,25 @@ pub fn draw(
         );
 
         let max_text_w = sc(450.0) as u32;
-        let lines = wrap_text(content, &[], Scale::uniform(sc(16.0)), max_text_w);
-        let full_content_h = (lines.len() as f32 * sc(20.0)).max(sc(20.0));
+        let (_mw, mh) = get_metrics_dw(content, sc(16.0), max_text_w);
+        let full_content_h = mh.max(sc(20.0));
         let view_h = item_h_fixed - sc(40.0);
 
         let scroll = state.history_scroll_states[i];
         let start_text_y = y_pos + sc(35.0);
-        let end_text_y = y_pos + item_h_fixed - sc(10.0);
 
-        for (li, line) in lines.iter().enumerate() {
-            let line_y = start_text_y + (li as f32 * sc(20.0)) + (scroll * scale);
-            if line_y < start_text_y - sc(5.0) {
-                continue;
-            }
-            if line_y > end_text_y - sc(15.0) {
-                break;
-            }
-            if line_y < 0.0 || line_y > h as f32 {
-                continue;
-            }
-
-            draw_text(
-                buffer,
-                w,
-                &[],
-                line,
-                s(240) as i32,
-                line_y as i32,
-                sc(16.0),
-                COLOR_TEXT_MAIN,
-            );
-        }
+        draw_text_dw_ex(
+            buffer,
+            w,
+            content,
+            s(240) as i32,
+            start_text_y as i32,
+            sc(16.0),
+            COLOR_TEXT_MAIN,
+            max_text_w,
+            view_h as u32,
+            scroll * scale,
+        );
 
         if full_content_h > view_h {
             let sb_w = sc(4.0) as u32;

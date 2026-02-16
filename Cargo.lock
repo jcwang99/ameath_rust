@@ -80,6 +80,7 @@ dependencies = [
  "lz4_flex",
  "rand 0.8.5",
  "raw-window-handle 0.5.2",
+ "rayon",
  "reqwest",
  "rfd",
  "rodio",

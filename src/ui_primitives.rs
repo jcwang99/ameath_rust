@@ -1,6 +1,8 @@
-#[cfg(target_os = "windows")]
 use crate::render::{get_d2d_factory, get_dwrite_factory};
+use rayon::prelude::*;
 use rusttype::{Font, Scale};
+use std::collections::HashMap;
+use std::sync::{OnceLock, RwLock};
 #[cfg(target_os = "windows")]
 // use windows::core::ComInterface;
 #[cfg(target_os = "windows")]
@@ -15,13 +17,129 @@ use windows::Win32::Graphics::Direct2D::{
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
+    IDWriteTextFormat, IDWriteTextLayout, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+    DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+    DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, BITMAPINFO,
     BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
 };
+
+#[derive(Hash, PartialEq, Eq, Clone)]
+struct LayoutKey {
+    text: String,
+    font_size_bits: u32,
+    max_w: u32,
+    font_family: String,
+    is_bold: bool,
+    is_centered: bool,
+}
+
+#[derive(Hash, PartialEq, Eq, Clone)]
+struct FormatKey {
+    font_family: String,
+    font_size_bits: u32,
+    is_bold: bool,
+    is_centered: bool,
+}
+
+static LAYOUT_CACHE: OnceLock<RwLock<HashMap<LayoutKey, IDWriteTextLayout>>> = OnceLock::new();
+static FORMAT_CACHE: OnceLock<RwLock<HashMap<FormatKey, IDWriteTextFormat>>> = OnceLock::new();
+
+fn get_layout_cache() -> &'static RwLock<HashMap<LayoutKey, IDWriteTextLayout>> {
+    LAYOUT_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn get_format_cache() -> &'static RwLock<HashMap<FormatKey, IDWriteTextFormat>> {
+    FORMAT_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+pub fn get_or_create_layout_ex(
+    text: &str,
+    font_size: f32,
+    max_w: u32,
+    font_family_name: &str,
+    is_bold: bool,
+    is_centered: bool,
+) -> IDWriteTextLayout {
+    let key = LayoutKey {
+        text: text.to_string(),
+        font_size_bits: font_size.to_bits(),
+        max_w,
+        font_family: font_family_name.to_string(),
+        is_bold,
+        is_centered,
+    };
+
+    if let Ok(cache) = get_layout_cache().read() {
+        if let Some(layout) = cache.get(&key) {
+            return layout.clone();
+        }
+    }
+
+    let dwrite_factory = get_dwrite_factory();
+    let format_key = FormatKey {
+        font_family: font_family_name.to_string(),
+        font_size_bits: font_size.to_bits(),
+        is_bold,
+        is_centered,
+    };
+
+    let text_format = {
+        let mut cache = get_format_cache().write().unwrap();
+        cache
+            .entry(format_key)
+            .or_insert_with(|| unsafe {
+                let weight = if is_bold {
+                    DWRITE_FONT_WEIGHT_BOLD
+                } else {
+                    DWRITE_FONT_WEIGHT_NORMAL
+                };
+                let format = dwrite_factory
+                    .CreateTextFormat(
+                        &windows::core::HSTRING::from(font_family_name),
+                        None,
+                        weight,
+                        DWRITE_FONT_STYLE_NORMAL,
+                        DWRITE_FONT_STRETCH_NORMAL,
+                        font_size,
+                        windows::core::w!("en-us"),
+                    )
+                    .unwrap();
+
+                if is_centered {
+                    let _ = format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                } else {
+                    let _ = format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                }
+                // ALWAYS use NEAR for paragraph alignment to avoid vertical displacement
+                // in our large hardcoded layout height (10,000px).
+                let _ = format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                format
+            })
+            .clone()
+    };
+
+    unsafe {
+        let wide_text: Vec<u16> = text.encode_utf16().collect();
+        let layout = dwrite_factory
+            .CreateTextLayout(&wide_text, &text_format, max_w as f32, 10000.0)
+            .unwrap();
+
+        let mut cache = get_layout_cache().write().unwrap();
+        if cache.len() > 300 {
+            cache.clear();
+        }
+        cache.insert(key, layout.clone());
+        layout
+    }
+}
+
+fn get_or_create_layout(text: &str, font_size: f32, max_w: u32) -> IDWriteTextLayout {
+    get_or_create_layout_ex(text, font_size, max_w, "Microsoft YaHei", false, false)
+}
 
 pub fn draw_rect(
     buffer: &mut [u32],
@@ -78,22 +196,28 @@ pub fn draw_rect_alpha(
     let fg = ((color >> 8) & 0xFF) as f32;
     let fb = (color & 0xFF) as f32;
 
-    for cy in start_y..max_y {
-        for cx in start_x..max_x {
-            let idx = (cy * surface_w as i32 + cx) as usize;
-            if idx < buffer.len() {
-                let bg = buffer[idx];
-                let br = ((bg >> 16) & 0xFF) as f32;
-                let bg_g = ((bg >> 8) & 0xFF) as f32;
-                let bb = (bg & 0xFF) as f32;
+    let start_y_idx = start_y as usize;
+    let end_y_idx = max_y as usize;
+    let surface_w_usize = surface_w as usize;
 
-                let r = br * (1.0 - alpha) + fr * alpha;
-                let g = bg_g * (1.0 - alpha) + fg * alpha;
-                let b = bb * (1.0 - alpha) + fb * alpha;
+    if start_y_idx < end_y_idx {
+        let affected_rows = &mut buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize];
+        affected_rows
+            .par_chunks_mut(surface_w_usize)
+            .for_each(|row| {
+                for cx in start_x..max_x {
+                    let bg = row[cx as usize];
+                    let br = ((bg >> 16) & 0xFF) as f32;
+                    let bg_g = ((bg >> 8) & 0xFF) as f32;
+                    let bb = (bg & 0xFF) as f32;
 
-                buffer[idx] = ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
-            }
-        }
+                    let r = br * (1.0 - alpha) + fr * alpha;
+                    let g = bg_g * (1.0 - alpha) + fg * alpha;
+                    let b = bb * (1.0 - alpha) + fb * alpha;
+
+                    row[cx as usize] = ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+                }
+            });
     }
 }
 
@@ -123,42 +247,52 @@ pub fn draw_rounded_rect(
     let w = width as i32;
     let h = height as i32;
 
-    for cy in start_y..end_y {
-        let dy = if cy < y + r {
-            (y + r) - cy
-        } else if cy >= y + h - r {
-            cy - (y + h - r - 1)
-        } else {
-            0
-        };
+    let start_y_idx = start_y as usize;
+    let end_y_idx = end_y as usize;
+    let surface_w_usize = surface_w as usize;
 
-        let row_off = cy as usize * surface_w as usize;
-        if dy == 0 {
-            // Straight middle rows
-            buffer[row_off + start_x as usize..row_off + end_x as usize].fill(color);
-        } else {
-            let left_r_end = (x + r).min(end_x);
-            let right_r_start = (x + w - r).max(start_x);
+    if start_y_idx < end_y_idx {
+        let affected_rows = &mut buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize];
+        affected_rows
+            .par_chunks_mut(surface_w_usize)
+            .enumerate()
+            .for_each(|(i, row)| {
+                let cy = (start_y_idx + i) as i32;
+                let dy = if cy < y + r {
+                    (y + r) - cy
+                } else if cy >= y + h - r {
+                    cy - (y + h - r - 1)
+                } else {
+                    0
+                };
 
-            // Left corner
-            for cx in start_x..left_r_end {
-                let dx = (x + r) - cx;
-                if dx * dx + dy * dy <= r_sq {
-                    buffer[row_off + cx as usize] = color;
+                if dy == 0 {
+                    // Straight middle rows
+                    row[start_x as usize..end_x as usize].fill(color);
+                } else {
+                    let left_r_end = (x + r).min(end_x);
+                    let right_r_start = (x + w - r).max(start_x);
+
+                    // Left corner
+                    for cx in start_x..left_r_end {
+                        let dx = (x + r) - cx;
+                        if dx * dx + dy * dy <= r_sq {
+                            row[cx as usize] = color;
+                        }
+                    }
+                    // Middle
+                    if left_r_end < right_r_start {
+                        row[left_r_end as usize..right_r_start as usize].fill(color);
+                    }
+                    // Right corner
+                    for cx in right_r_start..end_x {
+                        let dx = cx - (x + w - r - 1);
+                        if dx * dx + dy * dy <= r_sq {
+                            row[cx as usize] = color;
+                        }
+                    }
                 }
-            }
-            // Middle
-            if left_r_end < right_r_start {
-                buffer[row_off + left_r_end as usize..row_off + right_r_start as usize].fill(color);
-            }
-            // Right corner
-            for cx in right_r_start..end_x {
-                let dx = cx - (x + w - r - 1);
-                if dx * dx + dy * dy <= r_sq {
-                    buffer[row_off + cx as usize] = color;
-                }
-            }
-        }
+            });
     }
 }
 
@@ -226,29 +360,11 @@ pub fn draw_text_dw(
         return;
     }
 
-    let dwrite_factory = get_dwrite_factory();
     let d2d_factory = get_d2d_factory();
 
     unsafe {
-        let wide_text: Vec<u16> = text.encode_utf16().collect();
-        let font_family = windows::core::w!("Microsoft YaHei");
-
-        let text_format = dwrite_factory
-            .CreateTextFormat(
-                font_family,
-                None,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                font_size,
-                windows::core::w!("en-us"),
-            )
-            .unwrap();
-
-        // 1. Measure with unconstrained bounds to get true content size
-        let layout_measure = dwrite_factory
-            .CreateTextLayout(&wide_text, &text_format, 10000.0, 10000.0)
-            .unwrap();
+        // 1. Get cached layout (unconstrained width for single-line)
+        let layout_measure = get_or_create_layout(text, font_size, 10000);
 
         let mut metrics = std::mem::zeroed();
         layout_measure.GetMetrics(&mut metrics).unwrap();
@@ -324,48 +440,56 @@ pub fn draw_text_dw(
         rt.EndDraw(None, None).unwrap();
 
         // 4. Blit with proper bounds checking
-        let src_ptr = bits as *const u32;
-        let surface_h = (buffer.len() as u32) / surface_w.max(1);
-
         let sr = ((color >> 16) & 0xFF) as u32;
         let sg = ((color >> 8) & 0xFF) as u32;
         let sb = (color & 0xFF) as u32;
 
-        for dy in 0..th {
-            let win_y = y + dy;
-            if win_y < 0 || win_y >= surface_h as i32 {
-                continue;
-            }
-            for dx in 0..tw {
-                let win_x = x + dx;
-                if win_x < 0 || win_x >= surface_w as i32 {
-                    continue;
-                }
+        let surface_h = (buffer.len() as u32) / surface_w.max(1);
+        let start_y_idx = y.max(0) as usize;
+        let end_y_idx = (y + th as i32).min(surface_h as i32).max(0) as usize;
+        let surface_w_usize = surface_w as usize;
 
-                let src_idx = (dy * tw + dx) as usize;
-                let pixel = *src_ptr.add(src_idx);
-                let a = (pixel >> 24) & 0xFF;
+        if start_y_idx < end_y_idx {
+            let affected_rows =
+                &mut buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize];
+            let src_addr = bits as usize;
 
-                if a > 0 {
-                    let dest_idx = (win_y * surface_w as i32 + win_x) as usize;
-                    if dest_idx < buffer.len() {
-                        if a == 255 {
-                            buffer[dest_idx] = (sr << 16) | (sg << 8) | sb;
-                        } else {
-                            let bg = buffer[dest_idx];
-                            let br = (bg >> 16) & 0xFF;
-                            let bg_g = (bg >> 8) & 0xFF;
-                            let bb = bg & 0xFF;
+            affected_rows
+                .par_chunks_mut(surface_w_usize)
+                .enumerate()
+                .for_each(|(i, row)| {
+                    let win_y = (start_y_idx + i) as i32;
+                    let dy = win_y - y;
+                    let src_ptr = src_addr as *const u32;
 
-                            let inv_a = 255 - a;
-                            let out_r = (sr * a + br * inv_a) / 255;
-                            let out_g = (sg * a + bg_g * inv_a) / 255;
-                            let out_b = (sb * a + bb * inv_a) / 255;
-                            buffer[dest_idx] = (out_r << 16) | (out_g << 8) | out_b;
+                    for dx in 0..tw {
+                        let win_x = x + dx;
+                        if win_x < 0 || win_x >= surface_w as i32 {
+                            continue;
+                        }
+
+                        let src_idx = (dy * tw + dx) as usize;
+                        let pixel = *src_ptr.add(src_idx);
+                        let a = (pixel >> 24) & 0xFF;
+
+                        if a > 0 {
+                            if a == 255 {
+                                row[win_x as usize] = (sr << 16) | (sg << 8) | sb;
+                            } else {
+                                let bg = row[win_x as usize];
+                                let br = (bg >> 16) & 0xFF;
+                                let bg_g = (bg >> 8) & 0xFF;
+                                let bb = bg & 0xFF;
+
+                                let inv_a = 255 - a;
+                                let out_r = (sr * a + br * inv_a) / 255;
+                                let out_g = (sg * a + bg_g * inv_a) / 255;
+                                let out_b = (sb * a + bb * inv_a) / 255;
+                                row[win_x as usize] = (out_r << 16) | (out_g << 8) | out_b;
+                            }
                         }
                     }
-                }
-            }
+                });
         }
 
         SelectObject(hdc_mem, old_obj);
@@ -392,28 +516,10 @@ pub fn draw_text_dw_ex(
         return;
     }
 
-    let dwrite_factory = get_dwrite_factory();
     let d2d_factory = get_d2d_factory();
 
     unsafe {
-        let wide_text: Vec<u16> = text.encode_utf16().collect();
-        let font_family = windows::core::w!("Microsoft YaHei");
-
-        let text_format = dwrite_factory
-            .CreateTextFormat(
-                font_family,
-                None,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                font_size,
-                windows::core::w!("en-us"),
-            )
-            .unwrap();
-
-        let layout = dwrite_factory
-            .CreateTextLayout(&wide_text, &text_format, max_w as f32, 10000.0)
-            .unwrap();
+        let layout = get_or_create_layout(text, font_size, max_w);
 
         // Prepare GDI surface (max_w x max_h)
         let tw = max_w as i32;
@@ -483,48 +589,56 @@ pub fn draw_text_dw_ex(
 
         rt.EndDraw(None, None).unwrap();
 
-        let src_ptr = bits as *const u32;
-        let surface_h = (buffer.len() as u32) / surface_w.max(1);
-
         let sr = ((color >> 16) & 0xFF) as u32;
         let sg = ((color >> 8) & 0xFF) as u32;
         let sb = (color & 0xFF) as u32;
 
-        for dy in 0..th {
-            let win_y = y + dy;
-            if win_y < 0 || win_y >= surface_h as i32 {
-                continue;
-            }
-            for dx in 0..tw {
-                let win_x = x + dx;
-                if win_x < 0 || win_x >= surface_w as i32 {
-                    continue;
-                }
+        let surface_h = (buffer.len() as u32) / surface_w.max(1);
+        let start_y_idx = y.max(0) as usize;
+        let end_y_idx = (y + th as i32).min(surface_h as i32).max(0) as usize;
+        let surface_w_usize = surface_w as usize;
 
-                let src_idx = (dy * tw + dx) as usize;
-                let pixel = *src_ptr.add(src_idx);
-                let a = (pixel >> 24) & 0xFF;
+        if start_y_idx < end_y_idx {
+            let affected_rows =
+                &mut buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize];
+            let src_addr = bits as usize;
 
-                if a > 0 {
-                    let dest_idx = (win_y * surface_w as i32 + win_x) as usize;
-                    if dest_idx < buffer.len() {
-                        if a == 255 {
-                            buffer[dest_idx] = (sr << 16) | (sg << 8) | sb;
-                        } else {
-                            let bg = buffer[dest_idx];
-                            let br = (bg >> 16) & 0xFF;
-                            let bg_g = (bg >> 8) & 0xFF;
-                            let bb = bg & 0xFF;
+            affected_rows
+                .par_chunks_mut(surface_w_usize)
+                .enumerate()
+                .for_each(|(i, row)| {
+                    let win_y = (start_y_idx + i) as i32;
+                    let dy = win_y - y;
+                    let src_ptr = src_addr as *const u32;
 
-                            let inv_a = 255 - a;
-                            let out_r = (sr * a + br * inv_a) / 255;
-                            let out_g = (sg * a + bg_g * inv_a) / 255;
-                            let out_b = (sb * a + bb * inv_a) / 255;
-                            buffer[dest_idx] = (out_r << 16) | (out_g << 8) | out_b;
+                    for dx in 0..tw {
+                        let win_x = x + dx;
+                        if win_x < 0 || win_x >= surface_w as i32 {
+                            continue;
+                        }
+
+                        let src_idx = (dy * tw + dx) as usize;
+                        let pixel = *src_ptr.add(src_idx);
+                        let a = (pixel >> 24) & 0xFF;
+
+                        if a > 0 {
+                            if a == 255 {
+                                row[win_x as usize] = (sr << 16) | (sg << 8) | sb;
+                            } else {
+                                let bg = row[win_x as usize];
+                                let br = (bg >> 16) & 0xFF;
+                                let bg_g = (bg >> 8) & 0xFF;
+                                let bb = bg & 0xFF;
+
+                                let inv_a = 255 - a;
+                                let out_r = (sr * a + br * inv_a) / 255;
+                                let out_g = (sg * a + bg_g * inv_a) / 255;
+                                let out_b = (sb * a + bb * inv_a) / 255;
+                                row[win_x as usize] = (out_r << 16) | (out_g << 8) | out_b;
+                            }
                         }
                     }
-                }
-            }
+                });
         }
 
         SelectObject(hdc_mem, old_obj);
@@ -534,28 +648,25 @@ pub fn draw_text_dw_ex(
     }
 }
 
-pub fn get_metrics_dw(text: &str, font_size: f32, max_w: u32) -> (f32, f32) {
+pub fn get_metrics_dw_ex(
+    text: &str,
+    font_size: f32,
+    max_w: u32,
+    font_family_name: &str,
+    is_bold: bool,
+    is_centered: bool,
+) -> (f32, f32) {
     #[cfg(target_os = "windows")]
     {
-        let dwrite_factory = get_dwrite_factory();
+        let layout = get_or_create_layout_ex(
+            text,
+            font_size,
+            max_w,
+            font_family_name,
+            is_bold,
+            is_centered,
+        );
         unsafe {
-            let wide_text: Vec<u16> = text.encode_utf16().collect();
-            let text_format = dwrite_factory
-                .CreateTextFormat(
-                    windows::core::w!("Microsoft YaHei"),
-                    None,
-                    DWRITE_FONT_WEIGHT_NORMAL,
-                    DWRITE_FONT_STYLE_NORMAL,
-                    DWRITE_FONT_STRETCH_NORMAL,
-                    font_size,
-                    windows::core::w!("en-us"),
-                )
-                .unwrap();
-
-            let layout = dwrite_factory
-                .CreateTextLayout(&wide_text, &text_format, max_w as f32, 10000.0)
-                .unwrap();
-
             let mut metrics = std::mem::zeroed();
             layout.GetMetrics(&mut metrics).unwrap();
             (metrics.width, metrics.height)
@@ -567,30 +678,16 @@ pub fn get_metrics_dw(text: &str, font_size: f32, max_w: u32) -> (f32, f32) {
     }
 }
 
+pub fn get_metrics_dw(text: &str, font_size: f32, max_w: u32) -> (f32, f32) {
+    get_metrics_dw_ex(text, font_size, max_w, "Microsoft YaHei", false, false)
+}
+
 pub fn text_width(_fonts: &[&Font], text: &str, scale: Scale) -> u32 {
     #[cfg(target_os = "windows")]
     {
-        let dwrite_factory = get_dwrite_factory();
+        let font_size = scale.x;
+        let layout = get_or_create_layout(text, font_size, 10000);
         unsafe {
-            let wide_text: Vec<u16> = text.encode_utf16().collect();
-            let font_size = scale.x;
-
-            let text_format = dwrite_factory
-                .CreateTextFormat(
-                    windows::core::w!("Microsoft YaHei"),
-                    None,
-                    DWRITE_FONT_WEIGHT_NORMAL,
-                    DWRITE_FONT_STYLE_NORMAL,
-                    DWRITE_FONT_STRETCH_NORMAL,
-                    font_size,
-                    windows::core::w!("en-us"),
-                )
-                .unwrap();
-
-            let layout = dwrite_factory
-                .CreateTextLayout(&wide_text, &text_format, 10000.0, 10000.0)
-                .unwrap();
-
             let mut metrics = std::mem::zeroed();
             layout.GetMetrics(&mut metrics).unwrap();
             return metrics.width.ceil() as u32;
@@ -609,31 +706,10 @@ pub fn wrap_text(
     scale: rusttype::Scale,
     max_width: u32,
 ) -> Vec<String> {
-    let dwrite_factory = get_dwrite_factory();
     unsafe {
         let wide_text: Vec<u16> = text.encode_utf16().collect();
         let font_size = scale.x;
-
-        let text_format = dwrite_factory
-            .CreateTextFormat(
-                windows::core::w!("Microsoft YaHei"),
-                None,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                font_size,
-                windows::core::w!("en-us"),
-            )
-            .unwrap();
-
-        let layout = dwrite_factory
-            .CreateTextLayout(
-                &wide_text,
-                &text_format,
-                max_width as f32,
-                10000.0, // Large height
-            )
-            .unwrap();
+        let layout = get_or_create_layout(text, font_size, max_width);
 
         // Get line metrics to extract individual lines
         let mut line_count = 0;
@@ -678,25 +754,8 @@ pub fn get_cursor_index_from_xy(
     if text.is_empty() {
         return 0;
     }
-    let dwrite_factory = get_dwrite_factory();
     unsafe {
-        let wide_text: Vec<u16> = text.encode_utf16().collect();
-        let font_family = windows::core::w!("Microsoft YaHei");
-        let text_format = dwrite_factory
-            .CreateTextFormat(
-                font_family,
-                None,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                font_size,
-                windows::core::w!("en-us"),
-            )
-            .unwrap();
-
-        let layout = dwrite_factory
-            .CreateTextLayout(&wide_text, &text_format, max_width as f32, 10000.0)
-            .unwrap();
+        let layout = get_or_create_layout(text, font_size, max_width);
 
         let mut trailing = false.into();
         let mut is_inside = false.into();
@@ -731,9 +790,8 @@ pub fn get_xy_from_cursor_index(
     if text.is_empty() {
         return (0.0, 0.0);
     }
-    let dwrite_factory = get_dwrite_factory();
     unsafe {
-        let wide_text: Vec<u16> = text.encode_utf16().collect();
+        let layout = get_or_create_layout(text, font_size, max_width);
         let mut utf16_pos = 0;
         for (i, c) in text.chars().enumerate() {
             if i == index {
@@ -741,23 +799,6 @@ pub fn get_xy_from_cursor_index(
             }
             utf16_pos += c.len_utf16();
         }
-
-        let font_family = windows::core::w!("Microsoft YaHei");
-        let text_format = dwrite_factory
-            .CreateTextFormat(
-                font_family,
-                None,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                font_size,
-                windows::core::w!("en-us"),
-            )
-            .unwrap();
-
-        let layout = dwrite_factory
-            .CreateTextLayout(&wide_text, &text_format, max_width as f32, 10000.0)
-            .unwrap();
 
         let mut px = 0.0;
         let mut py = 0.0;

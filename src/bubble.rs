@@ -11,33 +11,18 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::{
-    // D2D1CreateFactory, // Removed as factory is obtained via get_d2d_factory
-    ID2D1DeviceContext,
-    // ID2D1Factory, // Removed as factory is obtained via get_d2d_factory
-    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-    // D2D1_FACTORY_TYPE_SINGLE_THREADED, // Removed as factory is obtained via get_d2d_factory
-    D2D1_RENDER_TARGET_PROPERTIES,
-    D2D1_RENDER_TARGET_TYPE_DEFAULT,
-    D2D1_ROUNDED_RECT,
+    ID2D1DCRenderTarget, ID2D1DeviceContext, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+    D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_ROUNDED_RECT,
 };
 #[cfg(target_os = "windows")]
-use windows::Win32::Graphics::DirectWrite::{
-    // DWriteCreateFactory, // Removed as factory is obtained via get_dwrite_factory
-    // IDWriteFactory, // Removed as it was flagged as unused
-    // DWRITE_FACTORY_TYPE_SHARED, // Removed as factory is obtained via get_dwrite_factory
-    DWRITE_FONT_STRETCH_NORMAL,
-    DWRITE_FONT_STYLE_NORMAL,
-    DWRITE_FONT_WEIGHT_BOLD,
-    DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
-    DWRITE_TEXT_ALIGNMENT_CENTER,
-};
+use windows::Win32::Graphics::DirectWrite::IDWriteTextLayout;
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GdiFlush, GetDC, ReleaseDC,
     SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HDC,
 };
 #[cfg(target_os = "windows")]
-use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN};
 
 pub const BASE_BUBBLE_WIDTH: i32 = 250;
 pub const BASE_BUBBLE_HEIGHT: i32 = 60;
@@ -50,14 +35,13 @@ pub struct SpeechBubble {
     // Add cache: (pixel_data, width, height, scale)
     cached_bitmap: Option<(Vec<u8>, i32, i32, f32)>,
     #[cfg(target_os = "windows")]
-    cached_layout: Option<windows::Win32::Graphics::DirectWrite::IDWriteTextLayout>,
+    cached_layout: Option<IDWriteTextLayout>,
     #[cfg(target_os = "windows")]
-    cached_format: Option<windows::Win32::Graphics::DirectWrite::IDWriteTextFormat>,
-    #[cfg(target_os = "windows")]
-    cached_rt: Option<windows::Win32::Graphics::Direct2D::ID2D1DCRenderTarget>,
+    cached_rt: Option<ID2D1DCRenderTarget>,
 }
 
-use crate::render::{get_d2d_factory, get_dwrite_factory};
+use crate::render::get_d2d_factory;
+use crate::ui_primitives::{get_metrics_dw_ex, get_or_create_layout_ex};
 
 impl SpeechBubble {
     pub fn new() -> Self {
@@ -69,8 +53,6 @@ impl SpeechBubble {
             cached_bitmap: None,
             #[cfg(target_os = "windows")]
             cached_layout: None,
-            #[cfg(target_os = "windows")]
-            cached_format: None,
             #[cfg(target_os = "windows")]
             cached_rt: None,
         }
@@ -129,71 +111,41 @@ impl SpeechBubble {
     fn calculate_size(&mut self, scale: f32) {
         #[cfg(target_os = "windows")]
         unsafe {
-            // Use Cached DirectWrite Factory
-            let dwrite_factory = get_dwrite_factory();
-
             let font_size = 18.0 * scale;
+            let font_family = "Segoe UI Emoji";
 
-            let text_format = dwrite_factory
-                .CreateTextFormat(
-                    windows::core::w!("Segoe UI Emoji"),
-                    None,
-                    DWRITE_FONT_WEIGHT_BOLD,
-                    DWRITE_FONT_STYLE_NORMAL,
-                    DWRITE_FONT_STRETCH_NORMAL,
-                    font_size,
-                    windows::core::w!(""),
-                )
-                .unwrap();
-
-            text_format
-                .SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)
-                .unwrap();
-            text_format
-                .SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)
-                .unwrap();
-            self.cached_format = Some(text_format.clone());
-
-            // Dynamic Sizing based on Screen Metrics
+            // Use global metrics (which uses cache)
             let screen_w = GetSystemMetrics(SM_CXSCREEN);
-            let screen_h = GetSystemMetrics(SM_CYSCREEN);
-
             let padding = (24.0 * scale).ceil() as i32;
             let max_w_allowed =
                 ((screen_w / 2) - padding * 2).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
 
-            let wide_text: Vec<u16> = self.text.encode_utf16().collect();
-            let text_layout = dwrite_factory
-                .CreateTextLayout(
-                    &wide_text,
-                    &text_format,
-                    max_w_allowed as f32,
-                    screen_h as f32, // Large enough limit
-                )
-                .unwrap();
-
-            let mut metrics = std::mem::zeroed();
-            text_layout.GetMetrics(&mut metrics).unwrap();
-
-            let text_w = metrics.width;
-            let text_h = metrics.height;
+            let (text_w, text_h) = get_metrics_dw_ex(
+                &self.text,
+                font_size,
+                max_w_allowed as u32,
+                font_family,
+                true, // bold
+                true, // centered
+            );
 
             let tail_h = (20.0 * scale) as i32;
-
-            // Add buffers and use ceil for safety against floating point truncation
             let width_buffer = (16.0 * scale).ceil() as i32;
             let height_buffer = (32.0 * scale).ceil() as i32;
 
             let calc_w = (text_w as i32 + padding * 2 + width_buffer)
                 .max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
-
             let calc_h = text_h.ceil() as i32 + padding * 2 + tail_h + height_buffer;
 
-            // --- CRITICAL: Re-constrain layout to expected interior size for centering ---
-            let _ = text_layout.SetMaxWidth((calc_w - padding * 2) as f32);
-            let _ = text_layout.SetMaxHeight((calc_h - padding * 2 - tail_h) as f32);
-
-            self.cached_layout = Some(text_layout);
+            // Fetch/Update local layout reference from global cache
+            self.cached_layout = Some(get_or_create_layout_ex(
+                &self.text,
+                font_size,
+                (calc_w - padding * 2) as u32,
+                font_family,
+                true,
+                true,
+            ));
 
             if self.current_width != calc_w || self.current_height != calc_h {
                 self.cached_bitmap = None; // Invalidate cache if size changes

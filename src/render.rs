@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, SIZE};
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1Factory, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+    D2D1CreateFactory, ID2D1Factory, D2D1_FACTORY_TYPE_MULTI_THREADED,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, DWRITE_FACTORY_TYPE_SHARED,
@@ -27,7 +27,7 @@ pub fn get_dwrite_factory() -> &'static IDWriteFactory {
 
 pub fn get_d2d_factory() -> &'static ID2D1Factory {
     D2D_FACTORY.get_or_init(|| unsafe {
-        D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).unwrap()
+        D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED, None).unwrap()
     })
 }
 
