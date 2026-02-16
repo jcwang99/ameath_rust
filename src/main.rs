@@ -35,7 +35,7 @@ use types::{BehaviorMode, PetState, PreprocessedFrame, PersistentConfig};
 use winit::{
     dpi::PhysicalPosition,
     event::{ElementState, Event, MouseButton, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
+    event_loop::EventLoop,
     window::{WindowBuilder, WindowLevel},
 };
 
@@ -178,13 +178,8 @@ fn main() {
     }
     window.set_visible(true);
 
-    // Determine refresh rate
-    let monitor = window.current_monitor();
-    let refresh_rate_millihertz = monitor
-        .and_then(|m| m.refresh_rate_millihertz())
-        .unwrap_or(60000);
-    let refresh_rate = refresh_rate_millihertz as f64 / 1000.0;
-    let target_frame_duration = Duration::from_nanos((1_000_000_000.0 / refresh_rate.max(30.0)) as u64);
+    // Initial frame duration (will be updated dynamically)
+    let mut target_frame_duration = Duration::from_nanos(1_000_000_000 / 60);
 
     if let Some(monitor) = window.current_monitor() {
         let size = monitor.size();
@@ -270,7 +265,8 @@ fn main() {
     let mut settings_win: Option<SettingsWindow> = None;
     let mut menu_visible_timer: Option<Instant> = None;
     let mut current_layer = types::WindowLayer::Top;
-    let mut bubble_rect: Option<(i32, i32, i32, i32)> = None;
+    let mut bubble_rect: Option<(i32, i32, i32, i32)>;
+    bubble_rect = None;
 
     let mut composite_data: Vec<u8> = Vec::new();
     let mut pomodoro_data: Vec<u8> = Vec::new();
@@ -278,7 +274,7 @@ fn main() {
 
     event_loop
         .run(move |event, elwt| {
-            elwt.set_control_flow(ControlFlow::Poll);
+            // Control flow is managed in AboutToWait logic
 
             // Global Hotkey Trigger
             if let Ok(_hotkey_event) = hotkey_channel.try_recv() {
@@ -632,6 +628,13 @@ fn main() {
                     }
                 }
                 Event::AboutToWait => {
+                    // Update target_frame_duration based on current monitor refresh rate
+                    if let Some(monitor) = window.current_monitor() {
+                        let refresh_rate_millihertz = monitor.refresh_rate_millihertz().unwrap_or(60000);
+                        let refresh_rate = refresh_rate_millihertz as f64 / 1000.0;
+                        target_frame_duration = Duration::from_nanos((1_000_000_000.0 / refresh_rate.max(30.0)) as u64);
+                    }
+
                     if let Ok(response) = ai_rx.try_recv() {
                         is_thinking = false;
                         thinking_start = None;

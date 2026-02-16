@@ -139,27 +139,26 @@ impl SpeechBubble {
             let dwrite_factory = get_dwrite_factory();
 
             let font_size = 18.0 * scale;
-            let text_format = if let Some(ref fmt) = self.cached_format {
-                fmt.clone()
-            } else {
-                let fmt = dwrite_factory
-                    .CreateTextFormat(
-                        windows::core::w!("Segoe UI Emoji"),
-                        None,
-                        DWRITE_FONT_WEIGHT_BOLD,
-                        DWRITE_FONT_STYLE_NORMAL,
-                        DWRITE_FONT_STRETCH_NORMAL,
-                        font_size,
-                        windows::core::w!(""),
-                    )
-                    .unwrap();
 
-                fmt.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER).unwrap();
-                fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)
-                    .unwrap();
-                self.cached_format = Some(fmt.clone());
-                fmt
-            };
+            let text_format = dwrite_factory
+                .CreateTextFormat(
+                    windows::core::w!("Segoe UI Emoji"),
+                    None,
+                    DWRITE_FONT_WEIGHT_BOLD,
+                    DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    font_size,
+                    windows::core::w!(""),
+                )
+                .unwrap();
+
+            text_format
+                .SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)
+                .unwrap();
+            text_format
+                .SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)
+                .unwrap();
+            self.cached_format = Some(text_format.clone());
 
             // Dynamic Sizing based on Screen Metrics
             let screen_w = GetSystemMetrics(SM_CXSCREEN);
