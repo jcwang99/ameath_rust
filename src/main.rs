@@ -782,7 +782,7 @@ fn main() {
 
                     // 5. UPDATE CACHED RECTS & HIT DETECTION
                     if bubble_manager.is_visible() {
-                        bubble_rect = Some((bx_f as i32, bubble_y_f as i32, current_bubble_w_f as i32, current_bubble_h_f as i32));
+                        // bubble_rect not needed here
                     } else {
                         bubble_rect = None;
                     }
