@@ -3,10 +3,7 @@ use rayon::prelude::*;
 use rusttype::{Font, Scale};
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
-#[cfg(target_os = "windows")]
-// use windows::core::ComInterface;
-#[cfg(target_os = "windows")]
-use windows::Win32::Foundation::RECT;
+use windows::Win32::Foundation::{HWND, RECT};
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
@@ -23,9 +20,101 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, BITMAPINFO,
-    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+    CreateCompatibleDC, CreateDIBSection, DeleteObject, GetDC, SelectObject, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC,
 };
+
+#[cfg(target_os = "windows")]
+struct ScratchpadRenderer {
+    hdc_mem: HDC,
+    h_bitmap: HBITMAP,
+    rt: Option<ID2D1DCRenderTarget>,
+    width: i32,
+    height: i32,
+    bits: *mut u32,
+}
+
+#[cfg(target_os = "windows")]
+impl ScratchpadRenderer {
+    fn new() -> Self {
+        unsafe {
+            let hdc_screen = GetDC(HWND(0));
+            let hdc_mem = CreateCompatibleDC(hdc_screen);
+            Self {
+                hdc_mem,
+                h_bitmap: HBITMAP(0),
+                rt: None,
+                width: 0,
+                height: 0,
+                bits: std::ptr::null_mut(),
+            }
+        }
+    }
+
+    fn prepare(&mut self, tw: i32, th: i32) -> (&ID2D1DCRenderTarget, *mut u32) {
+        unsafe {
+            if self.rt.is_none() || self.width < tw || self.height < th {
+                let target_w = tw.max(self.width).max(1024);
+                let target_h = th.max(self.height).max(512);
+
+                if self.h_bitmap.0 != 0 {
+                    let _ = DeleteObject(self.h_bitmap);
+                }
+
+                let bmi = BITMAPINFO {
+                    bmiHeader: BITMAPINFOHEADER {
+                        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                        biWidth: target_w,
+                        biHeight: -target_h,
+                        biPlanes: 1,
+                        biBitCount: 32,
+                        biCompression: BI_RGB.0,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+
+                let mut bits = std::ptr::null_mut();
+                self.h_bitmap =
+                    CreateDIBSection(self.hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
+                        .unwrap();
+                SelectObject(self.hdc_mem, self.h_bitmap);
+                self.bits = bits as *mut u32;
+                self.width = target_w;
+                self.height = target_h;
+
+                if self.rt.is_none() {
+                    let d2d_factory = get_d2d_factory();
+                    let props = D2D1_RENDER_TARGET_PROPERTIES {
+                        r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                        pixelFormat: D2D1_PIXEL_FORMAT {
+                            format:
+                                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+                            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                        },
+                        ..Default::default()
+                    };
+                    self.rt = Some(d2d_factory.CreateDCRenderTarget(&props).unwrap());
+                }
+            }
+
+            let rt = self.rt.as_ref().unwrap();
+            let bind_rect = RECT {
+                left: 0,
+                top: 0,
+                right: tw,
+                bottom: th,
+            };
+            rt.BindDC(self.hdc_mem, &bind_rect).unwrap();
+            (rt, self.bits)
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+thread_local! {
+    static SCRATCHPAD: std::cell::RefCell<ScratchpadRenderer> = std::cell::RefCell::new(ScratchpadRenderer::new());
+}
 
 #[derive(Hash, PartialEq, Eq, Clone)]
 struct LayoutKey {
@@ -161,13 +250,16 @@ pub fn draw_rect(
         return;
     }
 
-    for cy in start_y..max_y {
-        for cx in start_x..max_x {
-            let idx = (cy * surface_w as i32 + cx) as usize;
-            if idx < buffer.len() {
-                buffer[idx] = color;
-            }
-        }
+    let start_y_idx = start_y as usize;
+    let end_y_idx = max_y as usize;
+    let surface_w_usize = surface_w as usize;
+
+    if start_y_idx < end_y_idx {
+        buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize]
+            .par_chunks_mut(surface_w_usize)
+            .for_each(|row| {
+                row[start_x as usize..max_x as usize].fill(color);
+            });
     }
 }
 
@@ -360,142 +452,117 @@ pub fn draw_text_dw(
         return;
     }
 
-    let d2d_factory = get_d2d_factory();
-
     unsafe {
-        // 1. Get cached layout (unconstrained width for single-line)
         let layout_measure = get_or_create_layout(text, font_size, 10000);
-
         let mut metrics = std::mem::zeroed();
         layout_measure.GetMetrics(&mut metrics).unwrap();
 
-        // Add 2px padding for safety against anti-aliasing clipping
         let tw = (metrics.width.ceil() as i32) + 2;
         let th = (metrics.height.ceil() as i32) + 2;
 
-        // 2. Prepare GDI surface (tw x th)
-        let hdc_screen = windows::Win32::Graphics::Gdi::GetDC(windows::Win32::Foundation::HWND(0));
-        let hdc_mem = CreateCompatibleDC(hdc_screen);
+        SCRATCHPAD.with(|sp| {
+            let mut sp = sp.borrow_mut();
+            let (rt, scratch_bits) = sp.prepare(tw, th);
 
-        let bmi = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: tw,
-                biHeight: -th, // Top-down
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+            rt.BeginDraw();
+            rt.Clear(Some(&D2D1_COLOR_F {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.0,
+            }));
 
-        let mut bits = std::ptr::null_mut();
-        let h_bitmap = CreateDIBSection(hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).unwrap();
-        let old_obj = SelectObject(hdc_mem, h_bitmap);
+            let r = ((color >> 16) & 0xFF) as f32 / 255.0;
+            let g = ((color >> 8) & 0xFF) as f32 / 255.0;
+            let b = (color & 0xFF) as f32 / 255.0;
+            let brush = rt
+                .CreateSolidColorBrush(&D2D1_COLOR_F { r, g, b, a: 1.0 }, None)
+                .unwrap();
 
-        // 3. Render Target over DC
-        let props = D2D1_RENDER_TARGET_PROPERTIES {
-            r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
-            pixelFormat: D2D1_PIXEL_FORMAT {
-                format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
-                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-            },
-            ..Default::default()
-        };
+            rt.DrawTextLayout(
+                windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F { x: 0.0, y: 0.0 },
+                &layout_measure,
+                &brush,
+                windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+            rt.EndDraw(None, None).unwrap();
 
-        let rt: ID2D1DCRenderTarget = d2d_factory.CreateDCRenderTarget(&props).unwrap();
+            let sr = ((color >> 16) & 0xFF) as u32;
+            let sg = ((color >> 8) & 0xFF) as u32;
+            let sb = (color & 0xFF) as u32;
 
-        let target_rect = RECT {
-            left: 0,
-            top: 0,
-            right: tw,
-            bottom: th,
-        };
-        rt.BindDC(hdc_mem, &target_rect).unwrap();
+            let surface_h = (buffer.len() as u32) / surface_w.max(1);
+            let start_y_idx = y.max(0) as usize;
+            let end_y_idx = (y + th as i32).min(surface_h as i32).max(0) as usize;
+            let surface_w_usize = surface_w as usize;
 
-        rt.BeginDraw();
-        // Clear to transparent
-        rt.Clear(Some(&D2D1_COLOR_F {
-            r: 0.0,
-            g: 0.0,
-            b: 0.0,
-            a: 0.0,
-        }));
+            if start_y_idx < end_y_idx {
+                let affected_rows =
+                    &mut buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize];
+                let src_w = sp.width;
 
-        let r = ((color >> 16) & 0xFF) as f32 / 255.0;
-        let g = ((color >> 8) & 0xFF) as f32 / 255.0;
-        let b = (color & 0xFF) as f32 / 255.0;
-        let brush = rt
-            .CreateSolidColorBrush(&D2D1_COLOR_F { r, g, b, a: 1.0 }, None)
-            .unwrap();
-
-        rt.DrawTextLayout(
-            windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F { x: 0.0, y: 0.0 },
-            &layout_measure,
-            &brush,
-            windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
-        );
-
-        rt.EndDraw(None, None).unwrap();
-
-        // 4. Blit with proper bounds checking
-        let sr = ((color >> 16) & 0xFF) as u32;
-        let sg = ((color >> 8) & 0xFF) as u32;
-        let sb = (color & 0xFF) as u32;
-
-        let surface_h = (buffer.len() as u32) / surface_w.max(1);
-        let start_y_idx = y.max(0) as usize;
-        let end_y_idx = (y + th as i32).min(surface_h as i32).max(0) as usize;
-        let surface_w_usize = surface_w as usize;
-
-        if start_y_idx < end_y_idx {
-            let affected_rows =
-                &mut buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize];
-            let src_addr = bits as usize;
-
-            affected_rows
-                .par_chunks_mut(surface_w_usize)
-                .enumerate()
-                .for_each(|(i, row)| {
-                    let win_y = (start_y_idx + i) as i32;
-                    let dy = win_y - y;
-                    let src_ptr = src_addr as *const u32;
-
-                    for dx in 0..tw {
-                        let win_x = x + dx;
-                        if win_x < 0 || win_x >= surface_w as i32 {
-                            continue;
-                        }
-
-                        let src_idx = (dy * tw + dx) as usize;
-                        let pixel = *src_ptr.add(src_idx);
-                        let a = (pixel >> 24) & 0xFF;
-
-                        if a > 0 {
-                            if a == 255 {
-                                row[win_x as usize] = (sr << 16) | (sg << 8) | sb;
-                            } else {
-                                let bg = row[win_x as usize];
-                                let br = (bg >> 16) & 0xFF;
-                                let bg_g = (bg >> 8) & 0xFF;
-                                let bb = bg & 0xFF;
-
-                                let inv_a = 255 - a;
-                                let out_r = (sr * a + br * inv_a) / 255;
-                                let out_g = (sg * a + bg_g * inv_a) / 255;
-                                let out_b = (sb * a + bb * inv_a) / 255;
-                                row[win_x as usize] = (out_r << 16) | (out_g << 8) | out_b;
+                if tw < 300 {
+                    for i in 0..(end_y_idx - start_y_idx) {
+                        let win_y = (start_y_idx + i) as i32;
+                        let dy = win_y - y;
+                        let row =
+                            &mut affected_rows[i * surface_w_usize..(i + 1) * surface_w_usize];
+                        for dx in 0..tw {
+                            let win_x = x + dx;
+                            if win_x < 0 || win_x >= surface_w as i32 {
+                                continue;
+                            }
+                            let src_idx = (dy * src_w + dx) as usize;
+                            let pixel = *scratch_bits.add(src_idx);
+                            let a = (pixel >> 24) & 0xFF;
+                            if a > 0 {
+                                if a == 255 {
+                                    row[win_x as usize] = (sr << 16) | (sg << 8) | sb;
+                                } else {
+                                    let bg = row[win_x as usize];
+                                    let inv_a = 255 - a;
+                                    let out_r = (sr * a + ((bg >> 16) & 0xFF) * inv_a) / 255;
+                                    let out_g = (sg * a + ((bg >> 8) & 0xFF) * inv_a) / 255;
+                                    let out_b = (sb * a + (bg & 0xFF) * inv_a) / 255;
+                                    row[win_x as usize] = (out_r << 16) | (out_g << 8) | out_b;
+                                }
                             }
                         }
                     }
-                });
-        }
-
-        SelectObject(hdc_mem, old_obj);
-        let _ = DeleteObject(h_bitmap);
-        let _ = DeleteDC(hdc_mem);
-        windows::Win32::Graphics::Gdi::ReleaseDC(windows::Win32::Foundation::HWND(0), hdc_screen);
+                } else {
+                    let src_addr = scratch_bits as usize;
+                    affected_rows
+                        .par_chunks_mut(surface_w_usize)
+                        .enumerate()
+                        .for_each(|(i, row)| {
+                            let win_y = (start_y_idx + i) as i32;
+                            let dy = win_y - y;
+                            let src_ptr = src_addr as *const u32;
+                            for dx in 0..tw {
+                                let win_x = x + dx;
+                                if win_x < 0 || win_x >= surface_w as i32 {
+                                    continue;
+                                }
+                                let src_idx = (dy * src_w + dx) as usize;
+                                let pixel = *src_ptr.add(src_idx);
+                                let a = (pixel >> 24) & 0xFF;
+                                if a > 0 {
+                                    if a == 255 {
+                                        row[win_x as usize] = (sr << 16) | (sg << 8) | sb;
+                                    } else {
+                                        let bg = row[win_x as usize];
+                                        let inv_a = 255 - a;
+                                        let out_r = (sr * a + ((bg >> 16) & 0xFF) * inv_a) / 255;
+                                        let out_g = (sg * a + ((bg >> 8) & 0xFF) * inv_a) / 255;
+                                        let out_b = (sb * a + (bg & 0xFF) * inv_a) / 255;
+                                        row[win_x as usize] = (out_r << 16) | (out_g << 8) | out_b;
+                                    }
+                                }
+                            }
+                        });
+                }
+            }
+        });
     }
 }
 
@@ -516,135 +583,87 @@ pub fn draw_text_dw_ex(
         return;
     }
 
-    let d2d_factory = get_d2d_factory();
-
     unsafe {
         let layout = get_or_create_layout(text, font_size, max_w);
-
-        // Prepare GDI surface (max_w x max_h)
         let tw = max_w as i32;
         let th = max_h as i32;
 
-        let hdc_screen = windows::Win32::Graphics::Gdi::GetDC(windows::Win32::Foundation::HWND(0));
-        let hdc_mem = CreateCompatibleDC(hdc_screen);
+        SCRATCHPAD.with(|sp| {
+            let mut sp = sp.borrow_mut();
+            let (rt, scratch_bits) = sp.prepare(tw, th);
 
-        let bmi = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: tw,
-                biHeight: -th,
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+            rt.BeginDraw();
+            rt.Clear(Some(&D2D1_COLOR_F {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.0,
+            }));
 
-        let mut bits = std::ptr::null_mut();
-        let h_bitmap = CreateDIBSection(hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).unwrap();
-        let old_obj = SelectObject(hdc_mem, h_bitmap);
+            let r = ((color >> 16) & 0xFF) as f32 / 255.0;
+            let g = ((color >> 8) & 0xFF) as f32 / 255.0;
+            let b = (color & 0xFF) as f32 / 255.0;
+            let brush = rt
+                .CreateSolidColorBrush(&D2D1_COLOR_F { r, g, b, a: 1.0 }, None)
+                .unwrap();
 
-        let props = D2D1_RENDER_TARGET_PROPERTIES {
-            pixelFormat: D2D1_PIXEL_FORMAT {
-                format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
-                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-            },
-            ..Default::default()
-        };
+            rt.DrawTextLayout(
+                windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F {
+                    x: 0.0,
+                    y: scroll_offset,
+                },
+                &layout,
+                &brush,
+                windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
+            );
+            rt.EndDraw(None, None).unwrap();
 
-        let rt: ID2D1DCRenderTarget = d2d_factory.CreateDCRenderTarget(&props).unwrap();
-        let target_rect = RECT {
-            left: 0,
-            top: 0,
-            right: tw,
-            bottom: th,
-        };
-        rt.BindDC(hdc_mem, &target_rect).unwrap();
+            let sr = ((color >> 16) & 0xFF) as u32;
+            let sg = ((color >> 8) & 0xFF) as u32;
+            let sb = (color & 0xFF) as u32;
 
-        rt.BeginDraw();
-        rt.Clear(Some(&D2D1_COLOR_F {
-            r: 0.0,
-            g: 0.0,
-            b: 0.0,
-            a: 0.0,
-        }));
+            let surface_h = (buffer.len() as u32) / surface_w.max(1);
+            let start_y_idx = y.max(0) as usize;
+            let end_y_idx = (y + th as i32).min(surface_h as i32).max(0) as usize;
+            let surface_w_usize = surface_w as usize;
 
-        let r = ((color >> 16) & 0xFF) as f32 / 255.0;
-        let g = ((color >> 8) & 0xFF) as f32 / 255.0;
-        let b = (color & 0xFF) as f32 / 255.0;
-        let brush = rt
-            .CreateSolidColorBrush(&D2D1_COLOR_F { r, g, b, a: 1.0 }, None)
-            .unwrap();
+            if start_y_idx < end_y_idx {
+                let affected_rows =
+                    &mut buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize];
+                let src_w = sp.width;
+                let src_addr = scratch_bits as usize;
 
-        rt.DrawTextLayout(
-            windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F {
-                x: 0.0,
-                y: scroll_offset,
-            },
-            &layout,
-            &brush,
-            windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
-        );
-
-        rt.EndDraw(None, None).unwrap();
-
-        let sr = ((color >> 16) & 0xFF) as u32;
-        let sg = ((color >> 8) & 0xFF) as u32;
-        let sb = (color & 0xFF) as u32;
-
-        let surface_h = (buffer.len() as u32) / surface_w.max(1);
-        let start_y_idx = y.max(0) as usize;
-        let end_y_idx = (y + th as i32).min(surface_h as i32).max(0) as usize;
-        let surface_w_usize = surface_w as usize;
-
-        if start_y_idx < end_y_idx {
-            let affected_rows =
-                &mut buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize];
-            let src_addr = bits as usize;
-
-            affected_rows
-                .par_chunks_mut(surface_w_usize)
-                .enumerate()
-                .for_each(|(i, row)| {
-                    let win_y = (start_y_idx + i) as i32;
-                    let dy = win_y - y;
-                    let src_ptr = src_addr as *const u32;
-
-                    for dx in 0..tw {
-                        let win_x = x + dx;
-                        if win_x < 0 || win_x >= surface_w as i32 {
-                            continue;
-                        }
-
-                        let src_idx = (dy * tw + dx) as usize;
-                        let pixel = *src_ptr.add(src_idx);
-                        let a = (pixel >> 24) & 0xFF;
-
-                        if a > 0 {
-                            if a == 255 {
-                                row[win_x as usize] = (sr << 16) | (sg << 8) | sb;
-                            } else {
-                                let bg = row[win_x as usize];
-                                let br = (bg >> 16) & 0xFF;
-                                let bg_g = (bg >> 8) & 0xFF;
-                                let bb = bg & 0xFF;
-
-                                let inv_a = 255 - a;
-                                let out_r = (sr * a + br * inv_a) / 255;
-                                let out_g = (sg * a + bg_g * inv_a) / 255;
-                                let out_b = (sb * a + bb * inv_a) / 255;
-                                row[win_x as usize] = (out_r << 16) | (out_g << 8) | out_b;
+                affected_rows
+                    .par_chunks_mut(surface_w_usize)
+                    .enumerate()
+                    .for_each(|(i, row)| {
+                        let win_y = (start_y_idx + i) as i32;
+                        let dy = win_y - y;
+                        let src_ptr = src_addr as *const u32;
+                        for dx in 0..tw {
+                            let win_x = x + dx;
+                            if win_x < 0 || win_x >= surface_w as i32 {
+                                continue;
+                            }
+                            let src_idx = (dy * src_w + dx) as usize;
+                            let pixel = *src_ptr.add(src_idx);
+                            let a = (pixel >> 24) & 0xFF;
+                            if a > 0 {
+                                if a == 255 {
+                                    row[win_x as usize] = (sr << 16) | (sg << 8) | sb;
+                                } else {
+                                    let bg = row[win_x as usize];
+                                    let inv_a = 255 - a;
+                                    let out_r = (sr * a + ((bg >> 16) & 0xFF) * inv_a) / 255;
+                                    let out_g = (sg * a + ((bg >> 8) & 0xFF) * inv_a) / 255;
+                                    let out_b = (sb * a + (bg & 0xFF) * inv_a) / 255;
+                                    row[win_x as usize] = (out_r << 16) | (out_g << 8) | out_b;
+                                }
                             }
                         }
-                    }
-                });
-        }
-
-        SelectObject(hdc_mem, old_obj);
-        let _ = DeleteObject(h_bitmap);
-        let _ = DeleteDC(hdc_mem);
-        windows::Win32::Graphics::Gdi::ReleaseDC(windows::Win32::Foundation::HWND(0), hdc_screen);
+                    });
+            }
+        });
     }
 }
 
@@ -808,10 +827,70 @@ pub fn get_xy_from_cursor_index(
     }
 }
 
+#[cfg(target_os = "windows")]
+pub fn get_selection_rects(
+    text: &str,
+    font_size: f32,
+    max_width: u32,
+    start: usize,
+    end: usize,
+) -> Vec<(f32, f32, f32, f32)> {
+    if text.is_empty() || start == end {
+        return Vec::new();
+    }
+    unsafe {
+        let layout = get_or_create_layout(text, font_size, max_width);
+        let min_idx = start.min(end);
+        let max_idx = start.max(end);
+
+        let mut utf16_start = 0;
+        let mut utf16_len = 0;
+        let mut char_count = 0;
+        for c in text.chars() {
+            if char_count < min_idx {
+                utf16_start += c.len_utf16();
+            } else if char_count < max_idx {
+                utf16_len += c.len_utf16();
+            } else {
+                break;
+            }
+            char_count += 1;
+        }
+
+        if utf16_len == 0 {
+            return Vec::new();
+        }
+
+        let mut count = 0;
+        let _ = layout.HitTestTextRange(
+            utf16_start as u32,
+            utf16_len as u32,
+            0.0,
+            0.0,
+            None,
+            &mut count,
+        );
+        let mut metrics = vec![std::mem::zeroed(); count as usize];
+        let _ = layout.HitTestTextRange(
+            utf16_start as u32,
+            utf16_len as u32,
+            0.0,
+            0.0,
+            Some(&mut metrics),
+            &mut count,
+        );
+
+        metrics
+            .into_iter()
+            .map(|m| (m.left, m.top, m.width, m.height))
+            .collect()
+    }
+}
+
 #[cfg(not(target_os = "windows"))]
 pub fn wrap_text(
     text: &str,
-    _fonts: &[&Font],
+    _fonts: &[&rusttype::Font],
     _scale: rusttype::Scale,
     _max_width: u32,
 ) -> Vec<String> {
@@ -837,4 +916,15 @@ pub fn get_xy_from_cursor_index(
     _index: usize,
 ) -> (f32, f32) {
     (0.0, 0.0)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn get_selection_rects(
+    _text: &str,
+    _font_size: f32,
+    _max_width: u32,
+    _start: usize,
+    _end: usize,
+) -> Vec<(f32, f32, f32, f32)> {
+    Vec::new()
 }

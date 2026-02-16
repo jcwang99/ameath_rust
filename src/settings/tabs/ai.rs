@@ -178,61 +178,34 @@ pub fn draw(
 
             if is_focused {
                 if let Some(sel_start_idx) = state.selection_start {
-                    let min_idx = sel_start_idx.min(state.cursor_pos);
-                    let max_idx = sel_start_idx.max(state.cursor_pos);
-                    if min_idx != max_idx {
-                        let mut current_pos = 0;
-                        for line in wrap_text(
-                            &final_text,
-                            &[],
-                            rusttype::Scale::uniform(sc(14.0)),
-                            max_width,
-                        ) {
-                            let line_len = line.chars().count();
-                            let line_end = current_pos + line_len;
-                            if max_idx > current_pos && min_idx < line_end {
-                                let sel_in_line_start = min_idx.saturating_sub(current_pos);
-                                let sel_in_line_end =
-                                    (max_idx.saturating_sub(current_pos)).min(line_len);
+                    let rects = get_selection_rects(
+                        &final_text,
+                        sc(14.0),
+                        max_width,
+                        sel_start_idx,
+                        state.cursor_pos,
+                    );
+                    for (rx, ry, rw, rh) in rects {
+                        let draw_x = s(fx as u32) as i32 + sc(15.0) as i32 + rx as i32;
+                        let draw_y_f = start_text_raw as f32
+                            + ry
+                            + (state.system_prompt_scroll_offset * scale);
 
-                                let (lx_start, py_start) = get_xy_from_cursor_index(
-                                    &final_text,
-                                    sc(14.0),
-                                    max_width,
-                                    current_pos + sel_in_line_start,
-                                );
-                                let (lx_end, _) = get_xy_from_cursor_index(
-                                    &final_text,
-                                    sc(14.0),
-                                    max_width,
-                                    current_pos + sel_in_line_end,
-                                );
-
-                                let lx_width = (lx_end - lx_start).max(5.0);
-                                let draw_x =
-                                    s(fx as u32) as i32 + sc(15.0) as i32 + lx_start as i32;
-                                let draw_y_f = start_text_raw as f32
-                                    + py_start
-                                    + (state.system_prompt_scroll_offset * scale);
-
-                                if draw_y_f >= start_text_raw as f32 - sc(15.0)
-                                    && draw_y_f <= (box_bottom_raw as f32 - sc(10.0))
-                                {
-                                    draw_rect_alpha(
-                                        buffer,
-                                        w,
-                                        draw_x,
-                                        draw_y_f as i32,
-                                        lx_width as u32,
-                                        sc(22.0) as u32,
-                                        0x00AADDFF,
-                                        0.4,
-                                        w,
-                                        h,
-                                    );
-                                }
-                            }
-                            current_pos += line_len;
+                        if draw_y_f >= (start_text_raw as f32 - rh)
+                            && draw_y_f <= (box_bottom_raw as f32)
+                        {
+                            draw_rect_alpha(
+                                buffer,
+                                w,
+                                draw_x,
+                                draw_y_f as i32,
+                                rw as u32,
+                                rh as u32,
+                                0x00AADDFF,
+                                0.4,
+                                w,
+                                h,
+                            );
                         }
                     }
                 }
