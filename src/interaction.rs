@@ -40,9 +40,8 @@ pub struct Senses {
 
 impl Senses {
     pub fn new() -> Self {
-        let mut sys = System::new_all();
-        sys.refresh_all();
-        let networks = Networks::new_with_refreshed_list();
+        let sys = System::new();
+        let networks = Networks::new();
         let mut total_tx = 0;
         let mut total_rx = 0;
         for (_, data) in &networks {
@@ -52,9 +51,9 @@ impl Senses {
 
         Self {
             sys,
-            disks: Disks::new_with_refreshed_list(),
+            disks: Disks::new(),
             networks,
-            components: Components::new_with_refreshed_list(),
+            components: Components::new(),
             clipboard: Clipboard::new().ok(),
             last_net_time: Instant::now(),
             last_tx_total: total_tx,
@@ -65,7 +64,8 @@ impl Senses {
     }
 
     pub fn refresh(&mut self) {
-        self.sys.refresh_all();
+        self.sys.refresh_cpu_all();
+        self.sys.refresh_memory();
         self.disks.refresh(false);
         self.networks.refresh(false);
         self.components.refresh(false);

@@ -1,5 +1,13 @@
+use std::sync::OnceLock;
+// use windows::core::ComInterface;
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{COLORREF, HWND, POINT, SIZE};
+use windows::Win32::Graphics::Direct2D::{
+    D2D1CreateFactory, ID2D1Factory, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+};
+use windows::Win32::Graphics::DirectWrite::{
+    DWriteCreateFactory, IDWriteFactory, DWRITE_FACTORY_TYPE_SHARED,
+};
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
@@ -8,6 +16,20 @@ use windows::Win32::Graphics::Gdi::{
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
+
+static DWRITE_FACTORY: OnceLock<IDWriteFactory> = OnceLock::new();
+static D2D_FACTORY: OnceLock<ID2D1Factory> = OnceLock::new();
+
+pub fn get_dwrite_factory() -> &'static IDWriteFactory {
+    DWRITE_FACTORY
+        .get_or_init(|| unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).unwrap() })
+}
+
+pub fn get_d2d_factory() -> &'static ID2D1Factory {
+    D2D_FACTORY.get_or_init(|| unsafe {
+        D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).unwrap()
+    })
+}
 
 #[cfg(target_os = "windows")]
 pub struct RenderContext {

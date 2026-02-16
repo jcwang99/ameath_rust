@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+// use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
@@ -11,14 +11,24 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateFactory, ID2D1DeviceContext, ID2D1Factory, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_RENDER_TARGET_PROPERTIES,
-    D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_ROUNDED_RECT,
+    // D2D1CreateFactory, // Removed as factory is obtained via get_d2d_factory
+    ID2D1DeviceContext,
+    // ID2D1Factory, // Removed as factory is obtained via get_d2d_factory
+    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+    // D2D1_FACTORY_TYPE_SINGLE_THREADED, // Removed as factory is obtained via get_d2d_factory
+    D2D1_RENDER_TARGET_PROPERTIES,
+    D2D1_RENDER_TARGET_TYPE_DEFAULT,
+    D2D1_ROUNDED_RECT,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::DirectWrite::{
-    DWriteCreateFactory, IDWriteFactory, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL,
-    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_BOLD, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+    // DWriteCreateFactory, // Removed as factory is obtained via get_dwrite_factory
+    // IDWriteFactory, // Removed as it was flagged as unused
+    // DWRITE_FACTORY_TYPE_SHARED, // Removed as factory is obtained via get_dwrite_factory
+    DWRITE_FONT_STRETCH_NORMAL,
+    DWRITE_FONT_STYLE_NORMAL,
+    DWRITE_FONT_WEIGHT_BOLD,
+    DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
     DWRITE_TEXT_ALIGNMENT_CENTER,
 };
 #[cfg(target_os = "windows")]
@@ -47,23 +57,7 @@ pub struct SpeechBubble {
     cached_rt: Option<windows::Win32::Graphics::Direct2D::ID2D1DCRenderTarget>,
 }
 
-#[cfg(target_os = "windows")]
-static DWRITE_FACTORY: OnceLock<IDWriteFactory> = OnceLock::new();
-#[cfg(target_os = "windows")]
-static D2D_FACTORY: OnceLock<ID2D1Factory> = OnceLock::new();
-
-#[cfg(target_os = "windows")]
-fn get_dwrite_factory() -> &'static IDWriteFactory {
-    DWRITE_FACTORY
-        .get_or_init(|| unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).unwrap() })
-}
-
-#[cfg(target_os = "windows")]
-fn get_d2d_factory() -> &'static ID2D1Factory {
-    D2D_FACTORY.get_or_init(|| unsafe {
-        D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).unwrap()
-    })
-}
+use crate::render::{get_d2d_factory, get_dwrite_factory};
 
 impl SpeechBubble {
     pub fn new() -> Self {

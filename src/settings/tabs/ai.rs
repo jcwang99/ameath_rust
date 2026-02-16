@@ -1,7 +1,7 @@
 use crate::theme::*;
 use crate::types::AiConfig;
 use crate::ui_primitives::*;
-use rusttype::{Font, Scale};
+use rusttype::Scale;
 
 pub struct AiTabState<'a> {
     pub focused_field: Option<usize>,
@@ -21,7 +21,6 @@ pub fn draw(
     scale: f32,
     off_x: f32,
     off_y: f32,
-    fonts: &[&Font],
     scroll_y: f32,
     ai_config: &AiConfig,
     state: &mut AiTabState,
@@ -80,7 +79,7 @@ pub fn draw(
         draw_text(
             buffer,
             w,
-            fonts,
+            &[],
             label,
             s(fx as u32) as i32,
             fy_scaled_raw,
@@ -91,7 +90,8 @@ pub fn draw(
         let input_y_raw = fy_scaled_raw + sc(25.0) as i32;
         let input_w = sc(fw as f32) as u32;
         let input_h = if i == 7 {
-            sc(200.0) as u32
+            let input_h_logical = 250.0;
+            sc(input_h_logical) as u32
         } else {
             sc(45.0) as u32
         };
@@ -163,17 +163,11 @@ pub fn draw(
             // Multi-line rendering for System Prompt
             let final_text: String = display_chars.iter().collect();
             let max_width = sc(500.0 - 40.0) as u32;
-            let lines = wrap_text(
-                &final_text,
-                fonts,
-                rusttype::Scale::uniform(sc(14.0)),
-                max_width,
-            );
+            let (_, layout_h) = get_metrics_dw(&final_text, sc(14.0), max_width);
+            let full_content_h_px = layout_h + sc(20.0);
 
             let sys_logical_y = input_y_raw as f64 / scale as f64;
             let sys_logical_h = input_h as f64 / scale as f64;
-            let line_count = lines.len().max(1);
-            let full_content_h_px = sc(12.0 + line_count as f32 * 20.0) + sc(20.0);
 
             *state.active_sys_prompt_rect =
                 Some((230.0, sys_logical_y, 730.0, sys_logical_y + sys_logical_h));
@@ -183,51 +177,53 @@ pub fn draw(
             let box_bottom_raw = input_y_raw + input_h as i32;
 
             if is_focused {
-                // Draw Selection Highlight for multi-line
                 if let Some(sel_start_idx) = state.selection_start {
                     let min_idx = sel_start_idx.min(state.cursor_pos);
                     let max_idx = sel_start_idx.max(state.cursor_pos);
-
                     if min_idx != max_idx {
                         let mut current_pos = 0;
-                        for (line_idx, line) in lines.iter().enumerate() {
+                        for line in wrap_text(
+                            &final_text,
+                            &[],
+                            rusttype::Scale::uniform(sc(14.0)),
+                            max_width,
+                        ) {
                             let line_len = line.chars().count();
                             let line_end = current_pos + line_len;
-
                             if max_idx > current_pos && min_idx < line_end {
                                 let sel_in_line_start = min_idx.saturating_sub(current_pos);
                                 let sel_in_line_end =
                                     (max_idx.saturating_sub(current_pos)).min(line_len);
 
-                                let line_chars: Vec<char> = line.chars().collect();
-                                let before_sel: String =
-                                    line_chars.iter().take(sel_in_line_start).collect();
-                                let sel_text: String = line_chars
-                                    .iter()
-                                    .skip(sel_in_line_start)
-                                    .take(sel_in_line_end - sel_in_line_start)
-                                    .collect();
+                                let (lx_start, py_start) = get_xy_from_cursor_index(
+                                    &final_text,
+                                    sc(14.0),
+                                    max_width,
+                                    current_pos + sel_in_line_start,
+                                );
+                                let (lx_end, _) = get_xy_from_cursor_index(
+                                    &final_text,
+                                    sc(14.0),
+                                    max_width,
+                                    current_pos + sel_in_line_end,
+                                );
 
-                                let lx_start =
-                                    text_width(fonts, &before_sel, Scale::uniform(sc(14.0)));
-                                let lx_width =
-                                    text_width(fonts, &sel_text, Scale::uniform(sc(14.0)));
-
+                                let lx_width = (lx_end - lx_start).max(5.0);
                                 let draw_x =
                                     s(fx as u32) as i32 + sc(15.0) as i32 + lx_start as i32;
                                 let draw_y_f = start_text_raw as f32
-                                    + line_idx as f32 * sc(20.0)
+                                    + py_start
                                     + (state.system_prompt_scroll_offset * scale);
 
-                                if draw_y_f >= start_text_raw as f32 - sc(5.0)
-                                    && draw_y_f <= (box_bottom_raw as f32 - sc(20.0))
+                                if draw_y_f >= start_text_raw as f32 - sc(15.0)
+                                    && draw_y_f <= (box_bottom_raw as f32 - sc(10.0))
                                 {
                                     draw_rect_alpha(
                                         buffer,
                                         w,
                                         draw_x,
                                         draw_y_f as i32,
-                                        lx_width,
+                                        lx_width as u32,
                                         sc(22.0) as u32,
                                         0x00AADDFF,
                                         0.4,
@@ -242,80 +238,57 @@ pub fn draw(
                 }
             }
 
-            for (line_idx, line) in lines.iter().enumerate() {
-                let draw_y_f = start_text_raw as f32
-                    + line_idx as f32 * sc(20.0)
-                    + (state.system_prompt_scroll_offset * scale);
-
-                if draw_y_f < start_text_raw as f32 - sc(5.0) {
-                    continue;
-                }
-                if draw_y_f > (box_bottom_raw as f32 - sc(15.0)) {
-                    break;
-                }
-                if draw_y_f < 0.0 || draw_y_f > h as f32 {
-                    continue;
-                }
-
-                draw_text(
-                    buffer,
-                    w,
-                    fonts,
-                    line,
-                    s(fx as u32) as i32 + sc(15.0) as i32,
-                    draw_y_f as i32,
-                    sc(14.0),
-                    display_col,
-                );
-            }
+            draw_text_ex(
+                buffer,
+                w,
+                &final_text,
+                s(fx as u32) as i32 + sc(15.0) as i32,
+                start_text_raw,
+                sc(14.0),
+                display_col,
+                max_width,
+                input_h.saturating_sub(sc(20.0) as u32),
+                state.system_prompt_scroll_offset * scale,
+            );
 
             if is_focused {
-                let mut temp_pos: usize = 0;
-                let mut cursor_found = false;
-                for (line_idx, line) in lines.iter().enumerate() {
-                    let line_len = line.chars().count();
-                    if !cursor_found
-                        && (state.cursor_pos >= temp_pos && state.cursor_pos <= temp_pos + line_len)
-                    {
-                        let offset_in_line = state.cursor_pos - temp_pos;
-                        let line_chars: Vec<char> = line.chars().collect();
-                        let prefix: String = line_chars.iter().take(offset_in_line).collect();
-                        let lx = text_width(fonts, &prefix, Scale::uniform(sc(14.0)));
-                        let cursor_x = s(fx as u32) as i32 + sc(15.0) as i32 + lx as i32;
-                        let cursor_y = start_text_raw as f32
-                            + line_idx as f32 * sc(20.0)
-                            + (state.system_prompt_scroll_offset * scale);
-                        let cursor_visible = (std::time::Instant::now() - state.last_cursor_action)
-                            .as_millis()
-                            % 1000
-                            < 500;
-                        if cursor_y >= start_text_raw as f32
-                            && cursor_y <= (box_bottom_raw as f32 - sc(20.0))
-                            && cursor_visible
-                        {
-                            draw_rect(
-                                buffer,
-                                w,
-                                cursor_x,
-                                cursor_y as i32,
-                                2,
-                                sc(22.0) as u32,
-                                COLOR_PRIMARY,
-                                w,
-                                h,
-                            );
-                        }
-                        cursor_found = true;
-                    }
-                    temp_pos += line_len;
+                let (px, py) = get_xy_from_cursor_index(
+                    &final_text,
+                    sc(14.0),
+                    sc(500.0 - 40.0) as u32,
+                    state.cursor_pos,
+                );
+
+                let cursor_x = s(fx as u32) as i32 + sc(15.0) as i32 + px as i32;
+                let cursor_y =
+                    start_text_raw as f32 + py + (state.system_prompt_scroll_offset * scale);
+
+                let cursor_visible =
+                    (std::time::Instant::now() - state.last_cursor_action).as_millis() % 1000 < 500;
+
+                if cursor_y >= start_text_raw as f32 - 1.0
+                    && cursor_y <= (box_bottom_raw as f32 - sc(20.0))
+                    && cursor_visible
+                {
+                    draw_rect(
+                        buffer,
+                        w,
+                        cursor_x,
+                        cursor_y as i32,
+                        2,
+                        sc(22.0) as u32,
+                        COLOR_PRIMARY,
+                        w,
+                        h,
+                    );
                 }
             }
 
-            // Scrollbar for System Prompt
-            let max_sys_visual_h = sc(200.0);
+            // Scrollbar logic
+            let max_sys_visual_h = sc(250.0);
             if full_content_h_px > max_sys_visual_h {
                 let sb_w = sc(4.0) as u32;
-                let sb_h = sc(190.0) as u32;
+                let sb_h = sc(240.0) as u32;
                 let sb_x = s(fx as u32 + fw as u32 - 10) as i32;
                 let sb_y = input_y_raw + sc(5.0) as i32;
                 draw_rect(buffer, w, sb_x, sb_y, sb_w, sb_h, COLOR_BORDER, w, h);
@@ -350,8 +323,8 @@ pub fn draw(
                     if min_idx != max_idx {
                         let left_s: String = display_chars[..min_idx].iter().collect();
                         let mid_s: String = display_chars[min_idx..max_idx].iter().collect();
-                        let lx = text_width(fonts, &left_s, Scale::uniform(sc(14.0)));
-                        let mx = text_width(fonts, &mid_s, Scale::uniform(sc(14.0)));
+                        let lx = text_width(&[], &left_s, Scale::uniform(sc(14.0)));
+                        let mx = text_width(&[], &mid_s, Scale::uniform(sc(14.0)));
                         draw_rect_alpha(
                             buffer,
                             w,
@@ -370,7 +343,7 @@ pub fn draw(
                 draw_text(
                     buffer,
                     w,
-                    fonts,
+                    &[],
                     &final_text,
                     text_start_x,
                     text_start_y,
@@ -380,7 +353,7 @@ pub fn draw(
 
                 let cur_idx = state.cursor_pos.min(display_chars.len());
                 let left_s: String = display_chars[..cur_idx].iter().collect();
-                let lx = text_width(fonts, &left_s, Scale::uniform(sc(14.0)));
+                let lx = text_width(&[], &left_s, Scale::uniform(sc(14.0)));
                 let cursor_x = text_start_x + lx as i32 + 1;
                 let cursor_visible =
                     (std::time::Instant::now() - state.last_cursor_action).as_millis() % 1000 < 500;
@@ -401,7 +374,7 @@ pub fn draw(
                 draw_text(
                     buffer,
                     w,
-                    fonts,
+                    &[],
                     &final_text,
                     text_start_x,
                     text_start_y,

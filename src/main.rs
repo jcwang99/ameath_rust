@@ -22,6 +22,7 @@ use settings::SettingsWindow;
 use pet::Pet;
 use std::collections::HashMap;
 use std::rc::Rc;
+use rand::Rng;
 use std::time::{Duration, Instant};
 use global_hotkey::{
     hotkey::{Code, HotKey, Modifiers},
@@ -75,48 +76,26 @@ fn main() {
     // Load Loading GIF
     let loading_frames = anim::load_gif_from_memory(include_bytes!("../assets/icons/loading.gif"));
 
-    // Helper to mirror variants
-    let mirror_variants = |variants: &Vec<Vec<PreprocessedFrame>>| -> Vec<Vec<PreprocessedFrame>> {
-        variants
-            .iter()
-            .map(|variant| {
-                variant
-                    .iter()
-                    .map(|frame| anim::flip_frame_horizontal(frame))
-                    .collect()
-            })
-            .collect()
-    };
+    // Generate Left-facing assets (DELETED mirroring - will flip on-the-fly)
 
-    // Generate Left-facing (Mirrored) assets
-    let idle_frames_left = mirror_variants(&idle_frames_right);
-    let move_frames_left = mirror_variants(&move_frames_right);
-    let drag_frames_left = mirror_variants(&drag_frames_right);
-
-    // Store as (Right, Left) pairs
+    // Store variants
     let mut animation_map: HashMap<
         PetState,
-        (Vec<Vec<PreprocessedFrame>>, Vec<Vec<PreprocessedFrame>>),
+        Vec<Vec<PreprocessedFrame>>,
     > = HashMap::new();
     animation_map.insert(
         PetState::Clingy,
-        (move_frames_right.clone(), move_frames_left.clone()),
+        move_frames_right.clone(),
     );
-    animation_map.insert(PetState::Idle, (idle_frames_right, idle_frames_left));
-    animation_map.insert(PetState::Move, (move_frames_right, move_frames_left));
-    animation_map.insert(PetState::Drag, (drag_frames_right, drag_frames_left));
+    animation_map.insert(PetState::Idle, idle_frames_right);
+    animation_map.insert(PetState::Move, move_frames_right);
+    animation_map.insert(PetState::Drag, drag_frames_right);
 
     // Calculate dynamic "envelope" size based on max GIF dimensions
     let mut max_pw = 0;
     let mut max_ph = 0;
-    for (_, (right, left)) in &animation_map {
-        for variant in right {
-            for frame in variant {
-                max_pw = max_pw.max(frame.width);
-                max_ph = max_ph.max(frame.height);
-            }
-        }
-        for variant in left {
+    for (_, variants) in &animation_map {
+        for variant in variants {
             for frame in variant {
                 max_pw = max_pw.max(frame.width);
                 max_ph = max_ph.max(frame.height);
@@ -269,6 +248,7 @@ fn main() {
     bubble_rect = None;
 
     let mut composite_data: Vec<u8> = Vec::new();
+    let mut decompressed_frame_buffer: Vec<u8> = Vec::new();
     let mut pomodoro_data: Vec<u8> = Vec::new();
     let mut is_hovered = false;
 
@@ -482,6 +462,12 @@ fn main() {
                                                 settings::SettingsAction::SetMode(m) => {
                                                     if pet.behavior_mode == BehaviorMode::Clingy && m != BehaviorMode::Clingy {
                                                         pet.state = PetState::Idle;
+                                                        let count = pet.animations[&PetState::Idle].len();
+                                                        if count > 0 {
+                                                            pet.current_anim_variant = rand::thread_rng().gen_range(0..count);
+                                                        } else {
+                                                            pet.current_anim_variant = 0;
+                                                        }
                                                     }
                                                     pet.behavior_mode = m;
                                                     sw.request_redraw();
@@ -876,21 +862,40 @@ fn main() {
                         let win_w_usize = win_w as usize;
                         let win_h_usize = win_h as usize;
 
-                        // 1. Draw Pet
+                        let facing_right = pet.facing_right;
                         let frame = pet.current_frame();
+                        
+                        // Decompress frame data on-the-fly
+                        if let Ok(data) = lz4_flex::decompress_size_prepended(&frame.lz4_data) {
+                            decompressed_frame_buffer = data;
+                        } else {
+                            // Fallback if decompression fails
+                            decompressed_frame_buffer.resize((frame.width * frame.height * 4) as usize, 0);
+                        }
+                        
                         let dest_y_start = pet_off_y as usize;
                         let dest_x_start = pet_off_x as usize;
+                        
                         if (draw_scale - 1.0).abs() < 0.001 {
                             let fw = frame.width as usize;
                             let fh = frame.height as usize;
                             for y in 0..fh {
                                 let dy = dest_y_start + y;
                                 if dy < win_h_usize {
-                                    let (start_x, end_x) = frame.opaque_rows[y];
-                                    if start_x < end_x {
-                                        let src_row = &frame.data[y * fw * 4..(y + 1) * fw * 4];
+                                    let (start_x_unflipped, end_x_unflipped) = frame.opaque_rows[y];
+                                    if start_x_unflipped < end_x_unflipped {
+                                        let src_row = &decompressed_frame_buffer[y * fw * 4..(y + 1) * fw * 4];
+                                        
+                                        // Calculate actual dest range based on flipping
+                                        let (start_x, end_x) = if facing_right {
+                                            (start_x_unflipped, end_x_unflipped)
+                                        } else {
+                                            (fw - end_x_unflipped, fw - start_x_unflipped)
+                                        };
+
                                         for x in start_x..end_x {
-                                            let s_idx = x * 4;
+                                            let src_x = if facing_right { x } else { fw - 1 - x };
+                                            let s_idx = src_x * 4;
                                             if src_row[s_idx + 3] > 0 {
                                                 let d_idx = (dy * win_w_usize + dest_x_start + x) * 4;
                                                 composite_data[d_idx..d_idx+4].copy_from_slice(&src_row[s_idx..s_idx+4]);
@@ -910,23 +915,30 @@ fn main() {
                                 let dy = (y as f64 + pet_off_y) as usize;
                                 if dy >= win_h_usize { continue; }
                                 
-                                let (start_x_src, end_x_src) = frame.opaque_rows[src_y];
-                                if start_x_src >= end_x_src { continue; }
+                                let (start_x_src_unflipped, end_x_src_unflipped) = frame.opaque_rows[src_y];
+                                if start_x_src_unflipped >= end_x_src_unflipped { continue; }
                                 
-                                let start_x_dest = (start_x_src as f32 * draw_scale) as usize;
-                                let end_x_dest = ((end_x_src as f32 * draw_scale) as usize).min(cur_pw as usize);
+                                // Destinations range for this row
+                                let start_x_dest = 0;
+                                let end_x_dest = cur_pw as usize;
                                 
                                 let src_row_idx = src_y * fw * 4;
                                 let dest_row_idx = dy * win_w_usize * 4;
                                 
                                 for x in start_x_dest..end_x_dest {
-                                    let src_x = (x as f32 * inv_scale) as usize;
+                                    let src_x_f32 = x as f32 * inv_scale;
+                                    let src_x = if facing_right {
+                                        src_x_f32 as usize
+                                    } else {
+                                        (fw as f32 - 1.0 - src_x_f32) as usize
+                                    };
+
                                     if src_x >= fw { continue; }
                                     let s_idx = src_row_idx + src_x * 4;
-                                    let a = frame.data[s_idx + 3];
+                                    let a = decompressed_frame_buffer[s_idx + 3];
                                     if a > 0 {
                                         let d_idx = dest_row_idx + (dest_x_start + x) * 4;
-                                        composite_data[d_idx..d_idx+4].copy_from_slice(&frame.data[s_idx..s_idx+4]);
+                                        composite_data[d_idx..d_idx+4].copy_from_slice(&decompressed_frame_buffer[s_idx..s_idx+4]);
                                     }
                                 }
                             }
@@ -936,6 +948,10 @@ fn main() {
                         if is_thinking && !loading_frames.is_empty() {
                              let f_idx = loading_frame_idx;
                              let f = &loading_frames[f_idx];
+                             
+                             // Decompress loading frame
+                             let loading_data = lz4_flex::decompress_size_prepended(&f.lz4_data).unwrap_or_default();
+                             
                              let ly = loading_y_f as i32;
                              let lw = loading_w_f as i32;
                              let lh = loading_h_f as i32;
@@ -958,9 +974,9 @@ fn main() {
                                               let dx_i32 = loading_x_f as i32 + x as i32;
                                               if dx_i32 >= 0 && dx_i32 < win_w as i32 {
                                                   let d_idx = dest_row_off + dx_i32 as usize * 4;
-                                                  let alpha = f.data[s_idx + 3];
+                                                  let alpha = loading_data[s_idx + 3];
                                                   if alpha > 0 {
-                                                      composite_data[d_idx..d_idx+3].copy_from_slice(&f.data[s_idx..s_idx+3]);
+                                                      composite_data[d_idx..d_idx+3].copy_from_slice(&loading_data[s_idx..s_idx+3]);
                                                       composite_data[d_idx + 3] = composite_data[d_idx + 3].saturating_add(alpha);
                                                   }
                                               }

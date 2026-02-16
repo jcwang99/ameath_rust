@@ -1,6 +1,6 @@
 use crate::theme::*;
 use crate::ui_primitives::*;
-use rusttype::{Font, Scale};
+use rusttype::Scale;
 
 pub struct HistoryTabState<'a> {
     pub history: &'a [(String, String)],
@@ -16,7 +16,6 @@ pub fn draw(
     scale: f32,
     off_x: f32,
     off_y: f32,
-    fonts: &[&Font],
     state: &mut HistoryTabState,
 ) -> (f32, f32) {
     let s = |val: u32| -> u32 { (val as f32 * scale + off_x) as u32 };
@@ -72,7 +71,7 @@ pub fn draw(
         draw_text(
             buffer,
             w,
-            fonts,
+            &[],
             role,
             s(240) as i32,
             y_pos_i + sc(10.0) as i32,
@@ -81,7 +80,7 @@ pub fn draw(
         );
 
         let max_text_w = sc(450.0) as u32;
-        let lines = wrap_text(content, fonts, Scale::uniform(sc(16.0)), max_text_w);
+        let lines = wrap_text(content, &[], Scale::uniform(sc(16.0)), max_text_w);
         let full_content_h = (lines.len() as f32 * sc(20.0)).max(sc(20.0));
         let view_h = item_h_fixed - sc(40.0);
 
@@ -104,7 +103,7 @@ pub fn draw(
             draw_text(
                 buffer,
                 w,
-                fonts,
+                &[],
                 line,
                 s(240) as i32,
                 line_y as i32,

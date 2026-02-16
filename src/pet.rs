@@ -13,8 +13,7 @@ pub struct Pet {
     pub screen_size: (f64, f64),
 
     // Animation
-    // Stores (RightFrames, LeftFrames)
-    pub animations: HashMap<PetState, (Vec<Vec<PreprocessedFrame>>, Vec<Vec<PreprocessedFrame>>)>,
+    pub animations: HashMap<PetState, Vec<Vec<PreprocessedFrame>>>,
     pub current_anim_variant: usize,
     pub current_frame_idx: usize,
     pub last_frame_time: Instant,
@@ -35,7 +34,7 @@ pub struct Pet {
 
 impl Pet {
     pub fn new(
-        animations: HashMap<PetState, (Vec<Vec<PreprocessedFrame>>, Vec<Vec<PreprocessedFrame>>)>,
+        animations: HashMap<PetState, Vec<Vec<PreprocessedFrame>>>,
         max_size: (f64, f64),
     ) -> Self {
         Self {
@@ -160,7 +159,7 @@ impl Pet {
                     self.velocity = (0.0, 0.0);
                     self.target_position = None;
 
-                    let count = self.animations[&PetState::Idle].0.len();
+                    let count = self.animations[&PetState::Idle].len();
                     if count > 0 {
                         self.current_anim_variant = rand::thread_rng().gen_range(0..count);
                     } else {
@@ -241,12 +240,7 @@ impl Pet {
     }
 
     pub fn advance_animation(&mut self) {
-        let (right_variants, left_variants) = &self.animations[&self.state];
-        let variants = if self.facing_right {
-            right_variants
-        } else {
-            left_variants
-        };
+        let variants = &self.animations[&self.state];
         if variants.is_empty() {
             return;
         }
@@ -290,13 +284,7 @@ impl Pet {
     }
 
     pub fn current_frame(&mut self) -> &PreprocessedFrame {
-        let (right_variants, left_variants) = &self.animations[&self.state];
-
-        let variants = if self.facing_right {
-            right_variants
-        } else {
-            left_variants
-        };
+        let variants = &self.animations[&self.state];
 
         let variant_idx = if self.current_anim_variant < variants.len() {
             self.current_anim_variant
@@ -308,15 +296,10 @@ impl Pet {
     }
 
     pub fn next_frame_at(&self) -> Instant {
-        let (right_variants, left_variants) = &self
+        let variants = &self
             .animations
             .get(&self.state)
             .unwrap_or(&self.animations[&PetState::Idle]);
-        let variants = if self.facing_right {
-            right_variants
-        } else {
-            left_variants
-        };
         if variants.is_empty() {
             return Instant::now() + Duration::from_millis(16);
         }

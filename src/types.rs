@@ -6,7 +6,7 @@ use std::time::Duration;
 pub struct PreprocessedFrame {
     pub width: i32,
     pub height: i32,
-    pub data: Vec<u8>,
+    pub lz4_data: Vec<u8>,
     pub delay: Duration,
     pub opaque_rows: Vec<(usize, usize)>, // (start_x, end_x) for each row
 }

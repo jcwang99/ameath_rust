@@ -1,42 +1,9 @@
 use crate::types::PreprocessedFrame;
 use image::codecs::gif::GifDecoder;
 use image::AnimationDecoder;
+use lz4_flex::compress_prepend_size;
 use std::fs::File;
 use std::time::Duration;
-
-pub fn flip_frame_horizontal(frame: &PreprocessedFrame) -> PreprocessedFrame {
-    let mut new_data = frame.data.clone();
-    let width = frame.width as usize;
-    let height = frame.height as usize;
-    let bpp = 4; // BGRA
-
-    for y in 0..height {
-        let row_start = y * width * bpp;
-        for x in 0..(width / 2) {
-            let left_idx = row_start + x * bpp;
-            let right_idx = row_start + (width - 1 - x) * bpp;
-
-            // Swap pixels (4 bytes)
-            for i in 0..4 {
-                let tmp = new_data[left_idx + i];
-                new_data[left_idx + i] = new_data[right_idx + i];
-                new_data[right_idx + i] = tmp;
-            }
-        }
-    }
-
-    PreprocessedFrame {
-        width: frame.width,
-        height: frame.height,
-        data: new_data,
-        delay: frame.delay,
-        opaque_rows: frame
-            .opaque_rows
-            .iter()
-            .map(|(start, end)| (width - end, width - start))
-            .collect(),
-    }
-}
 
 pub fn preprocess_frames(frames: Vec<image::Frame>) -> Vec<PreprocessedFrame> {
     frames
@@ -48,7 +15,7 @@ pub fn preprocess_frames(frames: Vec<image::Frame>) -> Vec<PreprocessedFrame> {
             let width = buffer.width() as i32;
             let height = buffer.height() as i32;
 
-            let mut data = Vec::with_capacity((width * height * 4) as usize);
+            let mut raw_data = Vec::with_capacity((width * height * 4) as usize);
             let mut opaque_rows = Vec::with_capacity(height as usize);
 
             for y in 0..height {
@@ -64,18 +31,21 @@ pub fn preprocess_frames(frames: Vec<image::Frame>) -> Vec<PreprocessedFrame> {
                     }
 
                     // Premultiply alpha & BGRA for Windows (using integer math for performance)
-                    data.push(((b as u16 * a as u16 + 127) / 255) as u8);
-                    data.push(((g as u16 * a as u16 + 127) / 255) as u8);
-                    data.push(((r as u16 * a as u16 + 127) / 255) as u8);
-                    data.push(a);
+                    raw_data.push(((b as u16 * a as u16 + 127) / 255) as u8);
+                    raw_data.push(((g as u16 * a as u16 + 127) / 255) as u8);
+                    raw_data.push(((r as u16 * a as u16 + 127) / 255) as u8);
+                    raw_data.push(a);
                 }
                 opaque_rows.push((start_x, end_x));
             }
 
+            // Compress the raw data
+            let lz4_data = compress_prepend_size(&raw_data);
+
             PreprocessedFrame {
                 width,
                 height,
-                data,
+                lz4_data,
                 delay,
                 opaque_rows,
             }

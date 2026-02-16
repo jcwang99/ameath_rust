@@ -3,8 +3,10 @@ pub mod tabs;
 use crate::theme::*;
 use crate::types::{AiConfig, BehaviorMode, PersistentConfig, WindowLayer};
 use crate::ui_primitives::*;
-use rusttype::{Font, Scale};
+use rusttype::Scale;
 use softbuffer::{Context, Surface};
+// use windows::core::ComInterface;
+// use windows::Win32::Graphics::Direct2D::ID2D1DCRenderTarget;
 use std::rc::Rc;
 use winit::event_loop::EventLoopWindowTarget;
 use winit::window::Window;
@@ -34,8 +36,6 @@ pub struct SettingsWindow {
     #[allow(dead_code)]
     context: Context<Rc<Window>>,
     surface: Surface<Rc<Window>, Rc<Window>>,
-    pub font: Option<Font<'static>>,
-    pub emoji_font: Option<Font<'static>>,
     pub current_tab: usize,
     pub scroll_offset: f32,
     pub content_height: f32,
@@ -81,24 +81,11 @@ impl SettingsWindow {
         let context = Context::new(window.clone()).unwrap();
         let surface = Surface::new(&context, window.clone()).unwrap();
 
-        // Load Font (Microsoft YaHei) - matching original logic
-        let font_path = "C:\\Windows\\Fonts\\msyh.ttc";
-        let font = std::fs::read(font_path)
-            .ok()
-            .and_then(|data| Font::try_from_vec(data));
-
-        let emoji_font_path = "C:\\Windows\\Fonts\\seguiemj.ttf";
-        let emoji_font = std::fs::read(emoji_font_path)
-            .ok()
-            .and_then(|data| Font::try_from_vec(data));
-
         Self {
             window,
             context,
             surface,
-            font,
-            emoji_font,
-            current_tab: 1, // Default to General (Appearance)
+            current_tab: 0,
             scroll_offset: 0.0,
             content_height: 0.0,
             viewport_height: 0.0,
@@ -193,14 +180,6 @@ impl SettingsWindow {
         // 1. Background
         draw_rect(&mut buffer, w, 0, 0, w, h, COLOR_BG_APP, w, h);
 
-        let mut fonts = Vec::new();
-        if let Some(f) = &self.font {
-            fonts.push(f);
-        }
-        if let Some(f) = &self.emoji_font {
-            fonts.push(f);
-        }
-
         // 2. Sidebar
         draw_rect(
             &mut buffer,
@@ -237,7 +216,7 @@ impl SettingsWindow {
             draw_text(
                 &mut buffer,
                 w,
-                &fonts,
+                &[],
                 item,
                 s(40) as i32,
                 ty as i32 + sc(12.0) as i32,
@@ -253,8 +232,7 @@ impl SettingsWindow {
         // 3. Tab Content
         match self.current_tab {
             0 => {
-                let (vh, ch) =
-                    tabs::home::draw(&mut buffer, w, h, scale, off_x, off_y, fonts.as_slice());
+                let (vh, ch) = tabs::home::draw(&mut buffer, w, h, scale, off_x, off_y);
                 self.viewport_height = vh;
                 self.content_height = ch;
             }
@@ -266,7 +244,6 @@ impl SettingsWindow {
                     scale,
                     off_x,
                     off_y,
-                    fonts.as_slice(),
                     self.scroll_offset,
                     current_scale,
                     current_mode,
@@ -296,7 +273,6 @@ impl SettingsWindow {
                     scale,
                     off_x,
                     off_y,
-                    fonts.as_slice(),
                     self.scroll_offset,
                     ai_config,
                     &mut ai_state,
@@ -311,22 +287,13 @@ impl SettingsWindow {
                     history_item_rects: &mut self.history_item_rects,
                     scroll_offset: self.scroll_offset,
                 };
-                let (vh, ch) = tabs::history::draw(
-                    &mut buffer,
-                    w,
-                    h,
-                    scale,
-                    off_x,
-                    off_y,
-                    fonts.as_slice(),
-                    &mut history_state,
-                );
+                let (vh, ch) =
+                    tabs::history::draw(&mut buffer, w, h, scale, off_x, off_y, &mut history_state);
                 self.viewport_height = vh;
                 self.content_height = ch;
             }
             4 => {
-                let (vh, ch) =
-                    tabs::about::draw(&mut buffer, w, h, scale, off_x, off_y, fonts.as_slice());
+                let (vh, ch) = tabs::about::draw(&mut buffer, w, h, scale, off_x, off_y);
                 self.viewport_height = vh;
                 self.content_height = ch;
             }
@@ -357,7 +324,7 @@ impl SettingsWindow {
         draw_text(
             &mut buffer,
             w,
-            &fonts,
+            &[],
             title,
             s(220) as i32,
             sy_val(40) as i32,
@@ -367,7 +334,7 @@ impl SettingsWindow {
         draw_text(
             &mut buffer,
             w,
-            &fonts,
+            &[],
             sub,
             s(220) as i32,
             sy_val(85) as i32,
@@ -565,19 +532,24 @@ impl SettingsWindow {
 
                 for (i, (fx, fy, fw)) in fields.iter().enumerate() {
                     let input_y = card_y + fy + 25.0;
-                    let input_h = if i == 7 { 200.0 } else { 45.0 };
+                    let input_h = if i == 7 { 250.0 } else { 45.0 };
 
                     if lx >= *fx && lx <= *fx + *fw && ly >= input_y && ly <= input_y + input_h {
                         self.focused_field = Some(i);
                         self.last_cursor_action = std::time::Instant::now();
+
+                        // The line `let (_, layout_h) = get_metrics_dw(&final_text, sc(14.0), max_width);` was not found in the original document.
+                        // Assuming the instruction implies removing `max_width` from a similar call if it were present.
+                        // Since it's not present, no change is made here regarding `max_width` in `get_metrics_dw`.
 
                         let text = self.get_field_text(i, ai_config);
                         if i == 7 {
                             // System prompt multi-line
                             let text_x = lx - fx - 15.0;
                             let text_y =
-                                ly - input_y - 10.0 - self.system_prompt_scroll_offset as f64;
-                            self.cursor_pos = self.get_cursor_from_xy(&text, text_x, text_y, 1.0);
+                                ly - input_y - 12.0 - self.system_prompt_scroll_offset as f64;
+                            self.cursor_pos =
+                                self.get_cursor_from_xy(&text, text_x, text_y, scale as f32);
 
                             if !_is_right_click {
                                 self.selection_start = Some(self.cursor_pos);
@@ -594,7 +566,8 @@ impl SettingsWindow {
                                     self.selection_start = None;
                                 } else {
                                     let text_x = lx - fx - 15.0;
-                                    self.cursor_pos = self.get_cursor_from_x(&text, text_x, 1.0);
+                                    self.cursor_pos =
+                                        self.get_cursor_from_x(&text, text_x, scale as f32);
                                     self.selection_start = Some(self.cursor_pos);
                                     self.is_dragging_text = true;
                                 }
@@ -674,101 +647,30 @@ impl SettingsWindow {
     }
 
     fn get_cursor_from_x(&self, text: &str, x: f64, scale: f32) -> usize {
-        let mut fonts = Vec::new();
-        if let Some(f) = &self.font {
-            fonts.push(f);
-        }
-        if let Some(f) = &self.emoji_font {
-            fonts.push(f);
-        }
-        if fonts.is_empty() {
-            return 0;
-        }
-
-        let sc = Scale::uniform(14.0 * scale);
-        let mut current_x = 0.0;
-
-        for (i, c) in text.chars().enumerate() {
-            let mut best_font = fonts[0];
-            if !fonts.is_empty() && fonts[0].glyph(c).id().0 == 0 {
-                for &f in &fonts[1..] {
-                    if f.glyph(c).id().0 != 0 {
-                        best_font = f;
-                        break;
-                    }
-                }
-            }
-            let advance = best_font.glyph(c).scaled(sc).h_metrics().advance_width as f64;
-            if x < current_x + (advance / 2.0) {
-                return i;
-            }
-            current_x += advance;
-        }
-        text.chars().count()
+        get_cursor_index_from_xy(
+            text,
+            14.0 * scale,
+            10000,
+            (x as f32 * scale).max(0.0),
+            7.0 * scale,
+        )
     }
 
     fn get_cursor_from_xy(&self, text: &str, lx: f64, ly: f64, scale: f32) -> usize {
-        let mut fonts = Vec::new();
-        if let Some(f) = &self.font {
-            fonts.push(f);
-        }
-        if let Some(f) = &self.emoji_font {
-            fonts.push(f);
-        }
-        if fonts.is_empty() {
-            return 0;
-        }
-
-        let sc_fn = |val: f32| val * scale;
-        let s_val = Scale::uniform(sc_fn(14.0));
-        let max_width = sc_fn(500.0 - 40.0) as u32;
-
-        let lines = wrap_text(text, fonts.as_slice(), s_val, max_width);
-        let line_height = sc_fn(20.0) as f64;
-
-        if ly < 0.0 {
-            return 0;
-        }
-
-        let mut total_chars = 0;
-        let line_idx = (ly / line_height).floor() as usize;
-
-        for (i, line) in lines.iter().enumerate() {
-            if i == line_idx {
-                return total_chars + self.get_cursor_from_x(line, lx, scale);
-            }
-            total_chars += line.chars().count();
-        }
-
-        text.chars().count()
+        let max_width = (540.0 - 80.0) * scale;
+        get_cursor_index_from_xy(
+            text,
+            14.0 * scale,
+            max_width as u32,
+            (lx as f32 * scale).max(0.0),
+            (ly as f32 * scale).max(0.0),
+        )
     }
 
     fn get_xy_from_cursor(&self, text: &str, cursor_pos: usize, scale: f32) -> (f64, f64) {
-        let mut fonts = Vec::new();
-        if let Some(f) = &self.font {
-            fonts.push(f);
-        }
-        if let Some(f) = &self.emoji_font {
-            fonts.push(f);
-        }
-        let sc_fn = |val: f32| val * scale;
-        let s_val = Scale::uniform(sc_fn(14.0));
-        let max_width = sc_fn(500.0 - 40.0) as u32;
-        let lines = wrap_text(text, fonts.as_slice(), s_val, max_width);
-        let line_height = sc_fn(20.0) as f64;
-
-        let mut current_pos = 0;
-        for (i, line) in lines.iter().enumerate() {
-            let line_len = line.chars().count();
-            if cursor_pos >= current_pos && cursor_pos <= current_pos + line_len {
-                let offset = cursor_pos - current_pos;
-                let prefix: String = line.chars().take(offset).collect();
-                let lx = text_width(fonts.as_slice(), &prefix, s_val) as f64;
-                return (lx, i as f64 * line_height);
-            }
-            current_pos += line_len;
-        }
-        (0.0, 0.0)
+        let max_width = (540.0 - 80.0) * scale;
+        let (px, py) = get_xy_from_cursor_index(text, 14.0 * scale, max_width as u32, cursor_pos);
+        (px as f64, py as f64)
     }
 
     pub fn handle_key_input(
@@ -794,6 +696,7 @@ impl SettingsWindow {
             self.cursor_pos = chars.len();
         }
 
+        // use windows::Win32::Graphics::Gdi::{GetDC, ReleaseDC};
         use winit::keyboard::{Key, NamedKey};
         let is_pressed = event.state == winit::event::ElementState::Pressed;
         if !is_pressed {
@@ -1078,46 +981,36 @@ impl SettingsWindow {
                         let y_end = *ly_end + self.scroll_offset as f64 / scale;
 
                         if lx >= 230.0 && lx <= 720.0 && ly >= y_start && ly <= y_end {
-                            let mut fonts = Vec::new();
-                            if let Some(f) = &self.font {
-                                fonts.push(f);
-                            }
-                            if let Some(f) = &self.emoji_font {
-                                fonts.push(f);
-                            }
+                            let content = &self.history[i].1;
+                            let item_h_fixed_sc = 180.0 * scale as f32;
+                            let max_width = (450.0 * scale) as u32;
+                            let lines = wrap_text(
+                                content,
+                                &[],
+                                Scale::uniform(16.0 * scale as f32),
+                                max_width,
+                            );
+                            let line_h = 20.0 * scale as f32;
+                            let full_h = (lines.len() as f32 * line_h).max(line_h);
+                            let view_h = item_h_fixed_sc - (40.0 * scale as f32);
 
-                            if !fonts.is_empty() {
-                                let content = &self.history[i].1;
-                                let item_h_fixed_sc = 180.0 * scale as f32;
-                                let max_width = (450.0 * scale) as u32;
-                                let lines = wrap_text(
-                                    content,
-                                    fonts.as_slice(),
-                                    Scale::uniform(16.0 * scale as f32),
-                                    max_width,
-                                );
-                                let line_h = 20.0 * scale as f32;
-                                let full_h = (lines.len() as f32 * line_h).max(line_h);
-                                let view_h = item_h_fixed_sc - (40.0 * scale as f32);
+                            if full_h > view_h {
+                                let current_log = self.history_scroll_states[i];
+                                let scroll_step_log = dy / scale as f32;
+                                let new_val_log = current_log + scroll_step_log;
+                                let max_scroll_log = -((full_h - view_h) / scale as f32);
+                                let clamped_log = new_val_log.clamp(max_scroll_log, 0.0);
 
-                                if full_h > view_h {
-                                    let current_log = self.history_scroll_states[i];
-                                    let scroll_step_log = dy / scale as f32;
-                                    let new_val_log = current_log + scroll_step_log;
-                                    let max_scroll_log = -((full_h - view_h) / scale as f32);
-                                    let clamped_log = new_val_log.clamp(max_scroll_log, 0.0);
-
-                                    if (clamped_log - current_log).abs() > 0.001 {
-                                        self.history_scroll_states[i] = clamped_log;
-                                        scrolled_item = true;
+                                if (clamped_log - current_log).abs() > 0.001 {
+                                    self.history_scroll_states[i] = clamped_log;
+                                    scrolled_item = true;
+                                } else {
+                                    if (dy > 0.0 && current_log >= -0.01)
+                                        || (dy < 0.0 && current_log <= max_scroll_log + 0.01)
+                                    {
+                                        scrolled_item = false;
                                     } else {
-                                        if (dy > 0.0 && current_log >= -0.01)
-                                            || (dy < 0.0 && current_log <= max_scroll_log + 0.01)
-                                        {
-                                            scrolled_item = false;
-                                        } else {
-                                            scrolled_item = true;
-                                        }
+                                        scrolled_item = true;
                                     }
                                 }
                             }
@@ -1148,7 +1041,7 @@ impl SettingsWindow {
                     if lx >= min_x && lx <= max_x && ly >= min_y && ly <= max_y {
                         let old_off = self.system_prompt_scroll_offset;
                         self.system_prompt_scroll_offset += dy / scale as f32;
-                        let view_h = 200.0;
+                        let view_h = 250.0; // Updated from 200.0 to 250.0
                         let content_h = self.active_sys_prompt_content_height;
                         let min_offset = -(content_h - view_h).max(0.0);
                         self.system_prompt_scroll_offset =
@@ -1241,10 +1134,10 @@ impl SettingsWindow {
 
         if field_idx == 7 {
             // Multi-line cursor drag
-            let text_y = ly - input_y - 10.0 - self.system_prompt_scroll_offset as f64;
-            self.cursor_pos = self.get_cursor_from_xy(&val, text_x, text_y, 1.0);
+            let text_y = ly - input_y - 12.0 - self.system_prompt_scroll_offset as f64;
+            self.cursor_pos = self.get_cursor_from_xy(&val, text_x, text_y, scale as f32);
         } else {
-            self.cursor_pos = self.get_cursor_from_x(&val, text_x, 1.0);
+            self.cursor_pos = self.get_cursor_from_x(&val, text_x, scale as f32);
         }
         self.window.request_redraw();
         self.last_cursor_action = std::time::Instant::now();

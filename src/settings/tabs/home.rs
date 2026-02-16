@@ -1,16 +1,8 @@
 use crate::theme::*;
 use crate::ui_primitives::*;
-use rusttype::Font;
+// use rusttype::Font;
 
-pub fn draw(
-    buffer: &mut [u32],
-    w: u32,
-    h: u32,
-    scale: f32,
-    off_x: f32,
-    off_y: f32,
-    fonts: &[&Font],
-) -> (f32, f32) {
+pub fn draw(buffer: &mut [u32], w: u32, h: u32, scale: f32, off_x: f32, off_y: f32) -> (f32, f32) {
     let s = |val: u32| -> u32 { (val as f32 * scale + off_x) as u32 };
     let sy_val = |val: u32| -> u32 { (val as f32 * scale + off_y) as u32 };
     let sc = |val: f32| -> f32 { val * scale };
@@ -32,7 +24,7 @@ pub fn draw(
     draw_text(
         buffer,
         w,
-        fonts,
+        &[],
         "Welcome back!",
         s(230) as i32,
         sy_val(150) as i32,
@@ -43,7 +35,7 @@ pub fn draw(
     draw_text(
         buffer,
         w,
-        fonts,
+        &[],
         "Select a tab on the left to configure your desktop pet.",
         s(230) as i32,
         sy_val(200) as i32,

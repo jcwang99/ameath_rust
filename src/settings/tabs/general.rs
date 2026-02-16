@@ -1,6 +1,6 @@
 use crate::theme::*;
 use crate::ui_primitives::*;
-use rusttype::Font;
+// use rusttype::Font;
 
 pub fn draw(
     buffer: &mut [u32],
@@ -9,7 +9,6 @@ pub fn draw(
     scale: f32,
     off_x: f32,
     off_y: f32,
-    fonts: &[&Font],
     scroll_y: f32,
     current_scale: f32,
     current_mode: &str,
@@ -41,7 +40,7 @@ pub fn draw(
     draw_text(
         buffer,
         w,
-        fonts,
+        &[],
         "Pet Scale",
         s(230) as i32,
         card1_y + sc(20.0) as i32,
@@ -80,7 +79,7 @@ pub fn draw(
         draw_text(
             buffer,
             w,
-            fonts,
+            &[],
             labels[i],
             mx + sc(12.0) as i32,
             my + sc(12.0) as i32,
@@ -106,7 +105,7 @@ pub fn draw(
     draw_text(
         buffer,
         w,
-        fonts,
+        &[],
         "Behavior Mode",
         s(230) as i32,
         card2_y + sc(20.0) as i32,
@@ -164,7 +163,7 @@ pub fn draw(
         draw_text(
             buffer,
             w,
-            fonts,
+            &[],
             mode,
             mx + sc(25.0) as i32,
             my + sc(18.0) as i32,
@@ -194,7 +193,7 @@ pub fn draw(
     draw_text(
         buffer,
         w,
-        fonts,
+        &[],
         "Music Directory",
         s(230) as i32,
         card3_y + sc(20.0) as i32,
@@ -232,7 +231,7 @@ pub fn draw(
     draw_text(
         buffer,
         w,
-        fonts,
+        &[],
         &path,
         s(245) as i32,
         p_btn_y + sc(12.0) as i32,
@@ -257,7 +256,7 @@ pub fn draw(
     draw_text(
         buffer,
         w,
-        fonts,
+        &[],
         "Window Layer",
         s(230) as i32,
         card4_y + sc(20.0) as i32,
@@ -305,7 +304,7 @@ pub fn draw(
         draw_text(
             buffer,
             w,
-            fonts,
+            &[],
             layer_name,
             mx + sc(20.0) as i32,
             my + sc(18.0) as i32,
@@ -339,7 +338,7 @@ pub fn draw(
     draw_text(
         buffer,
         w,
-        fonts,
+        &[],
         "Display Monitor",
         s(230) as i32,
         card5_y + sc(20.0) as i32,
@@ -387,7 +386,7 @@ pub fn draw(
         draw_text(
             buffer,
             w,
-            fonts,
+            &[],
             &display_name,
             btn_x + sc(10.0) as i32,
             btn_y + sc(18.0) as i32,
