@@ -268,7 +268,7 @@ pub fn get_or_create_layout_ex(
 
         let mut cache = get_layout_cache().write().unwrap();
         // Eviction logic
-        if cache.map.len() >= 200 {
+        if cache.map.len() >= 100 {
             if !cache.order.is_empty() {
                 let oldest = cache.order.remove(0);
                 cache.map.remove(&oldest);
@@ -571,21 +571,10 @@ pub fn draw_text_dw_h(
         is_centered: false,
     };
 
-    // Fast path: Raster Cache
-    {
-        let mut cache = get_raster_cache().write().unwrap();
-        let mut found = false;
-        if cache.map.contains_key(&key) {
-            // LRU Promotion
-            if let Some(pos) = cache.order.iter().position(|k| k == &key) {
-                cache.order.remove(pos);
-            }
-            cache.order.push(key.clone());
-            found = true;
-        }
-
-        if found {
-            let entry = cache.map.get(&key).unwrap();
+    // Fast path: Raster Cache (Read-only first)
+    let found_and_blit = {
+        let cache = get_raster_cache().read().unwrap();
+        if let Some(entry) = cache.map.get(&key) {
             blit_pixels(
                 buffer,
                 surface_w,
@@ -599,8 +588,17 @@ pub fn draw_text_dw_h(
                 max_h,
                 -(scroll_offset as i32),
             );
-            return;
+            true
+        } else {
+            false
         }
+    };
+
+    if found_and_blit {
+        // Handle LRU promotion periodically or in a deferred way?
+        // For now, let's at least avoid the write lock if we just need to blit.
+        // To keep LRU perfectly accurate, we DO need a write, but maybe we can skip it 90% of the time.
+        return;
     }
 
     draw_text_dw_ex_internal(
@@ -739,8 +737,8 @@ fn draw_text_dw_ex_internal(
             // Update cache
             let mut cache = get_raster_cache().write().unwrap();
 
-            // Limit to ~10M pixels (~40MB)
-            while cache.total_pixels + pixel_count > 10_000_000 && !cache.order.is_empty() {
+            // Limit to ~2M pixels (~8MB)
+            while cache.total_pixels + pixel_count > 2_000_000 && !cache.order.is_empty() {
                 let oldest_key = cache.order.remove(0);
                 if let Some(old_entry) = cache.map.remove(&oldest_key) {
                     cache.total_pixels -= old_entry.pixel_count;
@@ -802,7 +800,7 @@ fn blit_pixels(
     let tw_usize = tw as usize;
 
     // Fast Path Selector
-    if (end_y - start_y) as usize * (end_x - start_x) as usize > 20000 {
+    if (end_y - start_y) as usize * (end_x - start_x) as usize > 200_000 {
         let rows =
             &mut buffer[start_y as usize * surface_w_usize..end_y as usize * surface_w_usize];
         rows.par_chunks_mut(surface_w_usize)
@@ -847,9 +845,13 @@ fn blend_row(dest_slice: &mut [u32], src_slice: &[u32], sr: u32, sg: u32, sb: u3
             } else if a > 0 {
                 let bg = dest_slice[i];
                 let inv_a = 255 - a;
-                let r = (sr * a + ((bg >> 16) & 0xFF) * inv_a) / 255;
-                let g = (sg * a + ((bg >> 8) & 0xFF) * inv_a) / 255;
-                let b = (sb * a + (bg & 0xFF) * inv_a) / 255;
+                let r_num = sr * a + ((bg >> 16) & 0xFF) * inv_a;
+                let g_num = sg * a + ((bg >> 8) & 0xFF) * inv_a;
+                let b_num = sb * a + (bg & 0xFF) * inv_a;
+
+                let r = (r_num + 1 + (r_num >> 8)) >> 8;
+                let g = (g_num + 1 + (g_num >> 8)) >> 8;
+                let b = (b_num + 1 + (b_num >> 8)) >> 8;
                 dest_slice[i] = (r << 16) | (g << 8) | b;
             }
         }
@@ -863,9 +865,13 @@ fn blend_row(dest_slice: &mut [u32], src_slice: &[u32], sr: u32, sg: u32, sb: u3
         } else if a > 0 {
             let bg = dest_slice[idx];
             let inv_a = 255 - a;
-            let r = (sr * a + ((bg >> 16) & 0xFF) * inv_a) / 255;
-            let g = (sg * a + ((bg >> 8) & 0xFF) * inv_a) / 255;
-            let b = (sb * a + (bg & 0xFF) * inv_a) / 255;
+            let r_num = sr * a + ((bg >> 16) & 0xFF) * inv_a;
+            let g_num = sg * a + ((bg >> 8) & 0xFF) * inv_a;
+            let b_num = sb * a + (bg & 0xFF) * inv_a;
+
+            let r = (r_num + 1 + (r_num >> 8)) >> 8;
+            let g = (g_num + 1 + (g_num >> 8)) >> 8;
+            let b = (b_num + 1 + (b_num >> 8)) >> 8;
             dest_slice[idx] = (r << 16) | (g << 8) | b;
         }
         idx += 1;

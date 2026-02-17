@@ -2,6 +2,16 @@ use crate::theme::*;
 use crate::ui_primitives::*;
 // use rusttype::Font;
 
+pub struct GeneralTabState<'a> {
+    pub current_scale: f32,
+    pub current_mode: &'a str,
+    pub current_music_path: Option<&'a std::path::Path>,
+    pub current_layer: crate::types::WindowLayer,
+    pub scroll_offset: f32,
+    pub available_monitors: &'a [(String, String)],
+    pub current_monitor_name: Option<&'a str>,
+}
+
 pub fn draw(
     buffer: &mut [u32],
     w: u32,
@@ -9,14 +19,15 @@ pub fn draw(
     scale: f32,
     off_x: f32,
     off_y: f32,
-    scroll_y: f32,
-    current_scale: f32,
-    current_mode: &str,
-    current_music_path: Option<&std::path::Path>,
-    current_layer: crate::types::WindowLayer,
-    available_monitors: &[(String, String)],
-    current_monitor_name: Option<&String>,
-) -> (f32, f32) {
+    state: &mut GeneralTabState,
+) -> (f32, f32, Option<(i32, i32, u32, u32)>) {
+    let scroll_y = state.scroll_offset;
+    let current_scale = state.current_scale;
+    let current_mode = state.current_mode;
+    let current_music_path = state.current_music_path;
+    let current_layer = state.current_layer;
+    let available_monitors = state.available_monitors;
+    let current_monitor_name = state.current_monitor_name;
     let s = |val: u32| -> u32 { (val as f32 * scale + off_x) as u32 };
     let sy_val = |val: u32| -> u32 { (val as f32 * scale + off_y) as u32 };
     let sc = |val: f32| -> f32 { val * scale };
@@ -339,7 +350,7 @@ pub fn draw(
         let col = i % 3;
         let btn_x = s(230 + col as u32 * 110) as i32;
         let btn_y = card5_y + sc(60.0 + row as f32 * 65.0) as i32;
-        let is_active = Some(name) == current_monitor_name;
+        let is_active = current_monitor_name.map(|n| n == name).unwrap_or(false);
 
         let bg_col = if is_active {
             COLOR_PRIMARY
@@ -387,5 +398,5 @@ pub fn draw(
     let viewport_height = 600.0;
     let content_height = 825.0 + 60.0 + monitors_h + 40.0;
 
-    (viewport_height, content_height)
+    (viewport_height, content_height, None)
 }

@@ -14,6 +14,7 @@ pub struct AiTabState<'a> {
     pub active_sys_prompt_rect: &'a mut Option<(f64, f64, f64, f64)>,
     pub system_prompt_metrics_cache: f32,
     pub system_prompt_hash: u64,
+    pub draw_cursor: bool,
 }
 
 pub fn draw(
@@ -26,10 +27,11 @@ pub fn draw(
     scroll_y: f32,
     ai_config: &AiConfig,
     state: &mut AiTabState,
-) -> (f32, f32) {
+) -> (f32, f32, Option<(i32, i32, u32, u32)>) {
     let s = |val: u32| -> u32 { (val as f32 * scale + off_x) as u32 };
     let sy_val = |val: u32| -> u32 { (val as f32 * scale + off_y) as u32 };
     let sc = |val: f32| -> f32 { val * scale };
+    let mut cursor_rect = None;
 
     let card_w = (560.0 * scale) as u32;
     let card_h = (1300.0 * scale) as u32;
@@ -286,19 +288,22 @@ pub fn draw(
 
                 if cursor_y >= start_text_raw as f32 - 1.0
                     && cursor_y <= (box_bottom_raw as f32 - sc(20.0))
-                    && cursor_visible
                 {
-                    draw_rect(
-                        buffer,
-                        w,
-                        cursor_x,
-                        cursor_y as i32,
-                        2,
-                        sc(22.0) as u32,
-                        COLOR_PRIMARY,
-                        w,
-                        h,
-                    );
+                    cursor_rect = Some((cursor_x, cursor_y as i32, 2, sc(22.0) as u32));
+
+                    if state.draw_cursor && cursor_visible {
+                        draw_rect(
+                            buffer,
+                            w,
+                            cursor_x,
+                            cursor_y as i32,
+                            2,
+                            sc(22.0) as u32,
+                            COLOR_PRIMARY,
+                            w,
+                            h,
+                        );
+                    }
                 }
             }
 
@@ -376,17 +381,21 @@ pub fn draw(
                 let cursor_visible =
                     (std::time::Instant::now() - state.last_cursor_action).as_millis() % 1000 < 500;
                 if cursor_x < (s(fx as u32) + input_w) as i32 && cursor_visible {
-                    draw_rect(
-                        buffer,
-                        w,
-                        cursor_x,
-                        text_start_y,
-                        2,
-                        sc(22.0) as u32,
-                        COLOR_PRIMARY,
-                        w,
-                        h,
-                    );
+                    cursor_rect = Some((cursor_x, text_start_y, 2, sc(22.0) as u32));
+
+                    if state.draw_cursor && cursor_visible {
+                        draw_rect(
+                            buffer,
+                            w,
+                            cursor_x,
+                            text_start_y,
+                            2,
+                            sc(22.0) as u32,
+                            COLOR_PRIMARY,
+                            w,
+                            h,
+                        );
+                    }
                 }
             } else {
                 draw_text(
@@ -406,5 +415,5 @@ pub fn draw(
     // Content height tracking
     let viewport_h = 600.0;
     let content_h = 930.0 + 250.0 + 170.0;
-    (viewport_h, content_h)
+    (viewport_h, content_h, cursor_rect)
 }

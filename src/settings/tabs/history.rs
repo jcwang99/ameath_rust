@@ -18,7 +18,7 @@ pub fn draw(
     off_x: f32,
     off_y: f32,
     state: &mut HistoryTabState,
-) -> (f32, f32) {
+) -> (f32, f32, Option<(i32, i32, u32, u32)>) {
     let s = |val: u32| -> u32 { (val as f32 * scale + off_x) as u32 };
     let sy_val = |val: u32| -> u32 { (val as f32 * scale + off_y) as u32 };
     let sc = |val: f32| -> f32 { val * scale };
@@ -35,27 +35,36 @@ pub fn draw(
     let spacing = sc(10.0);
     let total_item_h = item_h_fixed + spacing;
 
-    for i in 0..state.history.iter().len() {
-        let logical_y = 140.0 + (i as f64 * 190.0);
-        let logical_h = 180.0;
-        state
-            .history_item_rects
-            .push((230.0, logical_y, 730.0, logical_y + logical_h));
-    }
-
-    // 2. Identify visible range
+    // Process items (O(Visible) for drawing)
     let min_y_vis = sy_val(120) as f32;
     let max_y_vis = h as f32;
 
-    for (i, (role, content)) in state.history.iter().enumerate() {
+    for i in 0..state.history.len() {
+        let logical_y = 140.0 + (i as f64 * 190.0);
+        let logical_h = 180.0;
+
+        // Add to rects for click detection
+        state
+            .history_item_rects
+            .push((230.0, logical_y, 720.0, logical_y + logical_h));
+
         let y_pos = current_y + (i as f32 * total_item_h);
 
-        // Strict Clipping: Skip processing if bubble is completely off-screen
+        // Visibility Check
         if (y_pos + item_h_fixed) < min_y_vis || y_pos > max_y_vis {
             continue;
         }
 
+        let (role, content) = &state.history[i];
+        let is_user = role == "user";
+        let card_color = if is_user { 0x003A3A42 } else { 0x002D2D35 };
+        let text_color = if is_user {
+            COLOR_TEXT_MAIN
+        } else {
+            COLOR_TEXT_SEC
+        };
         let y_pos_i = y_pos as i32;
+
         draw_rounded_rect(
             buffer,
             w,
@@ -64,16 +73,11 @@ pub fn draw(
             sc(490.0) as u32,
             item_h_fixed as u32,
             8,
-            COLOR_BG_CARD,
+            card_color,
             w,
             h,
         );
 
-        let role_col = if role == "user" {
-            COLOR_USER_ROLE
-        } else {
-            COLOR_AI_ROLE
-        };
         draw_text(
             buffer,
             w,
@@ -82,18 +86,15 @@ pub fn draw(
             s(240) as i32,
             y_pos_i + sc(10.0) as i32,
             sc(14.0),
-            role_col,
+            text_color,
         );
 
         let max_text_w = sc(450.0) as u32;
-        // Optimization: Use pre-calculated height from history_metrics_cache
         let full_content_h = state.history_metrics_cache[i].max(sc(20.0));
         let view_h = item_h_fixed - sc(40.0);
-
         let scroll = state.history_scroll_states[i];
         let start_text_y = y_pos + sc(35.0);
 
-        // draw_text_dw_h uses the pre-calculated hash to avoid per-frame computation
         draw_text_dw_h(
             buffer,
             w,
@@ -148,7 +149,7 @@ pub fn draw(
         }
     }
 
-    let viewport_height = 600.0;
-    let content_height = (state.history.len() as f32 * 190.0) + 150.0;
-    (viewport_height, content_height)
+    let viewport_h = 600.0;
+    let content_h = (state.history.len() as f32 * 190.0).max(1.0);
+    (viewport_h, content_h, None)
 }

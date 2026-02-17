@@ -2,7 +2,14 @@ use crate::theme::*;
 use crate::ui_primitives::*;
 // use rusttype::Font;
 
-pub fn draw(buffer: &mut [u32], w: u32, h: u32, scale: f32, off_x: f32, off_y: f32) -> (f32, f32) {
+pub fn draw(
+    buffer: &mut [u32],
+    w: u32,
+    h: u32,
+    scale: f32,
+    off_x: f32,
+    off_y: f32,
+) -> (f32, f32, Option<(i32, i32, u32, u32)>) {
     let s = |val: u32| -> u32 { (val as f32 * scale + off_x) as u32 };
     let sy_val = |val: u32| -> u32 { (val as f32 * scale + off_y) as u32 };
     let sc = |val: f32| -> f32 { val * scale };
@@ -56,5 +63,5 @@ pub fn draw(buffer: &mut [u32], w: u32, h: u32, scale: f32, off_x: f32, off_y: f
     let viewport_height = 600.0;
     let content_height = 300.0;
 
-    (viewport_height, content_height)
+    (viewport_height, content_height, None)
 }
