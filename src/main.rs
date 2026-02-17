@@ -475,7 +475,10 @@ fn main() {
                     } else if let Some(sw) = &mut settings_win {
                         if window_id == sw.id() {
                             match event {
-                                WindowEvent::CloseRequested => { settings_win = None; }
+                                WindowEvent::CloseRequested => {
+                                    settings_win = None;
+                                    ui_primitives::harvest_memory();
+                                }
                                 WindowEvent::MouseInput { state, button: btn, .. } => {
                                     if state == ElementState::Pressed {
                                         if let Some(pos) = settings_cursor_pos {

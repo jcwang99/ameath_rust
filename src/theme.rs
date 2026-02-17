@@ -9,6 +9,3 @@ pub const COLOR_PRIMARY: u32 = 0x007C4DFF; // Deep purple accent
 pub const COLOR_TEXT_MAIN: u32 = 0x00EEEEEE; // Pure text
 pub const COLOR_TEXT_SEC: u32 = 0x00999999; // Secondary text
 pub const COLOR_TEXT_DIM: u32 = 0x00666666; // Muted text
-
-pub const COLOR_USER_ROLE: u32 = 0x00007ACC;
-pub const COLOR_AI_ROLE: u32 = 0x002E8B57;

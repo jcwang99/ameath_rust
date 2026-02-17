@@ -58,8 +58,11 @@ pub struct SettingsWindow {
     pub history_item_rects: Vec<(f64, f64, f64, f64)>,
     pub history_hashes: Vec<u64>,
     pub history_metrics_cache: Vec<f32>, // Cached heights
+    pub dragging_history_idx: Option<usize>,
+    pub dragging_sys_prompt: bool,
     pub system_prompt_hash: u64,
     pub system_prompt_metrics_cache: f32,
+    pub config_dirty: bool,
 
     // Layout
     pub is_dragging_scrollbar: bool,
@@ -120,6 +123,7 @@ impl SettingsWindow {
             history_metrics_cache: Vec::new(),
             system_prompt_hash: 0,
             system_prompt_metrics_cache: 0.0,
+            config_dirty: true,
             is_dragging_scrollbar: false,
             available_monitors: event_loop
                 .available_monitors()
@@ -135,6 +139,8 @@ impl SettingsWindow {
             last_base_state_hash: 0,
             last_skeleton_hash: 0,
             cursor_cache: None,
+            dragging_history_idx: None,
+            dragging_sys_prompt: false,
         }
     }
 
@@ -200,12 +206,18 @@ impl SettingsWindow {
         use std::hash::{Hash, Hasher};
 
         // 0. Efficient Config Hashing
-        if self.is_dirty || self.last_config_hash == 0 {
+        if self.config_dirty || self.last_config_hash == 0 {
             let mut config_hasher = DefaultHasher::new();
             ai_config.api_key.hash(&mut config_hasher);
             ai_config.base_url.hash(&mut config_hasher);
             ai_config.model.hash(&mut config_hasher);
-            ai_config.system_prompt.hash(&mut config_hasher);
+            // Use existing system_prompt_hash if possible
+            if self.system_prompt_hash == 0 {
+                let mut s_hasher = DefaultHasher::new();
+                ai_config.system_prompt.hash(&mut s_hasher);
+                self.system_prompt_hash = s_hasher.finish();
+            }
+            self.system_prompt_hash.hash(&mut config_hasher);
             ai_config.tavily_api_key.hash(&mut config_hasher);
             ai_config.brave_api_key.hash(&mut config_hasher);
             ai_config.firecrawl_api_key.hash(&mut config_hasher);
@@ -215,6 +227,7 @@ impl SettingsWindow {
             ai_config.l2_merge_threshold.hash(&mut config_hasher);
             ai_config.react_limit.hash(&mut config_hasher);
             self.last_config_hash = config_hasher.finish();
+            self.config_dirty = false;
         }
 
         // 1. Skeleton Hash (Static UI Chrome: Sidebar, Header)
@@ -382,8 +395,9 @@ impl SettingsWindow {
                         active_sys_prompt_content_height: &mut self
                             .active_sys_prompt_content_height,
                         active_sys_prompt_rect: &mut self.active_sys_prompt_rect,
-                        system_prompt_metrics_cache: self.system_prompt_metrics_cache,
+                        system_prompt_metrics_cache: &mut self.system_prompt_metrics_cache,
                         system_prompt_hash: self.system_prompt_hash,
+                        config_hash: self.last_config_hash,
                         draw_cursor: false,
                     };
                     let (vh, ch, cursor_rect) = tabs::ai::draw(
@@ -492,13 +506,27 @@ impl SettingsWindow {
             if let Some((cx, cy, cw, ch)) = self.cursor_cache {
                 let surface_w = w as usize;
                 let static_buf = &self.static_layer_buffer;
+                let surface_h = h as usize;
+
                 for row in 0..ch {
-                    let y_idx = (cy + row as i32) as usize;
-                    let range_start = y_idx * surface_w + cx as usize;
-                    let range_end = range_start + cw as usize;
-                    if range_end <= buffer.len() && range_end <= static_buf.len() {
-                        buffer[range_start..range_end]
-                            .copy_from_slice(&static_buf[range_start..range_end]);
+                    let target_y = cy + row as i32;
+                    if target_y < 0 || target_y >= surface_h as i32 {
+                        continue;
+                    }
+                    let y_idx = target_y as usize;
+                    let row_start = y_idx * surface_w;
+
+                    for col in 0..cw {
+                        let target_x = cx + col as i32;
+                        if target_x < 0 || target_x >= surface_w as i32 {
+                            continue;
+                        }
+                        let x_idx = target_x as usize;
+                        let idx = row_start + x_idx;
+
+                        if idx < buffer.len() && idx < static_buf.len() {
+                            buffer[idx] = static_buf[idx];
+                        }
                     }
                 }
             }
@@ -519,7 +547,14 @@ impl SettingsWindow {
         if is_cursor_on && self.focused_field.is_some() {
             if let Some((cx, cy, cw, ch)) = self.cursor_cache {
                 // MICRO-REDRAW: Just draw the primary color rect over the buffer
-                draw_rect(&mut buffer, w, cx, cy, cw, ch, COLOR_PRIMARY, w, h);
+                // Use absolute bounds check
+                if cx >= 0
+                    && cy >= 0
+                    && (cx + cw as i32) <= w as i32
+                    && (cy + ch as i32) <= h as i32
+                {
+                    draw_rect(&mut buffer, w, cx, cy, cw, ch, COLOR_PRIMARY, w, h);
+                }
             }
         }
 
@@ -657,8 +692,20 @@ impl SettingsWindow {
                 // Tab 2: AI
                 let design_card_y = 120.0;
 
-                self.focused_field = None;
-                self.selection_start = None;
+                // Priority: Sub-scrollbar
+                if lx >= 230.0 + 480.0 && lx <= 230.0 + 480.0 + 8.0 {
+                    let input_y = design_card_y + 930.0 + 25.0;
+                    if dly >= input_y && dly <= input_y + 250.0 {
+                        self.dragging_sys_prompt = true;
+                        let progress = ((dly - input_y) / 250.0).clamp(0.0, 1.0);
+                        let view_h = 250.0;
+                        let content_h = self.active_sys_prompt_content_height;
+                        let max_scroll = -(content_h - view_h).max(0.0);
+                        self.system_prompt_scroll_offset = progress as f32 * max_scroll;
+                        self.window.request_redraw();
+                        return SettingsAction::None;
+                    }
+                }
 
                 let fields = vec![
                     (230.0, 30.0, 500.0),  // 0: Key
@@ -683,12 +730,8 @@ impl SettingsWindow {
                     {
                         self.focused_field = Some(i);
                         self.last_cursor_action = std::time::Instant::now();
-
-                        // The line `let (_, layout_h) = get_metrics_dw(&final_text, sc(14.0), max_width);` was not found in the original document.
-                        // Assuming the instruction implies removing `max_width` from a similar call if it were present.
-                        // Since it's not present, no change is made here regarding `max_width` in `get_metrics_dw`.
-
                         let text = self.get_field_text(i, ai_config);
+
                         if i == 11 {
                             // System prompt multi-line
                             let text_x = lx - fx - 15.0;
@@ -700,17 +743,13 @@ impl SettingsWindow {
                             if !_is_right_click {
                                 self.selection_start = Some(self.cursor_pos);
                                 self.is_dragging_text = true;
-                            } else {
-                                self.selection_start = None;
                             }
                         } else {
-                            if _is_right_click {
-                                // Right click handled in SettingsAction usually but we might want it here too
-                            } else {
+                            if !_is_right_click {
                                 if lx >= *fx + *fw - 45.0 && (i == 0 || i == 7 || i == 8 || i == 10)
                                 {
                                     self.show_api_key = !self.show_api_key;
-                                    self.selection_start = None;
+                                    self.config_dirty = true;
                                 } else {
                                     let text_x = lx - fx - 15.0;
                                     self.cursor_pos =
@@ -722,6 +761,39 @@ impl SettingsWindow {
                         }
                         self.window.request_redraw();
                         return SettingsAction::None;
+                    }
+                }
+
+                self.focused_field = None;
+                self.selection_start = None;
+                self.window.request_redraw();
+                return SettingsAction::None;
+            }
+            3 => {
+                // Tab 3: History
+                if dlx >= 230.0 + 480.0 && dlx <= 230.0 + 480.0 + 8.0 {
+                    for (i, (_rx_start, ry_start, _rx_end, ry_end)) in
+                        self.history_item_rects.iter().enumerate()
+                    {
+                        if dly >= *ry_start && dly <= *ry_end {
+                            // Hit a history item row's X range?
+                            // Actually history.rs draws scrollbar at s(230 + 480)
+                            let track_y_start = *ry_start + 35.0;
+                            let track_h = 140.0;
+                            if dly >= track_y_start && dly <= track_y_start + track_h {
+                                self.dragging_history_idx = Some(i);
+                                let progress = ((dly - track_y_start) / track_h).clamp(0.0, 1.0);
+                                let content = &self.history[i].1;
+                                let max_width = (450.0 * scale) as u32;
+                                let (_, full_h) =
+                                    get_metrics_dw(content, 16.0 * scale as f32, max_width);
+                                let full_h_logical = full_h / scale as f32;
+                                let max_scroll = -(full_h_logical - 140.0).max(0.0);
+                                self.history_scroll_states[i] = progress as f32 * max_scroll;
+                                self.window.request_redraw();
+                                return SettingsAction::None;
+                            }
+                        }
                     }
                 }
             }
@@ -774,6 +846,7 @@ impl SettingsWindow {
     }
 
     fn set_field_text(&mut self, idx: usize, ai_config: &mut AiConfig, text: String) {
+        self.config_dirty = true;
         match idx {
             0 => ai_config.api_key = text,
             1 => ai_config.base_url = text,
@@ -996,6 +1069,24 @@ impl SettingsWindow {
                 self.window.request_redraw();
                 return true;
             }
+            Key::Named(NamedKey::Enter) => {
+                if field_idx == 11 {
+                    if let Some(start) = self.selection_start {
+                        let min = start.min(self.cursor_pos);
+                        let max = start.max(self.cursor_pos);
+                        chars.drain(min..max);
+                        self.cursor_pos = min;
+                        self.selection_start = None;
+                    }
+                    chars.insert(self.cursor_pos, '\n');
+                    self.cursor_pos += 1;
+                    self.set_field_text(field_idx, ai_config, chars.iter().collect());
+                    ai_config.save();
+                    self.window.request_redraw();
+                    return true;
+                }
+                return false;
+            }
             Key::Character(c) => {
                 if has_ctrl {
                     if c == "a" {
@@ -1113,8 +1204,10 @@ impl SettingsWindow {
             }
 
             self.set_field_text(idx, ai_config, chars.iter().collect());
+            self.config_dirty = true;
             if idx == 11 {
                 // Invalidate system prompt metrics cache
+                self.system_prompt_hash = 0;
                 self.system_prompt_metrics_cache = 0.0;
             }
             ai_config.save();
@@ -1275,6 +1368,51 @@ impl SettingsWindow {
             return;
         }
 
+        if let Some(idx) = self.dragging_history_idx {
+            if idx < self.history.len() {
+                let content = &self.history[idx].1;
+                let view_h = 140.0;
+                let max_width = (450.0 * scale) as u32;
+                let (_, full_h) = get_metrics_dw(content, 16.0 * scale as f32, max_width);
+                let full_h_logical = full_h / scale as f32;
+
+                if self.history_item_rects.len() > idx {
+                    let (_, ry_start, _, _) = self.history_item_rects[idx];
+                    let track_y_start = ry_start + 35.0;
+                    let track_h = view_h as f64;
+                    let progress = ((dly - track_y_start) / track_h).clamp(0.0, 1.0);
+                    let max_scroll = -(full_h_logical - view_h as f32).max(0.0);
+                    self.history_scroll_states[idx] = progress as f32 * max_scroll;
+                    self.window.request_redraw();
+                }
+            }
+            return;
+        }
+
+        if self.dragging_sys_prompt {
+            if let Some((_, ry_start, _, ry_end)) = self.active_sys_prompt_rect {
+                let track_h = (ry_end - ry_start).max(1.0);
+                let progress = ((dly - ry_start) / track_h).clamp(0.0, 1.0);
+                let view_h = track_h as f32;
+                let content_h = self.active_sys_prompt_content_height;
+                let max_scroll = -(content_h - view_h).max(0.0);
+                self.system_prompt_scroll_offset = progress as f32 * max_scroll;
+                self.window.request_redraw();
+                return;
+            } else {
+                // Fallback to hardcoded if rect not set yet
+                let track_h = 250.0;
+                let track_y_start = 120.0 + 930.0 + 25.0;
+                let progress = ((dly - track_y_start) / track_h).clamp(0.0, 1.0);
+                let view_h = 250.0f32;
+                let content_h = self.active_sys_prompt_content_height;
+                let max_scroll = -(content_h - view_h).max(0.0);
+                self.system_prompt_scroll_offset = progress as f32 * max_scroll;
+                self.window.request_redraw();
+                return;
+            }
+        }
+
         if !self.is_dragging_text {
             return;
         }
@@ -1308,10 +1446,16 @@ impl SettingsWindow {
         let input_y = design_card_y + fy + 25.0;
         let text_x = dlx - fx - 15.0;
 
+        if !text_x.is_finite() || !dly.is_finite() {
+            return;
+        }
+
         if field_idx == 11 {
             // Multi-line cursor drag for System Prompt
             let text_y = dly - input_y - 12.0 - self.system_prompt_scroll_offset as f64;
-            self.cursor_pos = self.get_cursor_from_xy(&val, text_x, text_y, scale as f32);
+            if text_y.is_finite() {
+                self.cursor_pos = self.get_cursor_from_xy(&val, text_x, text_y, scale as f32);
+            }
         } else {
             self.cursor_pos = self.get_cursor_from_x(&val, text_x, scale as f32);
         }
@@ -1330,6 +1474,8 @@ impl SettingsWindow {
             self.is_dragging_text = false;
         }
         self.is_dragging_scrollbar = false;
+        self.dragging_history_idx = None;
+        self.dragging_sys_prompt = false;
         self.window.request_redraw();
     }
 }

@@ -117,13 +117,13 @@ thread_local! {
 }
 
 #[derive(Hash, PartialEq, Eq, Clone)]
-struct LayoutKey {
-    text_hash: u64,
-    font_size_bits: u32,
-    max_w: u32,
-    font_family_hash: u64,
-    is_bold: bool,
-    is_centered: bool,
+pub struct LayoutKey {
+    pub text_hash: u64,
+    pub font_size_bits: u32,
+    pub max_w: u32,
+    pub font_family_hash: u64,
+    pub is_bold: bool,
+    pub is_centered: bool,
 }
 
 #[derive(Hash, PartialEq, Eq, Clone)]
@@ -134,17 +134,17 @@ struct FormatKey {
     is_centered: bool,
 }
 
-struct RasterEntry {
-    pixels: Vec<u32>,
-    tw: i32,
-    th: i32,
-    pixel_count: usize,
+pub struct RasterEntry {
+    pub pixels: Vec<u32>,
+    pub tw: i32,
+    pub th: i32,
+    pub pixel_count: usize,
 }
 
-struct CacheState<K, V> {
-    map: HashMap<K, V>,
-    order: Vec<K>,
-    total_pixels: usize,
+pub struct CacheState<K, V> {
+    pub map: HashMap<K, V>,
+    pub order: Vec<K>,
+    pub total_pixels: usize,
 }
 
 impl<K: std::hash::Hash + Eq + Clone, V> CacheState<K, V> {
@@ -178,8 +178,28 @@ fn get_format_cache() -> &'static RwLock<HashMap<FormatKey, IDWriteTextFormat>> 
     FORMAT_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-fn get_raster_cache() -> &'static RwLock<CacheState<LayoutKey, RasterEntry>> {
+pub fn get_raster_cache() -> &'static RwLock<CacheState<LayoutKey, RasterEntry>> {
     RASTER_CACHE.get_or_init(|| RwLock::new(CacheState::new()))
+}
+
+pub fn harvest_memory() {
+    if let Some(cache) = LAYOUT_CACHE.get() {
+        let mut lock = cache.write().unwrap();
+        lock.map.clear();
+        lock.order.clear();
+        lock.total_pixels = 0;
+    }
+    if let Some(cache) = RASTER_CACHE.get() {
+        let mut lock = cache.write().unwrap();
+        lock.map.clear();
+        lock.order.clear();
+        lock.total_pixels = 0;
+    }
+    if let Some(cache) = PRIMITIVE_CACHE.get() {
+        let mut lock = cache.write().unwrap();
+        lock.clear();
+    }
+    // We keep FORMAT_CACHE as it's very small and expensive to re-create
 }
 
 pub fn get_or_create_layout_ex(
@@ -462,18 +482,16 @@ fn blit_solid(
 ) {
     let surface_h = (buffer.len() as u32) / surface_w.max(1);
     let start_y = dest_y.max(0);
-    let end_y = (dest_y + h as i32)
-        .min(dest_y + max_h as i32)
-        .min(surface_h as i32);
+    // max_h is an absolute boundary
+    let end_y = (dest_y + h as i32).min(max_h as i32).min(surface_h as i32);
     if start_y >= end_y {
         return;
     }
 
     let tw = (src_pixels.len() as u32 / h) as i32;
     let start_x = dest_x.max(0);
-    let end_x = (dest_x + tw)
-        .min(dest_x + max_w as i32)
-        .min(surface_w as i32);
+    // max_w is an absolute boundary
+    let end_x = (dest_x + tw).min(max_w as i32).min(surface_w as i32);
     if start_x >= end_x {
         return;
     }
@@ -505,7 +523,58 @@ fn blit_solid(
     }
 }
 
-fn draw_rounded_rect_internal(
+pub fn blit_opaque(
+    buffer: &mut [u32],
+    surface_w: u32,
+    dest_x: i32,
+    dest_y: i32,
+    tw: i32,
+    th: i32,
+    src_pixels: &[u32],
+    max_w: u32,
+    max_h: u32,
+    src_y_off: i32,
+) {
+    let surface_h = (buffer.len() as u32) / surface_w.max(1);
+    let start_y = dest_y.max(0);
+    // max_h is an absolute boundary
+    let end_y = (dest_y + (th - src_y_off))
+        .min(max_h as i32)
+        .min(surface_h as i32);
+    if start_y >= end_y {
+        return;
+    }
+
+    let start_x = dest_x.max(0);
+    // max_w is an absolute boundary
+    let end_x = (dest_x + tw).min(max_w as i32).min(surface_w as i32);
+    if start_x >= end_x {
+        return;
+    }
+
+    let surface_w = surface_w as usize;
+    let tw = tw as usize;
+    let start_x = start_x as usize;
+    let end_x = end_x as usize;
+    let copy_len = end_x - start_x;
+    let diff_x = (start_x as i32 - dest_x) as usize;
+
+    for y in start_y..end_y {
+        let dy = (y - dest_y) as i32;
+        let src_row = (dy + src_y_off) as usize;
+        let dest_row = y as usize * surface_w;
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                src_pixels.as_ptr().add(src_row * tw + diff_x),
+                buffer.as_mut_ptr().add(dest_row + start_x),
+                copy_len,
+            );
+        }
+    }
+}
+
+pub fn draw_rounded_rect_internal(
     buffer: &mut [u32],
     surface_w: u32,
     x_off: u32,
@@ -560,6 +629,22 @@ fn draw_rounded_rect_internal(
                 }
             }
         }
+    }
+}
+
+pub fn draw_rect_internal(
+    buffer: &mut [u32],
+    surface_w: u32,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    color: u32,
+) {
+    let surface_w = surface_w as usize;
+    for dy in y..y + height {
+        let row_start = dy as usize * surface_w + x as usize;
+        buffer[row_start..row_start + width as usize].fill(color);
     }
 }
 
@@ -631,8 +716,8 @@ pub fn draw_text_dw_h(
                 entry.th,
                 &entry.pixels,
                 color,
-                max_w,
-                max_h,
+                x.max(0) as u32 + max_w,
+                y.max(0) as u32 + max_h,
                 -(scroll_offset as i32),
             );
             true
@@ -775,8 +860,8 @@ fn draw_text_dw_ex_internal(
                 th,
                 &captured_pixels,
                 color,
-                max_w,
-                max_h,
+                x.max(0) as u32 + max_w,
+                y.max(0) as u32 + max_h,
                 -(scroll_offset as i32),
             );
 
@@ -806,7 +891,7 @@ fn draw_text_dw_ex_internal(
     }
 }
 
-fn blit_pixels(
+pub fn blit_pixels(
     buffer: &mut [u32],
     surface_w: u32,
     dest_x: i32,
@@ -823,17 +908,17 @@ fn blit_pixels(
 
     // Physical clipping in destination space
     let start_y = dest_y.max(0);
+    // max_h is an absolute boundary
     let end_y = (dest_y + (th - src_y_off))
-        .min(dest_y + max_h as i32)
+        .min(max_h as i32)
         .min(surface_h as i32);
     if start_y >= end_y {
         return;
     }
 
     let start_x = dest_x.max(0);
-    let end_x = (dest_x + tw)
-        .min(dest_x + max_w as i32)
-        .min(surface_w as i32);
+    // max_w is an absolute boundary
+    let end_x = (dest_x + tw).min(max_w as i32).min(surface_w as i32);
     if start_x >= end_x {
         return;
     }
