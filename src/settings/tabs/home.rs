@@ -43,8 +43,8 @@ pub fn draw(buffer: &mut [u32], w: u32, h: u32, scale: f32, off_x: f32, off_y: f
         COLOR_TEXT_SEC,
     );
 
-    let viewport_height = sc(600.0);
-    let content_height = sc(320.0);
+    let viewport_height = 600.0;
+    let content_height = 320.0;
 
     (viewport_height, content_height)
 }

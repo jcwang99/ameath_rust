@@ -89,7 +89,7 @@ pub fn draw(
     }
 
     // 2. Behavior Mode
-    let card2_y = (sy_val(280) as f32 + scroll_y) as i32;
+    let card2_y = (sy_val(280) as f32 + scroll_y * scale) as i32;
     draw_rounded_rect(
         buffer,
         w,
@@ -165,7 +165,7 @@ pub fn draw(
     }
 
     // 3. Music Directory
-    let card3_y = (sy_val(505) as f32 + scroll_y) as i32;
+    let card3_y = (sy_val(505) as f32 + scroll_y * scale) as i32;
     draw_rounded_rect(
         buffer,
         w,
@@ -228,7 +228,7 @@ pub fn draw(
     );
 
     // 4. Window Layer
-    let card4_y = (sy_val(665) as f32 + scroll_y) as i32;
+    let card4_y = (sy_val(665) as f32 + scroll_y * scale) as i32;
     draw_rounded_rect(
         buffer,
         w,
@@ -306,7 +306,7 @@ pub fn draw(
     }
 
     // 5. Monitor Selection
-    let card5_y = (sy_val(825) as f32 + scroll_y) as i32;
+    let card5_y = (sy_val(825) as f32 + scroll_y * scale) as i32;
     let rows = (available_monitors.len() + 2) / 3;
     let monitors_h = if rows > 0 { rows as f32 * 65.0 } else { 65.0 };
     let card5_h = (60.0 + monitors_h) * scale;
@@ -384,8 +384,8 @@ pub fn draw(
     }
 
     // Content height tracking
-    let viewport_height = sc(600.0);
-    let content_height = sc(825.0 + 60.0 + monitors_h + 40.0);
+    let viewport_height = 600.0;
+    let content_height = 825.0 + 60.0 + monitors_h + 40.0;
 
     (viewport_height, content_height)
 }

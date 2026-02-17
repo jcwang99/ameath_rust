@@ -1133,8 +1133,7 @@ fn main() {
                                          pet.state == PetState::Drag ||
                                          menu_manager.opacity > 0.0 ||
                                          bubble_manager.is_visible() ||
-                                         pomodoro_manager.visible ||
-                                         is_hovered;
+                                         pomodoro_manager.visible;
 
                     if needs_high_freq {
                         next_deadline = next_deadline.min(Instant::now() + target_frame_duration);

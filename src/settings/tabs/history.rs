@@ -3,6 +3,8 @@ use crate::ui_primitives::*;
 
 pub struct HistoryTabState<'a> {
     pub history: &'a [(String, String)],
+    pub history_hashes: &'a [u64],
+    pub history_metrics_cache: &'a [f32],
     pub history_scroll_states: &'a mut Vec<f32>,
     pub history_item_rects: &'a mut Vec<(f64, f64, f64, f64)>,
     pub scroll_offset: f32,
@@ -23,7 +25,6 @@ pub fn draw(
 
     let start_y = sy_val(140);
     let current_y = start_y as f32 + state.scroll_offset;
-    let calculated_content_height;
 
     state.history_item_rects.clear();
     if state.history_scroll_states.len() != state.history.len() {
@@ -33,9 +34,6 @@ pub fn draw(
     let item_h_fixed = sc(180.0);
     let spacing = sc(10.0);
     let total_item_h = item_h_fixed + spacing;
-
-    // 1. Efficiently pre-calculate content height and all item rects
-    calculated_content_height = state.history.len() as f32 * total_item_h;
 
     for i in 0..state.history.iter().len() {
         let logical_y = 140.0 + (i as f64 * 190.0);
@@ -88,19 +86,19 @@ pub fn draw(
         );
 
         let max_text_w = sc(450.0) as u32;
-        // Optimization: Use a local cache or avoid re-calculating metrics every frame if possible
-        let (_mw, mh) = get_metrics_dw(content, sc(16.0), max_text_w);
-        let full_content_h = mh.max(sc(20.0));
+        // Optimization: Use pre-calculated height from history_metrics_cache
+        let full_content_h = state.history_metrics_cache[i].max(sc(20.0));
         let view_h = item_h_fixed - sc(40.0);
 
         let scroll = state.history_scroll_states[i];
         let start_text_y = y_pos + sc(35.0);
 
-        // draw_text_dw_ex now uses RasterCache internally
-        draw_text_dw_ex(
+        // draw_text_dw_h uses the pre-calculated hash to avoid per-frame computation
+        draw_text_dw_h(
             buffer,
             w,
             content,
+            state.history_hashes[i],
             s(240) as i32,
             start_text_y as i32,
             sc(16.0),
@@ -150,7 +148,7 @@ pub fn draw(
         }
     }
 
-    let viewport_height = sc(600.0);
-    let content_height = calculated_content_height + sc(150.0);
+    let viewport_height = 600.0;
+    let content_height = (state.history.len() as f32 * 190.0) + 150.0;
     (viewport_height, content_height)
 }

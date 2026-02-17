@@ -12,6 +12,8 @@ pub struct AiTabState<'a> {
     pub system_prompt_scroll_offset: f32,
     pub active_sys_prompt_content_height: &'a mut f32,
     pub active_sys_prompt_rect: &'a mut Option<(f64, f64, f64, f64)>,
+    pub system_prompt_metrics_cache: f32,
+    pub system_prompt_hash: u64,
 }
 
 pub fn draw(
@@ -31,7 +33,7 @@ pub fn draw(
 
     let card_w = (560.0 * scale) as u32;
     let card_h = (1300.0 * scale) as u32;
-    let card_y_raw = (sy_val(120) as f32 + scroll_y) as i32;
+    let card_y_raw = (sy_val(120) as f32 + scroll_y * scale) as i32;
 
     draw_rounded_rect(
         buffer,
@@ -182,14 +184,24 @@ pub fn draw(
             // Multi-line rendering for System Prompt
             let final_text: String = display_chars.iter().collect();
             let max_width = sc(500.0 - 40.0) as u32;
-            let (_, layout_h) = get_metrics_dw(&final_text, sc(14.0), max_width);
-            let full_content_h_px = layout_h + sc(20.0);
+            // Optimization: Use cached metrics if possible
+            let layout_h = if state.system_prompt_metrics_cache > 0.0 {
+                state.system_prompt_metrics_cache
+            } else {
+                let (_, mh) = get_metrics_dw(&final_text, sc(14.0), max_width);
+                mh
+            };
+            let full_content_h_px = layout_h + sc(24.0);
 
-            let sys_logical_y = input_y_raw as f64 / scale as f64;
-            let sys_logical_h = input_h as f64 / scale as f64;
+            let sys_logical_y = 120.0 + fy + 25.0;
+            let sys_logical_h = if is_multiline { 250.0 } else { 45.0 };
 
-            *state.active_sys_prompt_rect =
-                Some((230.0, sys_logical_y, 730.0, sys_logical_y + sys_logical_h));
+            *state.active_sys_prompt_rect = Some((
+                230.0,
+                sys_logical_y as f64,
+                730.0,
+                (sys_logical_y + sys_logical_h) as f64,
+            ));
             *state.active_sys_prompt_content_height = full_content_h_px / scale;
 
             let start_text_raw = input_y_raw + sc(12.0) as i32;
@@ -230,16 +242,17 @@ pub fn draw(
                 }
             }
 
-            draw_text_ex(
+            draw_text_dw_h(
                 buffer,
                 w,
                 &final_text,
+                state.system_prompt_hash,
                 s(fx as u32) as i32 + sc(15.0) as i32,
                 start_text_raw,
                 sc(14.0),
                 display_col,
                 max_width,
-                input_h.saturating_sub(sc(20.0) as u32),
+                input_h.saturating_sub(sc(24.0) as u32), // Standardized 12+12 padding
                 state.system_prompt_scroll_offset * scale,
             );
 
@@ -378,8 +391,7 @@ pub fn draw(
     }
 
     // Content height tracking
-    let viewport_h_phys = sc(600.0);
-    // Last card is System Prompt at 930.0, height 250.0. Add 100 padding.
-    let content_h_phys = sc(930.0 + 250.0 + 100.0);
-    (viewport_h_phys, content_h_phys)
+    let viewport_h = 600.0;
+    let content_h = 930.0 + 250.0 + 170.0;
+    (viewport_h, content_h)
 }

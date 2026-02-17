@@ -56,12 +56,19 @@ pub struct SettingsWindow {
     pub history: Vec<(String, String)>,
     pub history_scroll_states: Vec<f32>,
     pub history_item_rects: Vec<(f64, f64, f64, f64)>,
+    pub history_hashes: Vec<u64>,
+    pub history_metrics_cache: Vec<f32>, // Cached heights
+    pub system_prompt_hash: u64,
+    pub system_prompt_metrics_cache: f32,
 
     // Layout
     pub is_dragging_scrollbar: bool,
     pub last_size: (u32, u32),
     pub available_monitors: Vec<(String, String)>,
     pub current_monitor_name: Option<String>,
+
+    pub is_dirty: bool,
+    pub last_state_hash: u64,
 }
 
 impl SettingsWindow {
@@ -101,6 +108,10 @@ impl SettingsWindow {
             history: Vec::new(),
             history_scroll_states: Vec::new(),
             history_item_rects: Vec::new(),
+            history_hashes: Vec::new(),
+            history_metrics_cache: Vec::new(),
+            system_prompt_hash: 0,
+            system_prompt_metrics_cache: 0.0,
             is_dragging_scrollbar: false,
             available_monitors: event_loop
                 .available_monitors()
@@ -108,6 +119,8 @@ impl SettingsWindow {
                 .collect(),
             current_monitor_name: None,
             last_size: (800, 750),
+            is_dirty: true,
+            last_state_hash: 0,
         }
     }
 
@@ -163,7 +176,52 @@ impl SettingsWindow {
                 )
                 .unwrap();
             self.last_size = (w, h);
+            self.history_hashes.clear(); // Force re-calculation of everything
+            self.history_metrics_cache.clear();
+            self.system_prompt_metrics_cache = 0.0;
+            self.is_dirty = true;
         }
+
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        self.current_tab.hash(&mut hasher);
+        self.scroll_offset.to_bits().hash(&mut hasher);
+        self.focused_field.hash(&mut hasher);
+        self.cursor_pos.hash(&mut hasher);
+        self.history.len().hash(&mut hasher);
+        ai_config.api_key.hash(&mut hasher);
+        ai_config.base_url.hash(&mut hasher);
+        ai_config.model.hash(&mut hasher);
+        ai_config.system_prompt.hash(&mut hasher);
+
+        // Include sub-scroll states in hash
+        self.system_prompt_scroll_offset.to_bits().hash(&mut hasher);
+        for offset in &self.history_scroll_states {
+            offset.to_bits().hash(&mut hasher);
+        }
+
+        // Include cursor blink state in hash
+        let elapsed_ms = self.last_cursor_action.elapsed().as_millis();
+        let is_cursor_on = (elapsed_ms / 500) % 2 == 0;
+        is_cursor_on.hash(&mut hasher);
+
+        if self.system_prompt_hash == 0 && !ai_config.system_prompt.is_empty() {
+            let mut h = DefaultHasher::new();
+            ai_config.system_prompt.hash(&mut h);
+            self.system_prompt_hash = h.finish();
+        }
+
+        let current_hash = hasher.finish();
+        if !self.is_dirty && self.last_state_hash == current_hash {
+            // OPTIMIZATION: If nothing changed, just present the last buffer
+            // Softbuffer requires a present, but we don't need to redraw everything.
+            let buffer = self.surface.buffer_mut().unwrap();
+            buffer.present().unwrap();
+            return;
+        }
+        self.last_state_hash = current_hash;
+        self.is_dirty = false;
 
         let mut buffer = self.surface.buffer_mut().unwrap();
         buffer.fill(0);
@@ -265,6 +323,8 @@ impl SettingsWindow {
                     system_prompt_scroll_offset: self.system_prompt_scroll_offset,
                     active_sys_prompt_content_height: &mut self.active_sys_prompt_content_height,
                     active_sys_prompt_rect: &mut self.active_sys_prompt_rect,
+                    system_prompt_metrics_cache: self.system_prompt_metrics_cache,
+                    system_prompt_hash: self.system_prompt_hash,
                 };
                 let (vh, ch) = tabs::ai::draw(
                     &mut buffer,
@@ -281,11 +341,32 @@ impl SettingsWindow {
                 self.content_height = ch;
             }
             3 => {
+                // Sync hashes and metrics
+                if self.history_hashes.len() != self.history.len() {
+                    use std::collections::hash_map::DefaultHasher;
+                    use std::hash::{Hash, Hasher};
+                    self.history_hashes.resize(self.history.len(), 0);
+                    self.history_metrics_cache.resize(self.history.len(), 0.0);
+                    for (i, (_, content)) in self.history.iter().enumerate() {
+                        let mut hasher = DefaultHasher::new();
+                        content.hash(&mut hasher);
+                        self.history_hashes[i] = hasher.finish();
+
+                        // Pre-calculate height once
+                        let scale = (w as f32 / 800.0).min(h as f32 / 750.0);
+                        let max_text_w = (450.0 * scale) as u32;
+                        let (_, mh) =
+                            crate::ui_primitives::get_metrics_dw(content, 16.0 * scale, max_text_w);
+                        self.history_metrics_cache[i] = mh;
+                    }
+                }
                 let mut history_state = tabs::history::HistoryTabState {
                     history: &self.history,
+                    history_hashes: &self.history_hashes,
+                    history_metrics_cache: &self.history_metrics_cache,
                     history_scroll_states: &mut self.history_scroll_states,
                     history_item_rects: &mut self.history_item_rects,
-                    scroll_offset: self.scroll_offset,
+                    scroll_offset: self.scroll_offset * scale,
                 };
                 let (vh, ch) =
                     tabs::history::draw(&mut buffer, w, h, scale, off_x, off_y, &mut history_state);
@@ -402,8 +483,11 @@ impl SettingsWindow {
         let off_x = (w - 800.0 * scale) / 2.0;
         let off_y = (h - 750.0 * scale) / 2.0;
 
+        self.is_dirty = true;
         let lx = (x - off_x) / scale;
         let ly = (y - off_y) / scale;
+        let dlx = lx;
+        let dly = ly - self.scroll_offset as f64;
 
         // Sidebar
         if lx >= 0.0 && lx <= 180.0 {
@@ -442,7 +526,7 @@ impl SettingsWindow {
             1 => {
                 // Tab 1: General
                 let card_w = 560.0;
-                let scroll_y = self.scroll_offset as f64 / scale;
+                let scroll_y = self.scroll_offset as f64;
                 let card1_y = 120.0 + scroll_y;
                 let card2_y = 280.0 + scroll_y;
                 let card3_y = 505.0 + scroll_y;
@@ -496,17 +580,17 @@ impl SettingsWindow {
                 let card5_y = 825.0 + scroll_y;
                 let rows = (self.available_monitors.len() + 2) / 3;
                 let card5_h = 60.0 + (rows as f64 * 65.0);
-                if lx >= 210.0
-                    && lx <= 210.0 + card_w
-                    && ly >= card5_y + 60.0
-                    && ly <= card5_y + card5_h
+                if dlx >= 210.0
+                    && dlx <= 210.0 + card_w
+                    && dly >= card5_y + 60.0
+                    && dly <= card5_y + card5_h
                 {
                     for (i, (name, _)) in self.available_monitors.iter().enumerate() {
                         let row = i / 3;
                         let col = i % 3;
                         let mx = 230.0 + col as f64 * 110.0;
                         let my = card5_y + 60.0 + row as f64 * 65.0;
-                        if lx >= mx && lx <= mx + 100.0 && ly >= my && ly <= my + 55.0 {
+                        if dlx >= mx && dlx <= mx + 100.0 && dly >= my && dly <= my + 55.0 {
                             return SettingsAction::SetMonitor(name.clone());
                         }
                     }
@@ -514,8 +598,7 @@ impl SettingsWindow {
             }
             2 => {
                 // Tab 2: AI
-                let scroll_y = self.scroll_offset as f64 / scale;
-                let card_y = 120.0 + scroll_y;
+                let design_card_y = 120.0;
 
                 self.focused_field = None;
                 self.selection_start = None;
@@ -536,10 +619,11 @@ impl SettingsWindow {
                 ];
 
                 for (i, (fx, fy, fw)) in fields.iter().enumerate() {
-                    let input_y = card_y + fy + 25.0;
+                    let input_y = design_card_y + fy + 25.0;
                     let input_h = if i == 11 { 250.0 } else { 45.0 };
 
-                    if lx >= *fx && lx <= *fx + *fw && ly >= input_y && ly <= input_y + input_h {
+                    if dlx >= *fx && dlx <= *fx + *fw && dly >= input_y && dly <= input_y + input_h
+                    {
                         self.focused_field = Some(i);
                         self.last_cursor_action = std::time::Instant::now();
 
@@ -552,7 +636,7 @@ impl SettingsWindow {
                             // System prompt multi-line
                             let text_x = lx - fx - 15.0;
                             let text_y =
-                                ly - input_y - 12.0 - self.system_prompt_scroll_offset as f64;
+                                dly - input_y - 12.0 - self.system_prompt_scroll_offset as f64;
                             self.cursor_pos =
                                 self.get_cursor_from_xy(&text, text_x, text_y, scale as f32);
 
@@ -632,7 +716,7 @@ impl SettingsWindow {
         }
     }
 
-    fn set_field_text(&self, idx: usize, ai_config: &mut AiConfig, text: String) {
+    fn set_field_text(&mut self, idx: usize, ai_config: &mut AiConfig, text: String) {
         match idx {
             0 => ai_config.api_key = text,
             1 => ai_config.base_url = text,
@@ -653,7 +737,14 @@ impl SettingsWindow {
             8 => ai_config.brave_api_key = text,
             9 => ai_config.firecrawl_url = text,
             10 => ai_config.firecrawl_api_key = text,
-            11 => ai_config.system_prompt = text,
+            11 => {
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut hasher = DefaultHasher::new();
+                text.hash(&mut hasher);
+                self.system_prompt_hash = hasher.finish();
+                ai_config.system_prompt = text;
+            }
             _ => {}
         }
     }
@@ -669,7 +760,9 @@ impl SettingsWindow {
     }
 
     fn get_cursor_from_xy(&self, text: &str, lx: f64, ly: f64, scale: f32) -> usize {
-        let max_width = (540.0 - 80.0) * scale;
+        let field_idx = self.focused_field.unwrap_or(0);
+        let base_w = if field_idx == 11 { 460.0 } else { 500.0 };
+        let max_width = base_w * scale;
         get_cursor_index_from_xy(
             text,
             14.0 * scale,
@@ -680,9 +773,11 @@ impl SettingsWindow {
     }
 
     fn get_xy_from_cursor(&self, text: &str, cursor_pos: usize, scale: f32) -> (f64, f64) {
-        let max_width = (540.0 - 80.0) * scale;
+        let field_idx = self.focused_field.unwrap_or(0);
+        let base_w = if field_idx == 11 { 460.0 } else { 500.0 };
+        let max_width = base_w * scale;
         let (px, py) = get_xy_from_cursor_index(text, 14.0 * scale, max_width as u32, cursor_pos);
-        (px as f64, py as f64)
+        (px as f64 / scale as f64, py as f64 / scale as f64)
     }
 
     pub fn handle_key_input(
@@ -691,6 +786,8 @@ impl SettingsWindow {
         ai_config: &mut AiConfig,
         modifiers: winit::keyboard::ModifiersState,
     ) -> bool {
+        let size = self.window.inner_size();
+        let scale = ((size.width as f64 / 800.0).min(size.height as f64 / 750.0)) as f32;
         self.last_cursor_action = std::time::Instant::now();
         if self.current_tab != 2 {
             return false;
@@ -720,9 +817,9 @@ impl SettingsWindow {
 
         if let Key::Named(NamedKey::ArrowUp) = &event.logical_key {
             if field_idx == 11 {
-                let (lx, ly) = self.get_xy_from_cursor(&text, self.cursor_pos, 1.0);
+                let (lx, ly) = self.get_xy_from_cursor(&text, self.cursor_pos, scale);
                 let line_height = 20.0;
-                self.cursor_pos = self.get_cursor_from_xy(&text, lx, ly - line_height + 5.0, 1.0);
+                self.cursor_pos = self.get_cursor_from_xy(&text, lx, ly - line_height + 5.0, scale);
                 if !has_shift {
                     self.selection_start = None;
                 }
@@ -732,9 +829,9 @@ impl SettingsWindow {
         }
         if let Key::Named(NamedKey::ArrowDown) = &event.logical_key {
             if field_idx == 11 {
-                let (lx, ly) = self.get_xy_from_cursor(&text, self.cursor_pos, 1.0);
+                let (lx, ly) = self.get_xy_from_cursor(&text, self.cursor_pos, scale);
                 let line_height = 20.0;
-                self.cursor_pos = self.get_cursor_from_xy(&text, lx, ly + line_height + 5.0, 1.0);
+                self.cursor_pos = self.get_cursor_from_xy(&text, lx, ly + line_height + 5.0, scale);
                 if !has_shift {
                     self.selection_start = None;
                 }
@@ -959,9 +1056,14 @@ impl SettingsWindow {
             }
 
             self.set_field_text(idx, ai_config, chars.iter().collect());
+            if idx == 11 {
+                // Invalidate system prompt metrics cache
+                self.system_prompt_metrics_cache = 0.0;
+            }
             ai_config.save();
             self.last_cursor_action = std::time::Instant::now();
             self.window.request_redraw();
+            self.is_dirty = true; // Added for handle_key (IME is a form of key input)
             return true;
         }
         false
@@ -972,113 +1074,105 @@ impl SettingsWindow {
         dy: f32,
         cursor_pos: Option<winit::dpi::PhysicalPosition<f64>>,
     ) {
+        self.is_dirty = true;
+        let size = self.window.inner_size();
+        let w = size.width as f64;
+        let h = size.height as f64;
+        let scale = (w / 800.0).min(h / 750.0);
+        let off_x = (w - 800.0 * scale) / 2.0;
+        let off_y = (h - 750.0 * scale) / 2.0;
+        let dy_logical = dy / scale as f32;
+
+        let (lx, ly) = if let Some(pos) = cursor_pos {
+            ((pos.x - off_x) / scale, (pos.y - off_y) / scale)
+        } else {
+            (-1000.0, -1000.0)
+        };
+
+        // Design-space coordinates for hit detection
+        let dlx = lx;
+        let dly = ly - self.scroll_offset as f64;
+
         if self.current_tab == 3 {
             // History Tab
             let mut scrolled_item = false;
-            if let Some(pos) = cursor_pos {
-                let size = self.window.inner_size();
-                let w = size.width as f64;
-                let h = size.height as f64;
-                let scale = (w / 800.0).min(h / 750.0);
-                let off_x = (w - 800.0 * scale) / 2.0;
-                let off_y = (h - 750.0 * scale) / 2.0;
-                let lx = (pos.x - off_x) / scale;
-                let ly = (pos.y - off_y) / scale;
+            if self.history_item_rects.len() == self.history.len() {
+                for (i, (rx_start, ry_start, rx_end, ry_end)) in
+                    self.history_item_rects.iter().enumerate()
+                {
+                    if dlx >= *rx_start && dlx <= *rx_end && dly >= *ry_start && dly <= *ry_end {
+                        let content = &self.history[i].1;
+                        let item_h_fixed_sc = 180.0 * scale as f32;
+                        let max_width = (450.0 * scale) as u32;
+                        let (_, full_h) = get_metrics_dw(content, 16.0 * scale as f32, max_width);
+                        let full_h = full_h.max(20.0 * scale as f32);
+                        let view_h = item_h_fixed_sc - (40.0 * scale as f32);
 
-                if self.history_item_rects.len() == self.history.len() {
-                    for (i, (_x, ly_start, _w, ly_end)) in
-                        self.history_item_rects.iter().enumerate()
-                    {
-                        let y_start = *ly_start + self.scroll_offset as f64 / scale;
-                        let y_end = *ly_end + self.scroll_offset as f64 / scale;
+                        if full_h > view_h {
+                            let current_log = self.history_scroll_states[i];
+                            let scroll_step_log = dy_logical;
+                            let new_val_log = current_log + scroll_step_log;
+                            let max_scroll_log = -(full_h - view_h) / scale as f32;
+                            let clamped_log = new_val_log.clamp(max_scroll_log, 0.0);
 
-                        if lx >= 230.0 && lx <= 720.0 && ly >= y_start && ly <= y_end {
-                            let content = &self.history[i].1;
-                            let item_h_fixed_sc = 180.0 * scale as f32;
-                            let max_width = (450.0 * scale) as u32;
-                            let (_, full_h) =
-                                get_metrics_dw(content, 16.0 * scale as f32, max_width);
-                            let full_h = full_h.max(20.0 * scale as f32);
-                            let view_h = item_h_fixed_sc - (40.0 * scale as f32);
-
-                            if full_h > view_h {
-                                let current_log = self.history_scroll_states[i];
-                                let scroll_step_log = dy / scale as f32;
-                                let new_val_log = current_log + scroll_step_log;
-                                let max_scroll_log = -((full_h - view_h) / scale as f32);
-                                let clamped_log = new_val_log.clamp(max_scroll_log, 0.0);
-
-                                if (clamped_log - current_log).abs() > 0.001 {
-                                    self.history_scroll_states[i] = clamped_log;
-                                    scrolled_item = true;
+                            if (clamped_log - current_log).abs() > 0.001 {
+                                self.history_scroll_states[i] = clamped_log;
+                                scrolled_item = true;
+                            } else {
+                                if (dy_logical > 0.0 && current_log >= -0.01)
+                                    || (dy_logical < 0.0 && current_log <= max_scroll_log + 0.01)
+                                {
+                                    scrolled_item = false;
                                 } else {
-                                    if (dy > 0.0 && current_log >= -0.01)
-                                        || (dy < 0.0 && current_log <= max_scroll_log + 0.01)
-                                    {
-                                        scrolled_item = false;
-                                    } else {
-                                        scrolled_item = true;
-                                    }
+                                    scrolled_item = true;
                                 }
                             }
-                            break;
                         }
+                        break;
                     }
                 }
             }
 
             if !scrolled_item {
-                self.scroll_offset += dy;
+                self.scroll_offset += dy_logical;
                 let min_offset = -(self.content_height - self.viewport_height).max(0.0);
                 self.scroll_offset = self.scroll_offset.clamp(min_offset, 0.0);
             }
         } else if self.current_tab == 2 {
+            // AI Brain Tab
             let mut scrolled_sys_prompt = false;
             if let Some((min_x, min_y, max_x, max_y)) = self.active_sys_prompt_rect {
-                if let Some(pos) = cursor_pos {
-                    let size = self.window.inner_size();
-                    let w = size.width as f64;
-                    let h = size.height as f64;
-                    let scale = (w / 800.0).min(h / 750.0);
-                    let off_x = (w - 800.0 * scale) / 2.0;
-                    let off_y = (h - 750.0 * scale) / 2.0;
-                    let lx = (pos.x - off_x) / scale;
-                    let ly = (pos.y - off_y) / scale;
+                if dlx >= min_x && dlx <= max_x && dly >= min_y && dly <= max_y {
+                    let old_off = self.system_prompt_scroll_offset;
+                    self.system_prompt_scroll_offset += dy_logical;
+                    let view_h = 250.0;
+                    let content_h = self.active_sys_prompt_content_height;
+                    let min_offset = -(content_h - view_h).max(0.0);
+                    self.system_prompt_scroll_offset =
+                        self.system_prompt_scroll_offset.clamp(min_offset, 0.0);
 
-                    if lx >= min_x && lx <= max_x && ly >= min_y && ly <= max_y {
-                        let old_off = self.system_prompt_scroll_offset;
-                        self.system_prompt_scroll_offset += dy / scale as f32;
-                        let view_h = 250.0; // Updated from 200.0 to 250.0
-                        let content_h = self.active_sys_prompt_content_height;
-                        let min_offset = -(content_h - view_h).max(0.0);
-                        self.system_prompt_scroll_offset =
-                            self.system_prompt_scroll_offset.clamp(min_offset, 0.0);
-
-                        // If we reached the boundary, allow the global scroll to take over
-                        if (self.system_prompt_scroll_offset - old_off).abs() > 0.1 {
-                            scrolled_sys_prompt = true;
+                    if (self.system_prompt_scroll_offset - old_off).abs() > 0.01 {
+                        scrolled_sys_prompt = true;
+                    } else {
+                        if (dy_logical > 0.0 && self.system_prompt_scroll_offset >= -0.01)
+                            || (dy_logical < 0.0
+                                && self.system_prompt_scroll_offset <= min_offset + 0.01)
+                        {
+                            scrolled_sys_prompt = false;
                         } else {
-                            // Already at boundary: only eat scroll if we're trying to scroll FURTHER into the boundary
-                            if (dy > 0.0 && self.system_prompt_scroll_offset >= -0.1)
-                                || (dy < 0.0
-                                    && self.system_prompt_scroll_offset <= min_offset + 0.1)
-                            {
-                                scrolled_sys_prompt = false;
-                            } else {
-                                scrolled_sys_prompt = true;
-                            }
+                            scrolled_sys_prompt = true;
                         }
                     }
                 }
             }
 
             if !scrolled_sys_prompt {
-                self.scroll_offset += dy;
+                self.scroll_offset += dy_logical;
                 let min_offset = -(self.content_height - self.viewport_height).max(0.0);
                 self.scroll_offset = self.scroll_offset.clamp(min_offset, 0.0);
             }
         } else {
-            self.scroll_offset += dy;
+            self.scroll_offset += dy_logical;
             let min_offset = -(self.content_height - self.viewport_height).max(0.0);
             self.scroll_offset = self.scroll_offset.clamp(min_offset, 0.0);
         }
@@ -1094,6 +1188,8 @@ impl SettingsWindow {
         let off_y = (h - 750.0 * scale) / 2.0;
         let lx = (x - off_x) / scale;
         let ly = (y - off_y) / scale;
+        let dlx = lx;
+        let dly = ly - self.scroll_offset as f64;
 
         if self.is_dragging_scrollbar {
             if self.content_height > self.viewport_height {
@@ -1122,32 +1218,35 @@ impl SettingsWindow {
 
         let val = self.get_field_text(field_idx, ai_config);
         let fields = vec![
-            (230.0, 30.0),  // Key
-            (230.0, 130.0), // URL
-            (230.0, 230.0), // Model
-            (230.0, 330.0), // Steps
-            (405.0, 330.0), // L1
-            (580.0, 330.0), // L2
-            (230.0, 530.0), // Tavily
-            (230.0, 630.0), // System
-            (230.0, 430.0), // Interaction Frequency
+            (230.0, 30.0),  // 0: Key
+            (230.0, 130.0), // 1: URL
+            (230.0, 230.0), // 2: Model
+            (230.0, 330.0), // 3: Steps
+            (405.0, 330.0), // 4: L1
+            (580.0, 330.0), // 5: L2
+            (230.0, 430.0), // 6: Interval
+            (230.0, 530.0), // 7: Tavily
+            (230.0, 630.0), // 8: Brave
+            (230.0, 730.0), // 9: FC URL
+            (230.0, 830.0), // 10: FC Key
+            (230.0, 930.0), // 11: System
         ];
 
         let (fx, fy) = fields[field_idx];
-        let scroll_y = self.scroll_offset as f64 / scale;
-        let card_y = 120.0 + scroll_y;
-        let input_y = card_y + fy + 25.0;
-        let text_x = lx - fx - 15.0;
+        let design_card_y = 120.0;
+        let input_y = design_card_y + fy + 25.0;
+        let text_x = dlx - fx - 15.0;
 
-        if field_idx == 7 {
-            // Multi-line cursor drag
-            let text_y = ly - input_y - 12.0 - self.system_prompt_scroll_offset as f64;
+        if field_idx == 11 {
+            // Multi-line cursor drag for System Prompt
+            let text_y = dly - input_y - 12.0 - self.system_prompt_scroll_offset as f64;
             self.cursor_pos = self.get_cursor_from_xy(&val, text_x, text_y, scale as f32);
         } else {
             self.cursor_pos = self.get_cursor_from_x(&val, text_x, scale as f32);
         }
         self.window.request_redraw();
         self.last_cursor_action = std::time::Instant::now();
+        self.is_dirty = true;
     }
 
     pub fn handle_mouse_up(&mut self) {

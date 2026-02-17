@@ -484,35 +484,6 @@ fn draw_rounded_rect_row(
     }
 }
 
-pub fn draw_text_ex(
-    buffer: &mut [u32],
-    surface_w: u32,
-    text: &str,
-    x: i32,
-    y: i32,
-    font_size: f32,
-    color: u32,
-    max_w: u32,
-    max_h: u32,
-    scroll_offset: f32, // Logical pixels
-) {
-    #[cfg(target_os = "windows")]
-    {
-        draw_text_dw_ex(
-            buffer,
-            surface_w,
-            text,
-            x,
-            y,
-            font_size,
-            color,
-            max_w,
-            max_h,
-            scroll_offset,
-        );
-    }
-}
-
 pub fn draw_text(
     buffer: &mut [u32],
     surface_w: u32,
@@ -534,17 +505,18 @@ pub fn draw_text(
 }
 
 #[cfg(target_os = "windows")]
-pub fn draw_text_dw_ex(
+pub fn draw_text_dw_h(
     buffer: &mut [u32],
     surface_w: u32,
     text: &str,
+    text_hash: u64,
     x: i32,
     y: i32,
     font_size: f32,
     color: u32,
     max_w: u32,
     max_h: u32,
-    scroll_offset: f32, // Logical pixels
+    scroll_offset: f32,
 ) {
     if text.is_empty() {
         return;
@@ -552,11 +524,6 @@ pub fn draw_text_dw_ex(
 
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-
-    // Calculate layout key for raster cache
-    let mut text_hasher = DefaultHasher::new();
-    text.hash(&mut text_hasher);
-    let text_hash = text_hasher.finish();
 
     let font_family_name = "Microsoft YaHei";
     let mut family_hasher = DefaultHasher::new();
@@ -586,18 +553,88 @@ pub fn draw_text_dw_ex(
                 color,
                 max_w,
                 max_h,
+                -(scroll_offset as i32),
             );
             return;
         }
     }
 
+    draw_text_dw_ex_internal(
+        buffer,
+        surface_w,
+        text,
+        key,
+        x,
+        y,
+        font_size,
+        color,
+        max_w,
+        max_h,
+        scroll_offset,
+    );
+}
+
+#[cfg(target_os = "windows")]
+pub fn draw_text_dw_ex(
+    buffer: &mut [u32],
+    surface_w: u32,
+    text: &str,
+    x: i32,
+    y: i32,
+    font_size: f32,
+    color: u32,
+    max_w: u32,
+    max_h: u32,
+    scroll_offset: f32, // Logical pixels
+) {
+    if text.is_empty() {
+        return;
+    }
+
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    // Calculate layout key for raster cache
+    let mut text_hasher = DefaultHasher::new();
+    text.hash(&mut text_hasher);
+    let text_hash = text_hasher.finish();
+
+    draw_text_dw_h(
+        buffer,
+        surface_w,
+        text,
+        text_hash,
+        x,
+        y,
+        font_size,
+        color,
+        max_w,
+        max_h,
+        scroll_offset,
+    );
+}
+
+#[cfg(target_os = "windows")]
+fn draw_text_dw_ex_internal(
+    buffer: &mut [u32],
+    surface_w: u32,
+    text: &str,
+    key: LayoutKey,
+    x: i32,
+    y: i32,
+    font_size: f32,
+    color: u32,
+    max_w: u32,
+    max_h: u32,
+    scroll_offset: f32,
+) {
     unsafe {
         let layout = get_or_create_layout(text, font_size, max_w);
         let mut metrics = std::mem::zeroed();
         layout.GetMetrics(&mut metrics).unwrap();
 
-        let tw = (metrics.width.ceil() as i32 + 2).min(max_w as i32);
-        let th = (metrics.height.ceil() as i32 + 2).min(max_h as i32);
+        let tw = (metrics.width.ceil() as i32 + 10).min(max_w as i32 + 10);
+        let th = (metrics.height.ceil() as i32 + 2).min(8000);
 
         SCRATCHPAD.with(|sp| {
             let mut sp = sp.borrow_mut();
@@ -619,10 +656,7 @@ pub fn draw_text_dw_ex(
                 .unwrap();
 
             rt.DrawTextLayout(
-                windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F {
-                    x: 0.0,
-                    y: scroll_offset,
-                },
+                windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F { x: 0.0, y: 0.0 },
                 &layout,
                 &brush,
                 windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
@@ -655,6 +689,7 @@ pub fn draw_text_dw_ex(
                 color,
                 max_w,
                 max_h,
+                -(scroll_offset as i32),
             );
 
             // Update cache
@@ -683,72 +718,104 @@ fn blit_pixels(
     th: i32,
     src_pixels: &[u32],
     color: u32,
-    _max_w: u32,
-    _max_h: u32,
+    max_w: u32,
+    max_h: u32,
+    src_y_off: i32,
 ) {
     let surface_h = (buffer.len() as u32) / surface_w.max(1);
+
+    // Physical clipping in destination space
+    let start_y = dest_y.max(0);
+    let end_y = (dest_y + (th - src_y_off))
+        .min(dest_y + max_h as i32)
+        .min(surface_h as i32);
+    if start_y >= end_y {
+        return;
+    }
+
+    let start_x = dest_x.max(0);
+    let end_x = (dest_x + tw)
+        .min(dest_x + max_w as i32)
+        .min(surface_w as i32);
+    if start_x >= end_x {
+        return;
+    }
+
     let sr = (color >> 16) & 0xFF;
     let sg = (color >> 8) & 0xFF;
     let sb = color & 0xFF;
 
-    let start_y = dest_y.max(0);
-    let end_y = (dest_y + th).min(surface_h as i32);
-    let start_x = dest_x.max(0);
-    let end_x = (dest_x + tw).min(surface_w as i32);
-
-    if start_y >= end_y || start_x >= end_x {
-        return;
-    }
-
     let surface_w_usize = surface_w as usize;
     let tw_usize = tw as usize;
 
-    // Use parallel blitting for large text blocks (e.g. System Prompt)
-    if (end_y - start_y) as usize * (end_x - start_x) as usize > 10000 {
+    // Fast Path Selector
+    if (end_y - start_y) as usize * (end_x - start_x) as usize > 20000 {
         let rows =
             &mut buffer[start_y as usize * surface_w_usize..end_y as usize * surface_w_usize];
         rows.par_chunks_mut(surface_w_usize)
             .enumerate()
             .for_each(|(i, row)| {
-                let dy = i as i32 + start_y - dest_y;
-                let src_row_off = dy as usize * tw_usize;
-                for dx_idx in start_x..end_x {
-                    let dx = dx_idx - dest_x;
-                    let pixel = src_pixels[src_row_off + dx as usize];
-                    let a = (pixel >> 24) & 0xFF;
-                    if a == 255 {
-                        row[dx_idx as usize] = (sr << 16) | (sg << 8) | sb;
-                    } else if a > 0 {
-                        let bg = row[dx_idx as usize];
-                        let inv_a = 255 - a;
-                        let r = (sr * a + ((bg >> 16) & 0xFF) * inv_a) / 255;
-                        let g = (sg * a + ((bg >> 8) & 0xFF) * inv_a) / 255;
-                        let b = (sb * a + (bg & 0xFF) * inv_a) / 255;
-                        row[dx_idx as usize] = (r << 16) | (g << 8) | b;
-                    }
-                }
+                let current_dest_y = i as i32 + start_y;
+                let dy = current_dest_y - dest_y; // Offset relative to dest_y
+                let src_row = dy + src_y_off; // Physical row in source raster
+                let src_row_off = src_row as usize * tw_usize;
+                let src_slice = &src_pixels[src_row_off + (start_x - dest_x) as usize..];
+                let dest_slice = &mut row[start_x as usize..end_x as usize];
+
+                blend_row(dest_slice, src_slice, sr, sg, sb);
             });
     } else {
         for y in start_y..end_y {
             let dy = y - dest_y;
-            let src_row_off = dy as usize * tw_usize;
+            let src_row = dy + src_y_off;
+            let src_row_off = src_row as usize * tw_usize;
             let row_idx = y as usize * surface_w_usize;
-            for x in start_x..end_x {
-                let dx = x - dest_x;
-                let pixel = src_pixels[src_row_off + dx as usize];
-                let a = (pixel >> 24) & 0xFF;
-                if a == 255 {
-                    buffer[row_idx + x as usize] = (sr << 16) | (sg << 8) | sb;
-                } else if a > 0 {
-                    let bg = buffer[row_idx + x as usize];
-                    let inv_a = 255 - a;
-                    let r = (sr * a + ((bg >> 16) & 0xFF) * inv_a) / 255;
-                    let g = (sg * a + ((bg >> 8) & 0xFF) * inv_a) / 255;
-                    let b = (sb * a + (bg & 0xFF) * inv_a) / 255;
-                    buffer[row_idx + x as usize] = (r << 16) | (g << 8) | b;
-                }
+            let src_slice = &src_pixels[src_row_off + (start_x - dest_x) as usize..];
+            let dest_slice = &mut buffer[row_idx + start_x as usize..row_idx + end_x as usize];
+
+            blend_row(dest_slice, src_slice, sr, sg, sb);
+        }
+    }
+}
+
+#[inline(always)]
+fn blend_row(dest_slice: &mut [u32], src_slice: &[u32], sr: u32, sg: u32, sb: u32) {
+    let len = dest_slice.len();
+    let mut idx = 0;
+
+    // SIMD-friendly loop with manual unrolling
+    while idx + 4 <= len {
+        for k in 0..4 {
+            let i = idx + k;
+            let pixel = src_slice[i];
+            let a = (pixel >> 24) & 0xFF;
+            if a == 255 {
+                dest_slice[i] = (sr << 16) | (sg << 8) | sb;
+            } else if a > 0 {
+                let bg = dest_slice[i];
+                let inv_a = 255 - a;
+                let r = (sr * a + ((bg >> 16) & 0xFF) * inv_a) / 255;
+                let g = (sg * a + ((bg >> 8) & 0xFF) * inv_a) / 255;
+                let b = (sb * a + (bg & 0xFF) * inv_a) / 255;
+                dest_slice[i] = (r << 16) | (g << 8) | b;
             }
         }
+        idx += 4;
+    }
+    while idx < len {
+        let pixel = src_slice[idx];
+        let a = (pixel >> 24) & 0xFF;
+        if a == 255 {
+            dest_slice[idx] = (sr << 16) | (sg << 8) | sb;
+        } else if a > 0 {
+            let bg = dest_slice[idx];
+            let inv_a = 255 - a;
+            let r = (sr * a + ((bg >> 16) & 0xFF) * inv_a) / 255;
+            let g = (sg * a + ((bg >> 8) & 0xFF) * inv_a) / 255;
+            let b = (sb * a + (bg & 0xFF) * inv_a) / 255;
+            dest_slice[idx] = (r << 16) | (g << 8) | b;
+        }
+        idx += 1;
     }
 }
 
