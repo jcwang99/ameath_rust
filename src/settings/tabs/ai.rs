@@ -86,21 +86,34 @@ pub fn draw(
             continue;
         }
 
-        // Only clone the strings if the field is visible
-        let val = match i {
-            0 => ai_config.api_key.clone(),
-            1 => ai_config.base_url.clone(),
-            2 => ai_config.model.clone(),
-            3 => ai_config.react_limit.to_string(),
-            4 => ai_config.l1_summary_threshold.to_string(),
-            5 => ai_config.l2_merge_threshold.to_string(),
-            6 => ai_config.interaction_frequency.to_string(),
-            7 => ai_config.tavily_api_key.clone(),
-            8 => ai_config.brave_api_key.clone(),
-            9 => ai_config.firecrawl_url.clone(),
-            10 => ai_config.firecrawl_api_key.clone(),
-            11 => ai_config.system_prompt.clone(),
-            _ => String::new(),
+        // Use references to avoid cloning large strings every frame
+        let temp_num: String;
+        let val: &str = match i {
+            0 => &ai_config.api_key,
+            1 => &ai_config.base_url,
+            2 => &ai_config.model,
+            3 => {
+                temp_num = ai_config.react_limit.to_string();
+                &temp_num
+            }
+            4 => {
+                temp_num = ai_config.l1_summary_threshold.to_string();
+                &temp_num
+            }
+            5 => {
+                temp_num = ai_config.l2_merge_threshold.to_string();
+                &temp_num
+            }
+            6 => {
+                temp_num = ai_config.interaction_frequency.to_string();
+                &temp_num
+            }
+            7 => &ai_config.tavily_api_key,
+            8 => &ai_config.brave_api_key,
+            9 => &ai_config.firecrawl_url,
+            10 => &ai_config.firecrawl_api_key,
+            11 => &ai_config.system_prompt,
+            _ => "",
         };
 
         draw_text(

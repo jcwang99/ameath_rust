@@ -69,6 +69,7 @@ pub struct SettingsWindow {
 
     pub is_dirty: bool,
     pub last_state_hash: u64,
+    pub last_config_hash: u64,
 }
 
 impl SettingsWindow {
@@ -121,6 +122,7 @@ impl SettingsWindow {
             last_size: (800, 750),
             is_dirty: true,
             last_state_hash: 0,
+            last_config_hash: 0,
         }
     }
 
@@ -190,10 +192,24 @@ impl SettingsWindow {
         self.focused_field.hash(&mut hasher);
         self.cursor_pos.hash(&mut hasher);
         self.history.len().hash(&mut hasher);
-        ai_config.api_key.hash(&mut hasher);
-        ai_config.base_url.hash(&mut hasher);
-        ai_config.model.hash(&mut hasher);
-        ai_config.system_prompt.hash(&mut hasher);
+        // Efficient Config Hashing
+        let mut config_hasher = DefaultHasher::new();
+        ai_config.api_key.hash(&mut config_hasher);
+        ai_config.base_url.hash(&mut config_hasher);
+        ai_config.model.hash(&mut config_hasher);
+        ai_config.system_prompt.hash(&mut config_hasher);
+        ai_config.tavily_api_key.hash(&mut config_hasher);
+        ai_config.brave_api_key.hash(&mut config_hasher);
+        ai_config.firecrawl_api_key.hash(&mut config_hasher);
+        ai_config.firecrawl_url.hash(&mut config_hasher);
+        ai_config.interaction_frequency.hash(&mut config_hasher);
+        ai_config.l1_summary_threshold.hash(&mut config_hasher);
+        ai_config.l2_merge_threshold.hash(&mut config_hasher);
+        ai_config.react_limit.hash(&mut config_hasher);
+        let current_config_hash = config_hasher.finish();
+
+        current_config_hash.hash(&mut hasher);
+        self.last_config_hash = current_config_hash;
 
         // Include sub-scroll states in hash
         self.system_prompt_scroll_offset.to_bits().hash(&mut hasher);
@@ -341,20 +357,25 @@ impl SettingsWindow {
                 self.content_height = ch;
             }
             3 => {
-                // Sync hashes and metrics
+                // Sync hashes and metrics ONLY for new items
                 if self.history_hashes.len() != self.history.len() {
                     use std::collections::hash_map::DefaultHasher;
                     use std::hash::{Hash, Hasher};
+
+                    let old_len = self.history_hashes.len();
                     self.history_hashes.resize(self.history.len(), 0);
                     self.history_metrics_cache.resize(self.history.len(), 0.0);
-                    for (i, (_, content)) in self.history.iter().enumerate() {
+
+                    let scale = (w as f32 / 800.0).min(h as f32 / 750.0);
+                    let max_text_w = (450.0 * scale) as u32;
+
+                    for i in old_len..self.history.len() {
+                        let (_, content) = &self.history[i];
                         let mut hasher = DefaultHasher::new();
                         content.hash(&mut hasher);
                         self.history_hashes[i] = hasher.finish();
 
                         // Pre-calculate height once
-                        let scale = (w as f32 / 800.0).min(h as f32 / 750.0);
-                        let max_text_w = (450.0 * scale) as u32;
                         let (_, mh) =
                             crate::ui_primitives::get_metrics_dw(content, 16.0 * scale, max_text_w);
                         self.history_metrics_cache[i] = mh;

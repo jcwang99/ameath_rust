@@ -134,26 +134,43 @@ struct FormatKey {
     is_centered: bool,
 }
 
-static LAYOUT_CACHE: OnceLock<RwLock<HashMap<LayoutKey, IDWriteTextLayout>>> = OnceLock::new();
-static FORMAT_CACHE: OnceLock<RwLock<HashMap<FormatKey, IDWriteTextFormat>>> = OnceLock::new();
-
 struct RasterEntry {
     pixels: Vec<u32>,
     tw: i32,
     th: i32,
+    pixel_count: usize,
 }
-static RASTER_CACHE: OnceLock<RwLock<HashMap<LayoutKey, RasterEntry>>> = OnceLock::new();
 
-fn get_layout_cache() -> &'static RwLock<HashMap<LayoutKey, IDWriteTextLayout>> {
-    LAYOUT_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+struct CacheState<K, V> {
+    map: HashMap<K, V>,
+    order: Vec<K>,
+    total_pixels: usize,
+}
+
+impl<K: std::hash::Hash + Eq + Clone, V> CacheState<K, V> {
+    fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+            order: Vec::new(),
+            total_pixels: 0,
+        }
+    }
+}
+
+static LAYOUT_CACHE: OnceLock<RwLock<CacheState<LayoutKey, IDWriteTextLayout>>> = OnceLock::new();
+static FORMAT_CACHE: OnceLock<RwLock<HashMap<FormatKey, IDWriteTextFormat>>> = OnceLock::new();
+static RASTER_CACHE: OnceLock<RwLock<CacheState<LayoutKey, RasterEntry>>> = OnceLock::new();
+
+fn get_layout_cache() -> &'static RwLock<CacheState<LayoutKey, IDWriteTextLayout>> {
+    LAYOUT_CACHE.get_or_init(|| RwLock::new(CacheState::new()))
 }
 
 fn get_format_cache() -> &'static RwLock<HashMap<FormatKey, IDWriteTextFormat>> {
     FORMAT_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-fn get_raster_cache() -> &'static RwLock<HashMap<LayoutKey, RasterEntry>> {
-    RASTER_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+fn get_raster_cache() -> &'static RwLock<CacheState<LayoutKey, RasterEntry>> {
+    RASTER_CACHE.get_or_init(|| RwLock::new(CacheState::new()))
 }
 
 pub fn get_or_create_layout_ex(
@@ -184,9 +201,19 @@ pub fn get_or_create_layout_ex(
         is_centered,
     };
 
-    if let Ok(cache) = get_layout_cache().read() {
-        if let Some(layout) = cache.get(&key) {
-            return layout.clone();
+    {
+        let mut cache = get_layout_cache().write().unwrap();
+        let mut found = false;
+        if cache.map.contains_key(&key) {
+            // LRU Promotion
+            if let Some(pos) = cache.order.iter().position(|k| k == &key) {
+                cache.order.remove(pos);
+            }
+            cache.order.push(key.clone());
+            found = true;
+        }
+        if found {
+            return cache.map.get(&key).unwrap().clone();
         }
     }
 
@@ -240,10 +267,15 @@ pub fn get_or_create_layout_ex(
             .unwrap();
 
         let mut cache = get_layout_cache().write().unwrap();
-        if cache.len() > 300 {
-            cache.clear();
+        // Eviction logic
+        if cache.map.len() >= 200 {
+            if !cache.order.is_empty() {
+                let oldest = cache.order.remove(0);
+                cache.map.remove(&oldest);
+            }
         }
-        cache.insert(key, layout.clone());
+        cache.order.push(key.clone());
+        cache.map.insert(key, layout.clone());
         layout
     }
 }
@@ -540,8 +572,20 @@ pub fn draw_text_dw_h(
     };
 
     // Fast path: Raster Cache
-    if let Ok(cache) = get_raster_cache().read() {
-        if let Some(entry) = cache.get(&key) {
+    {
+        let mut cache = get_raster_cache().write().unwrap();
+        let mut found = false;
+        if cache.map.contains_key(&key) {
+            // LRU Promotion
+            if let Some(pos) = cache.order.iter().position(|k| k == &key) {
+                cache.order.remove(pos);
+            }
+            cache.order.push(key.clone());
+            found = true;
+        }
+
+        if found {
+            let entry = cache.map.get(&key).unwrap();
             blit_pixels(
                 buffer,
                 surface_w,
@@ -694,15 +738,24 @@ fn draw_text_dw_ex_internal(
 
             // Update cache
             let mut cache = get_raster_cache().write().unwrap();
-            if cache.len() > 500 {
-                cache.clear();
+
+            // Limit to ~10M pixels (~40MB)
+            while cache.total_pixels + pixel_count > 10_000_000 && !cache.order.is_empty() {
+                let oldest_key = cache.order.remove(0);
+                if let Some(old_entry) = cache.map.remove(&oldest_key) {
+                    cache.total_pixels -= old_entry.pixel_count;
+                }
             }
-            cache.insert(
+
+            cache.order.push(key.clone());
+            cache.total_pixels += pixel_count;
+            cache.map.insert(
                 key,
                 RasterEntry {
                     pixels: captured_pixels,
                     tw,
                     th,
+                    pixel_count,
                 },
             );
         });
