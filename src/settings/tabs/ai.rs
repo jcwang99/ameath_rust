@@ -46,42 +46,61 @@ pub fn draw(
         h,
     );
 
-    let fields = vec![
-        ("API Key", ai_config.api_key.clone()),
-        ("Base URL", ai_config.base_url.clone()),
-        ("Model", ai_config.model.clone()),
-        ("ReAct Steps", ai_config.react_limit.to_string()),
-        ("L1 Summary", ai_config.l1_summary_threshold.to_string()),
-        ("L2 Merge", ai_config.l2_merge_threshold.to_string()),
-        (
-            "Interact Interval (min)",
-            ai_config.interaction_frequency.to_string(),
-        ),
-        ("Tavily Key", ai_config.tavily_api_key.clone()),
-        ("Brave Key", ai_config.brave_api_key.clone()),
-        ("Firecrawl URL", ai_config.firecrawl_url.clone()),
-        ("Firecrawl Key", ai_config.firecrawl_api_key.clone()),
-        ("System Prompt", ai_config.system_prompt.clone()),
-    ];
+    let fields_count = 12;
+    // Calculate visible range
+    let viewport_min_y = card_y_raw as f32;
+    let viewport_max_y = h as f32;
 
-    for (i, (label, val)) in fields.iter().enumerate() {
-        let (fx, fy, fw) = match i {
-            0 => (230.0, 30.0, 500.0),
-            1 => (230.0, 130.0, 500.0),
-            2 => (230.0, 230.0, 500.0),
-            3 => (230.0, 330.0, 150.0),
-            4 => (405.0, 330.0, 150.0),
-            5 => (580.0, 330.0, 150.0),
-            6 => (230.0, 430.0, 150.0),
-            7 => (230.0, 530.0, 500.0),
-            8 => (230.0, 630.0, 500.0),
-            9 => (230.0, 730.0, 500.0),
-            10 => (230.0, 830.0, 500.0),
-            11 => (230.0, 930.0, 500.0),
-            _ => (0.0, 0.0, 0.0),
+    for i in 0..fields_count {
+        let (label, fx, fy, fw, is_multiline) = match i {
+            0 => ("API Key", 230.0, 30.0, 500.0, false),
+            1 => ("Base URL", 230.0, 130.0, 500.0, false),
+            2 => ("Model", 230.0, 230.0, 500.0, false),
+            3 => ("ReAct Steps", 230.0, 330.0, 150.0, false),
+            4 => ("L1 Summary", 405.0, 330.0, 150.0, false),
+            5 => ("L2 Merge", 580.0, 330.0, 150.0, false),
+            6 => ("Interact Interval (min)", 230.0, 430.0, 150.0, false),
+            7 => ("Tavily Key", 230.0, 530.0, 500.0, false),
+            8 => ("Brave Key", 230.0, 630.0, 500.0, false),
+            9 => ("Firecrawl URL", 230.0, 730.0, 500.0, false),
+            10 => ("Firecrawl Key", 230.0, 830.0, 500.0, false),
+            11 => ("System Prompt", 230.0, 930.0, 500.0, true),
+            _ => ("", 0.0, 0.0, 0.0, false),
         };
 
         let fy_scaled_raw = card_y_raw + sc(fy) as i32;
+        let input_y_raw = fy_scaled_raw + sc(25.0) as i32;
+        let input_h = if is_multiline {
+            let input_h_logical = 250.0;
+            sc(input_h_logical) as u32
+        } else {
+            sc(45.0) as u32
+        };
+
+        // Clipping Check: Skip field if completely outside viewport
+        if fy_scaled_raw as f32 + input_h as f32 + sc(20.0) < viewport_min_y
+            || fy_scaled_raw as f32 > viewport_max_y
+        {
+            continue;
+        }
+
+        // Only clone the strings if the field is visible
+        let val = match i {
+            0 => ai_config.api_key.clone(),
+            1 => ai_config.base_url.clone(),
+            2 => ai_config.model.clone(),
+            3 => ai_config.react_limit.to_string(),
+            4 => ai_config.l1_summary_threshold.to_string(),
+            5 => ai_config.l2_merge_threshold.to_string(),
+            6 => ai_config.interaction_frequency.to_string(),
+            7 => ai_config.tavily_api_key.clone(),
+            8 => ai_config.brave_api_key.clone(),
+            9 => ai_config.firecrawl_url.clone(),
+            10 => ai_config.firecrawl_api_key.clone(),
+            11 => ai_config.system_prompt.clone(),
+            _ => String::new(),
+        };
+
         draw_text(
             buffer,
             w,
@@ -93,14 +112,7 @@ pub fn draw(
             COLOR_TEXT_SEC,
         );
 
-        let input_y_raw = fy_scaled_raw + sc(25.0) as i32;
         let input_w = sc(fw as f32) as u32;
-        let input_h = if i == 11 {
-            let input_h_logical = 250.0;
-            sc(input_h_logical) as u32
-        } else {
-            sc(45.0) as u32
-        };
 
         let is_focused = state.focused_field == Some(i);
         let border_col = if is_focused {

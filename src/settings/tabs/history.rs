@@ -49,13 +49,10 @@ pub fn draw(
     let min_y_vis = sy_val(120) as f32;
     let max_y_vis = h as f32;
 
-    // We can't easily parallelize drawing to the SAME buffer with our current primitives.
-    // However, we can parallelize the "preparation" of cards or use a targeted loop.
-    // For now, let's optimize the loop by skipping non-visible items first.
-
     for (i, (role, content)) in state.history.iter().enumerate() {
         let y_pos = current_y + (i as f32 * total_item_h);
 
+        // Strict Clipping: Skip processing if bubble is completely off-screen
         if (y_pos + item_h_fixed) < min_y_vis || y_pos > max_y_vis {
             continue;
         }
@@ -91,6 +88,7 @@ pub fn draw(
         );
 
         let max_text_w = sc(450.0) as u32;
+        // Optimization: Use a local cache or avoid re-calculating metrics every frame if possible
         let (_mw, mh) = get_metrics_dw(content, sc(16.0), max_text_w);
         let full_content_h = mh.max(sc(20.0));
         let view_h = item_h_fixed - sc(40.0);
@@ -98,6 +96,7 @@ pub fn draw(
         let scroll = state.history_scroll_states[i];
         let start_text_y = y_pos + sc(35.0);
 
+        // draw_text_dw_ex now uses RasterCache internally
         draw_text_dw_ex(
             buffer,
             w,
@@ -117,39 +116,37 @@ pub fn draw(
             let sb_x = s(230 + 480);
             let sb_y_raw = start_text_y;
 
-            if sb_y_raw + sb_h > 0.0 && sb_y_raw < h as f32 {
-                draw_rect(
-                    buffer,
-                    w,
-                    sb_x as i32,
-                    sb_y_raw as i32,
-                    sb_w,
-                    sb_h as u32,
-                    COLOR_BORDER,
-                    w,
-                    h,
-                );
-                let ratio = view_h / full_content_h;
-                let h_h = (view_h * ratio).max(sc(20.0));
-                let max_scroll = -(full_content_h - view_h);
-                let progress = if max_scroll.abs() < 1.0 {
-                    0.0
-                } else {
-                    (scroll * scale / max_scroll).clamp(0.0, 1.0)
-                };
-                let h_y = sb_y_raw + (view_h - h_h) * progress;
-                draw_rect(
-                    buffer,
-                    w,
-                    sb_x as i32,
-                    h_y as i32,
-                    sb_w,
-                    h_h as u32,
-                    0x00A0A0A0,
-                    w,
-                    h,
-                );
-            }
+            draw_rect(
+                buffer,
+                w,
+                sb_x as i32,
+                sb_y_raw as i32,
+                sb_w,
+                sb_h as u32,
+                COLOR_BORDER,
+                w,
+                h,
+            );
+            let ratio = view_h / full_content_h;
+            let h_h = (view_h * ratio).max(sc(20.0));
+            let max_scroll = -(full_content_h - view_h);
+            let progress = if max_scroll.abs() < 1.0 {
+                0.0
+            } else {
+                (scroll * scale / max_scroll).clamp(0.0, 1.0)
+            };
+            let h_y = sb_y_raw + (view_h - h_h) * progress;
+            draw_rect(
+                buffer,
+                w,
+                sb_x as i32,
+                h_y as i32,
+                sb_w,
+                h_h as u32,
+                0x00A0A0A0,
+                w,
+                h,
+            );
         }
     }
 

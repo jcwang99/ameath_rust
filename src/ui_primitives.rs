@@ -118,17 +118,17 @@ thread_local! {
 
 #[derive(Hash, PartialEq, Eq, Clone)]
 struct LayoutKey {
-    text: String,
+    text_hash: u64,
     font_size_bits: u32,
     max_w: u32,
-    font_family: String,
+    font_family_hash: u64,
     is_bold: bool,
     is_centered: bool,
 }
 
 #[derive(Hash, PartialEq, Eq, Clone)]
 struct FormatKey {
-    font_family: String,
+    font_family_hash: u64,
     font_size_bits: u32,
     is_bold: bool,
     is_centered: bool,
@@ -137,12 +137,23 @@ struct FormatKey {
 static LAYOUT_CACHE: OnceLock<RwLock<HashMap<LayoutKey, IDWriteTextLayout>>> = OnceLock::new();
 static FORMAT_CACHE: OnceLock<RwLock<HashMap<FormatKey, IDWriteTextFormat>>> = OnceLock::new();
 
+struct RasterEntry {
+    pixels: Vec<u32>,
+    tw: i32,
+    th: i32,
+}
+static RASTER_CACHE: OnceLock<RwLock<HashMap<LayoutKey, RasterEntry>>> = OnceLock::new();
+
 fn get_layout_cache() -> &'static RwLock<HashMap<LayoutKey, IDWriteTextLayout>> {
     LAYOUT_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
 fn get_format_cache() -> &'static RwLock<HashMap<FormatKey, IDWriteTextFormat>> {
     FORMAT_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn get_raster_cache() -> &'static RwLock<HashMap<LayoutKey, RasterEntry>> {
+    RASTER_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
 pub fn get_or_create_layout_ex(
@@ -153,11 +164,22 @@ pub fn get_or_create_layout_ex(
     is_bold: bool,
     is_centered: bool,
 ) -> IDWriteTextLayout {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut text_hasher = DefaultHasher::new();
+    text.hash(&mut text_hasher);
+    let text_hash = text_hasher.finish();
+
+    let mut family_hasher = DefaultHasher::new();
+    font_family_name.hash(&mut family_hasher);
+    let font_family_hash = family_hasher.finish();
+
     let key = LayoutKey {
-        text: text.to_string(),
+        text_hash,
         font_size_bits: font_size.to_bits(),
         max_w,
-        font_family: font_family_name.to_string(),
+        font_family_hash,
         is_bold,
         is_centered,
     };
@@ -170,7 +192,7 @@ pub fn get_or_create_layout_ex(
 
     let dwrite_factory = get_dwrite_factory();
     let format_key = FormatKey {
-        font_family: font_family_name.to_string(),
+        font_family_hash,
         font_size_bits: font_size.to_bits(),
         is_bold,
         is_centered,
@@ -253,13 +275,20 @@ pub fn draw_rect(
     let start_y_idx = start_y as usize;
     let end_y_idx = max_y as usize;
     let surface_w_usize = surface_w as usize;
+    let rect_w = (max_x - start_x) as usize;
 
-    if start_y_idx < end_y_idx {
+    // OPTIMIZATION: Use parallel chunks only for large enough rects
+    if (end_y_idx - start_y_idx) * rect_w > 16384 {
         buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize]
             .par_chunks_mut(surface_w_usize)
             .for_each(|row| {
                 row[start_x as usize..max_x as usize].fill(color);
             });
+    } else {
+        for dy in start_y_idx..end_y_idx {
+            let row_start = dy * surface_w_usize + start_x as usize;
+            buffer[row_start..row_start + rect_w].fill(color);
+        }
     }
 }
 
@@ -294,9 +323,27 @@ pub fn draw_rect_alpha(
 
     if start_y_idx < end_y_idx {
         let affected_rows = &mut buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize];
-        affected_rows
-            .par_chunks_mut(surface_w_usize)
-            .for_each(|row| {
+        let rect_w = (max_x - start_x) as usize;
+
+        if (end_y_idx - start_y_idx) * rect_w > 10000 {
+            affected_rows
+                .par_chunks_mut(surface_w_usize)
+                .for_each(|row| {
+                    for cx in start_x..max_x {
+                        let bg = row[cx as usize];
+                        let br = ((bg >> 16) & 0xFF) as f32;
+                        let bg_g = ((bg >> 8) & 0xFF) as f32;
+                        let bb = (bg & 0xFF) as f32;
+
+                        let r = br * (1.0 - alpha) + fr * alpha;
+                        let g = bg_g * (1.0 - alpha) + fg * alpha;
+                        let b = bb * (1.0 - alpha) + fb * alpha;
+
+                        row[cx as usize] = ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+                    }
+                });
+        } else {
+            for row in affected_rows.chunks_mut(surface_w_usize) {
                 for cx in start_x..max_x {
                     let bg = row[cx as usize];
                     let br = ((bg >> 16) & 0xFF) as f32;
@@ -309,7 +356,8 @@ pub fn draw_rect_alpha(
 
                     row[cx as usize] = ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
                 }
-            });
+            }
+        }
     }
 }
 
@@ -345,46 +393,94 @@ pub fn draw_rounded_rect(
 
     if start_y_idx < end_y_idx {
         let affected_rows = &mut buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize];
-        affected_rows
-            .par_chunks_mut(surface_w_usize)
-            .enumerate()
-            .for_each(|(i, row)| {
-                let cy = (start_y_idx + i) as i32;
-                let dy = if cy < y + r {
-                    (y + r) - cy
-                } else if cy >= y + h - r {
-                    cy - (y + h - r - 1)
-                } else {
-                    0
-                };
+        let rect_w = (end_x - start_x) as usize;
 
-                if dy == 0 {
-                    // Straight middle rows
-                    row[start_x as usize..end_x as usize].fill(color);
-                } else {
-                    let left_r_end = (x + r).min(end_x);
-                    let right_r_start = (x + w - r).max(start_x);
+        if (end_y_idx - start_y_idx) * rect_w > 16384 {
+            affected_rows
+                .par_chunks_mut(surface_w_usize)
+                .enumerate()
+                .for_each(|(i, row)| {
+                    draw_rounded_rect_row(
+                        row,
+                        start_y_idx + i,
+                        x,
+                        y,
+                        w,
+                        h,
+                        r,
+                        r_sq,
+                        start_x,
+                        end_x,
+                        color,
+                    );
+                });
+        } else {
+            for (i, row) in affected_rows.chunks_mut(surface_w_usize).enumerate() {
+                draw_rounded_rect_row(
+                    row,
+                    start_y_idx + i,
+                    x,
+                    y,
+                    w,
+                    h,
+                    r,
+                    r_sq,
+                    start_x,
+                    end_x,
+                    color,
+                );
+            }
+        }
+    }
+}
 
-                    // Left corner
-                    for cx in start_x..left_r_end {
-                        let dx = (x + r) - cx;
-                        if dx * dx + dy * dy <= r_sq {
-                            row[cx as usize] = color;
-                        }
-                    }
-                    // Middle
-                    if left_r_end < right_r_start {
-                        row[left_r_end as usize..right_r_start as usize].fill(color);
-                    }
-                    // Right corner
-                    for cx in right_r_start..end_x {
-                        let dx = cx - (x + w - r - 1);
-                        if dx * dx + dy * dy <= r_sq {
-                            row[cx as usize] = color;
-                        }
-                    }
-                }
-            });
+#[inline(always)]
+fn draw_rounded_rect_row(
+    row: &mut [u32],
+    cy_idx: usize,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    r: i32,
+    r_sq: i32,
+    start_x: i32,
+    end_x: i32,
+    color: u32,
+) {
+    let cy = cy_idx as i32;
+    let dy = if cy < y + r {
+        (y + r) - cy
+    } else if cy >= y + h - r {
+        cy - (y + h - r - 1)
+    } else {
+        0
+    };
+
+    if dy == 0 {
+        row[start_x as usize..end_x as usize].fill(color);
+    } else {
+        let left_r_end = (x + r).min(end_x);
+        let right_r_start = (x + w - r).max(start_x);
+
+        // Left corner
+        for cx in start_x..left_r_end {
+            let dx = (x + r) - cx;
+            if dx * dx + dy * dy <= r_sq {
+                row[cx as usize] = color;
+            }
+        }
+        // Middle
+        if left_r_end < right_r_start {
+            row[left_r_end as usize..right_r_start as usize].fill(color);
+        }
+        // Right corner
+        for cx in right_r_start..end_x {
+            let dx = cx - (x + w - r - 1);
+            if dx * dx + dy * dy <= r_sq {
+                row[cx as usize] = color;
+            }
+        }
     }
 }
 
@@ -430,139 +526,10 @@ pub fn draw_text(
     #[cfg(target_os = "windows")]
     {
         let surface_h = (buffer.len() as u32) / surface_w.max(1);
-        draw_text_dw(
-            buffer, surface_w, text, x, y, font_size, color, surface_w, surface_h,
+        // Use default family for standard draw_text
+        draw_text_dw_ex(
+            buffer, surface_w, text, x, y, font_size, color, 10000, surface_h, 0.0,
         );
-    }
-}
-
-#[cfg(target_os = "windows")]
-pub fn draw_text_dw(
-    buffer: &mut [u32],
-    surface_w: u32,
-    text: &str,
-    x: i32,
-    y: i32,
-    font_size: f32,
-    color: u32,
-    _max_w: u32,
-    _max_h: u32,
-) {
-    if text.is_empty() {
-        return;
-    }
-
-    unsafe {
-        let layout_measure = get_or_create_layout(text, font_size, 10000);
-        let mut metrics = std::mem::zeroed();
-        layout_measure.GetMetrics(&mut metrics).unwrap();
-
-        let tw = (metrics.width.ceil() as i32) + 2;
-        let th = (metrics.height.ceil() as i32) + 2;
-
-        SCRATCHPAD.with(|sp| {
-            let mut sp = sp.borrow_mut();
-            let (rt, scratch_bits) = sp.prepare(tw, th);
-
-            rt.BeginDraw();
-            rt.Clear(Some(&D2D1_COLOR_F {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 0.0,
-            }));
-
-            let r = ((color >> 16) & 0xFF) as f32 / 255.0;
-            let g = ((color >> 8) & 0xFF) as f32 / 255.0;
-            let b = (color & 0xFF) as f32 / 255.0;
-            let brush = rt
-                .CreateSolidColorBrush(&D2D1_COLOR_F { r, g, b, a: 1.0 }, None)
-                .unwrap();
-
-            rt.DrawTextLayout(
-                windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F { x: 0.0, y: 0.0 },
-                &layout_measure,
-                &brush,
-                windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
-            );
-            rt.EndDraw(None, None).unwrap();
-
-            let sr = ((color >> 16) & 0xFF) as u32;
-            let sg = ((color >> 8) & 0xFF) as u32;
-            let sb = (color & 0xFF) as u32;
-
-            let surface_h = (buffer.len() as u32) / surface_w.max(1);
-            let start_y_idx = y.max(0) as usize;
-            let end_y_idx = (y + th as i32).min(surface_h as i32).max(0) as usize;
-            let surface_w_usize = surface_w as usize;
-
-            if start_y_idx < end_y_idx {
-                let affected_rows =
-                    &mut buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize];
-                let src_w = sp.width;
-
-                if tw < 300 {
-                    for i in 0..(end_y_idx - start_y_idx) {
-                        let win_y = (start_y_idx + i) as i32;
-                        let dy = win_y - y;
-                        let row =
-                            &mut affected_rows[i * surface_w_usize..(i + 1) * surface_w_usize];
-                        for dx in 0..tw {
-                            let win_x = x + dx;
-                            if win_x < 0 || win_x >= surface_w as i32 {
-                                continue;
-                            }
-                            let src_idx = (dy * src_w + dx) as usize;
-                            let pixel = *scratch_bits.add(src_idx);
-                            let a = (pixel >> 24) & 0xFF;
-                            if a > 0 {
-                                if a == 255 {
-                                    row[win_x as usize] = (sr << 16) | (sg << 8) | sb;
-                                } else {
-                                    let bg = row[win_x as usize];
-                                    let inv_a = 255 - a;
-                                    let out_r = (sr * a + ((bg >> 16) & 0xFF) * inv_a) / 255;
-                                    let out_g = (sg * a + ((bg >> 8) & 0xFF) * inv_a) / 255;
-                                    let out_b = (sb * a + (bg & 0xFF) * inv_a) / 255;
-                                    row[win_x as usize] = (out_r << 16) | (out_g << 8) | out_b;
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    let src_addr = scratch_bits as usize;
-                    affected_rows
-                        .par_chunks_mut(surface_w_usize)
-                        .enumerate()
-                        .for_each(|(i, row)| {
-                            let win_y = (start_y_idx + i) as i32;
-                            let dy = win_y - y;
-                            let src_ptr = src_addr as *const u32;
-                            for dx in 0..tw {
-                                let win_x = x + dx;
-                                if win_x < 0 || win_x >= surface_w as i32 {
-                                    continue;
-                                }
-                                let src_idx = (dy * src_w + dx) as usize;
-                                let pixel = *src_ptr.add(src_idx);
-                                let a = (pixel >> 24) & 0xFF;
-                                if a > 0 {
-                                    if a == 255 {
-                                        row[win_x as usize] = (sr << 16) | (sg << 8) | sb;
-                                    } else {
-                                        let bg = row[win_x as usize];
-                                        let inv_a = 255 - a;
-                                        let out_r = (sr * a + ((bg >> 16) & 0xFF) * inv_a) / 255;
-                                        let out_g = (sg * a + ((bg >> 8) & 0xFF) * inv_a) / 255;
-                                        let out_b = (sb * a + (bg & 0xFF) * inv_a) / 255;
-                                        row[win_x as usize] = (out_r << 16) | (out_g << 8) | out_b;
-                                    }
-                                }
-                            }
-                        });
-                }
-            }
-        });
     }
 }
 
@@ -583,10 +550,54 @@ pub fn draw_text_dw_ex(
         return;
     }
 
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    // Calculate layout key for raster cache
+    let mut text_hasher = DefaultHasher::new();
+    text.hash(&mut text_hasher);
+    let text_hash = text_hasher.finish();
+
+    let font_family_name = "Microsoft YaHei";
+    let mut family_hasher = DefaultHasher::new();
+    font_family_name.hash(&mut family_hasher);
+    let font_family_hash = family_hasher.finish();
+
+    let key = LayoutKey {
+        text_hash,
+        font_size_bits: font_size.to_bits(),
+        max_w,
+        font_family_hash,
+        is_bold: false,
+        is_centered: false,
+    };
+
+    // Fast path: Raster Cache
+    if let Ok(cache) = get_raster_cache().read() {
+        if let Some(entry) = cache.get(&key) {
+            blit_pixels(
+                buffer,
+                surface_w,
+                x,
+                y,
+                entry.tw,
+                entry.th,
+                &entry.pixels,
+                color,
+                max_w,
+                max_h,
+            );
+            return;
+        }
+    }
+
     unsafe {
         let layout = get_or_create_layout(text, font_size, max_w);
-        let tw = max_w as i32;
-        let th = max_h as i32;
+        let mut metrics = std::mem::zeroed();
+        layout.GetMetrics(&mut metrics).unwrap();
+
+        let tw = (metrics.width.ceil() as i32 + 2).min(max_w as i32);
+        let th = (metrics.height.ceil() as i32 + 2).min(max_h as i32);
 
         SCRATCHPAD.with(|sp| {
             let mut sp = sp.borrow_mut();
@@ -618,52 +629,126 @@ pub fn draw_text_dw_ex(
             );
             rt.EndDraw(None, None).unwrap();
 
-            let sr = ((color >> 16) & 0xFF) as u32;
-            let sg = ((color >> 8) & 0xFF) as u32;
-            let sb = (color & 0xFF) as u32;
-
-            let surface_h = (buffer.len() as u32) / surface_w.max(1);
-            let start_y_idx = y.max(0) as usize;
-            let end_y_idx = (y + th as i32).min(surface_h as i32).max(0) as usize;
-            let surface_w_usize = surface_w as usize;
-
-            if start_y_idx < end_y_idx {
-                let affected_rows =
-                    &mut buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize];
-                let src_w = sp.width;
-                let src_addr = scratch_bits as usize;
-
-                affected_rows
-                    .par_chunks_mut(surface_w_usize)
-                    .enumerate()
-                    .for_each(|(i, row)| {
-                        let win_y = (start_y_idx + i) as i32;
-                        let dy = win_y - y;
-                        let src_ptr = src_addr as *const u32;
-                        for dx in 0..tw {
-                            let win_x = x + dx;
-                            if win_x < 0 || win_x >= surface_w as i32 {
-                                continue;
-                            }
-                            let src_idx = (dy * src_w + dx) as usize;
-                            let pixel = *src_ptr.add(src_idx);
-                            let a = (pixel >> 24) & 0xFF;
-                            if a > 0 {
-                                if a == 255 {
-                                    row[win_x as usize] = (sr << 16) | (sg << 8) | sb;
-                                } else {
-                                    let bg = row[win_x as usize];
-                                    let inv_a = 255 - a;
-                                    let out_r = (sr * a + ((bg >> 16) & 0xFF) * inv_a) / 255;
-                                    let out_g = (sg * a + ((bg >> 8) & 0xFF) * inv_a) / 255;
-                                    let out_b = (sb * a + (bg & 0xFF) * inv_a) / 255;
-                                    row[win_x as usize] = (out_r << 16) | (out_g << 8) | out_b;
-                                }
-                            }
-                        }
-                    });
+            // Extract pixels for cache
+            let pixel_count = (tw * th) as usize;
+            let mut captured_pixels = vec![0u32; pixel_count];
+            let src_w = sp.width;
+            for dy in 0..th {
+                let src_off = (dy * src_w) as usize;
+                let dest_off = (dy * tw) as usize;
+                std::ptr::copy_nonoverlapping(
+                    scratch_bits.add(src_off),
+                    captured_pixels.as_mut_ptr().add(dest_off),
+                    tw as usize,
+                );
             }
+
+            // Blit to screen
+            blit_pixels(
+                buffer,
+                surface_w,
+                x,
+                y,
+                tw,
+                th,
+                &captured_pixels,
+                color,
+                max_w,
+                max_h,
+            );
+
+            // Update cache
+            let mut cache = get_raster_cache().write().unwrap();
+            if cache.len() > 500 {
+                cache.clear();
+            }
+            cache.insert(
+                key,
+                RasterEntry {
+                    pixels: captured_pixels,
+                    tw,
+                    th,
+                },
+            );
         });
+    }
+}
+
+fn blit_pixels(
+    buffer: &mut [u32],
+    surface_w: u32,
+    dest_x: i32,
+    dest_y: i32,
+    tw: i32,
+    th: i32,
+    src_pixels: &[u32],
+    color: u32,
+    _max_w: u32,
+    _max_h: u32,
+) {
+    let surface_h = (buffer.len() as u32) / surface_w.max(1);
+    let sr = (color >> 16) & 0xFF;
+    let sg = (color >> 8) & 0xFF;
+    let sb = color & 0xFF;
+
+    let start_y = dest_y.max(0);
+    let end_y = (dest_y + th).min(surface_h as i32);
+    let start_x = dest_x.max(0);
+    let end_x = (dest_x + tw).min(surface_w as i32);
+
+    if start_y >= end_y || start_x >= end_x {
+        return;
+    }
+
+    let surface_w_usize = surface_w as usize;
+    let tw_usize = tw as usize;
+
+    // Use parallel blitting for large text blocks (e.g. System Prompt)
+    if (end_y - start_y) as usize * (end_x - start_x) as usize > 10000 {
+        let rows =
+            &mut buffer[start_y as usize * surface_w_usize..end_y as usize * surface_w_usize];
+        rows.par_chunks_mut(surface_w_usize)
+            .enumerate()
+            .for_each(|(i, row)| {
+                let dy = i as i32 + start_y - dest_y;
+                let src_row_off = dy as usize * tw_usize;
+                for dx_idx in start_x..end_x {
+                    let dx = dx_idx - dest_x;
+                    let pixel = src_pixels[src_row_off + dx as usize];
+                    let a = (pixel >> 24) & 0xFF;
+                    if a == 255 {
+                        row[dx_idx as usize] = (sr << 16) | (sg << 8) | sb;
+                    } else if a > 0 {
+                        let bg = row[dx_idx as usize];
+                        let inv_a = 255 - a;
+                        let r = (sr * a + ((bg >> 16) & 0xFF) * inv_a) / 255;
+                        let g = (sg * a + ((bg >> 8) & 0xFF) * inv_a) / 255;
+                        let b = (sb * a + (bg & 0xFF) * inv_a) / 255;
+                        row[dx_idx as usize] = (r << 16) | (g << 8) | b;
+                    }
+                }
+            });
+    } else {
+        for y in start_y..end_y {
+            let dy = y - dest_y;
+            let src_row_off = dy as usize * tw_usize;
+            let row_idx = y as usize * surface_w_usize;
+            for x in start_x..end_x {
+                let dx = x - dest_x;
+                let pixel = src_pixels[src_row_off + dx as usize];
+                let a = (pixel >> 24) & 0xFF;
+                if a == 255 {
+                    buffer[row_idx + x as usize] = (sr << 16) | (sg << 8) | sb;
+                } else if a > 0 {
+                    let bg = buffer[row_idx + x as usize];
+                    let inv_a = 255 - a;
+                    let r = (sr * a + ((bg >> 16) & 0xFF) * inv_a) / 255;
+                    let g = (sg * a + ((bg >> 8) & 0xFF) * inv_a) / 255;
+                    let b = (sb * a + (bg & 0xFF) * inv_a) / 255;
+                    buffer[row_idx + x as usize] = (r << 16) | (g << 8) | b;
+                }
+            }
+        }
     }
 }
 
