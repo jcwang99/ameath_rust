@@ -126,6 +126,7 @@ pub fn draw(
             } else {
                 sc(45.0) as u32
             };
+
             let input_w = sc(fw as f32) as u32;
 
             let is_focused = state.focused_field == Some(i);

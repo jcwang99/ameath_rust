@@ -161,6 +161,10 @@ impl SettingsWindow {
     }
 
     pub fn next_blink_at(&self) -> std::time::Instant {
+        if self.focused_field.is_none() {
+            // Hibernate for 1 hour if nothing to blink
+            return std::time::Instant::now() + std::time::Duration::from_secs(3600);
+        }
         let elapsed_ms = self.last_cursor_action.elapsed().as_millis();
         let current_step = elapsed_ms / 500;
         let next_step = current_step + 1;
