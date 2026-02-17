@@ -618,6 +618,7 @@ fn main() {
                                 }
                                 WindowEvent::RedrawRequested => {
                                     let mode_str = match pet.behavior_mode {
+                                        BehaviorMode::Static => "Static",
                                         BehaviorMode::Quiet => "Quiet",
                                         BehaviorMode::Active => "Active",
                                         BehaviorMode::Clingy => "Clingy",

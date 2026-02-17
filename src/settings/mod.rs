@@ -3,7 +3,6 @@ pub mod tabs;
 use crate::theme::*;
 use crate::types::{AiConfig, BehaviorMode, PersistentConfig, WindowLayer};
 use crate::ui_primitives::*;
-use rusttype::Scale;
 use softbuffer::{Context, Surface};
 // use windows::core::ComInterface;
 // use windows::Win32::Graphics::Direct2D::ID2D1DCRenderTarget;
@@ -12,6 +11,7 @@ use winit::event_loop::EventLoopWindowTarget;
 use winit::window::Window;
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum SettingsAction {
     None,
     SetScale(f32),
@@ -445,8 +445,8 @@ impl SettingsWindow {
                 let scroll_y = self.scroll_offset as f64 / scale;
                 let card1_y = 120.0 + scroll_y;
                 let card2_y = 280.0 + scroll_y;
-                let card3_y = 440.0 + scroll_y;
-                let card4_y = 600.0 + scroll_y;
+                let card3_y = 505.0 + scroll_y;
+                let card4_y = 665.0 + scroll_y;
 
                 if lx >= 210.0 && lx <= 210.0 + card_w {
                     // Pet Scale
@@ -460,17 +460,19 @@ impl SettingsWindow {
                         }
                     }
                     // Behavior
-                    if ly >= card2_y + 60.0 && ly <= card2_y + 115.0 {
-                        let modes = vec![
-                            BehaviorMode::Quiet,
-                            BehaviorMode::Active,
-                            BehaviorMode::Clingy,
-                        ];
-                        for (i, mode) in modes.into_iter().enumerate() {
-                            let mx = 230.0 + i as f64 * 165.0;
-                            if lx >= mx && lx <= mx + 150.0 {
-                                return SettingsAction::SetMode(mode);
-                            }
+                    let modes = vec![
+                        BehaviorMode::Static,
+                        BehaviorMode::Quiet,
+                        BehaviorMode::Active,
+                        BehaviorMode::Clingy,
+                    ];
+                    for (i, mode) in modes.into_iter().enumerate() {
+                        let row = i / 2;
+                        let col = i % 2;
+                        let mx = 230.0 + col as f64 * 165.0;
+                        let my = card2_y + 60.0 + row as f64 * 65.0;
+                        if lx >= mx && lx <= mx + 150.0 && ly >= my && ly <= my + 55.0 {
+                            return SettingsAction::SetMode(mode);
                         }
                     }
                     // Music
@@ -491,7 +493,7 @@ impl SettingsWindow {
                 }
 
                 // Monitor selection
-                let card5_y = 760.0 + scroll_y;
+                let card5_y = 825.0 + scroll_y;
                 let rows = (self.available_monitors.len() + 2) / 3;
                 let card5_h = 60.0 + (rows as f64 * 65.0);
                 if lx >= 210.0

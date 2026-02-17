@@ -719,6 +719,7 @@ pub fn text_width(_fonts: &[&Font], text: &str, scale: Scale) -> u32 {
 }
 
 #[cfg(target_os = "windows")]
+#[allow(dead_code)]
 pub fn wrap_text(
     text: &str,
     _fonts: &[&Font],

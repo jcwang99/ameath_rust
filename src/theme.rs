@@ -12,9 +12,3 @@ pub const COLOR_TEXT_DIM: u32 = 0x00666666; // Muted text
 
 pub const COLOR_USER_ROLE: u32 = 0x00007ACC;
 pub const COLOR_AI_ROLE: u32 = 0x002E8B57;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum WindowLayer {
-    Top,
-    Bottom,
-}

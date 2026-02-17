@@ -144,6 +144,7 @@ fn default_interaction_frequency() -> u64 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BehaviorMode {
+    Static,
     Quiet,
     Active,
     Clingy,

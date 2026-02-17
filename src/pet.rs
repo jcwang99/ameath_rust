@@ -105,15 +105,25 @@ impl Pet {
                 PetState::Idle => {
                     if self.behavior_mode == BehaviorMode::Clingy {
                         self.state = PetState::Clingy;
+                        self.current_anim_variant = 0;
+                    } else if self.behavior_mode == BehaviorMode::Static {
+                        self.state = PetState::Idle;
+                        let count = self.animations[&PetState::Idle].len();
+                        if count > 0 {
+                            self.current_anim_variant = rand::thread_rng().gen_range(0..count);
+                        }
                     } else {
                         self.state = PetState::Move;
+                        self.current_anim_variant = 0;
                     }
-                    self.current_anim_variant = 0;
                     self.current_frame_idx = 0;
                     self.last_frame_time = Instant::now();
                     self.timer = Instant::now();
 
                     self.state_duration = match self.behavior_mode {
+                        BehaviorMode::Static => {
+                            Duration::from_secs(rand::thread_rng().gen_range(3..7))
+                        }
                         BehaviorMode::Quiet => {
                             Duration::from_secs(rand::thread_rng().gen_range(2..4))
                         }
@@ -142,11 +152,22 @@ impl Pet {
                 }
                 PetState::Move => {
                     self.state = PetState::Idle;
+                    if self.behavior_mode == BehaviorMode::Static {
+                        let count = self.animations[&PetState::Idle].len();
+                        if count > 0 {
+                            self.current_anim_variant = rand::thread_rng().gen_range(0..count);
+                        }
+                    } else {
+                        self.current_anim_variant = 0;
+                    }
                     self.timer = Instant::now();
                     self.current_frame_idx = 0;
                     self.last_frame_time = Instant::now();
 
                     self.state_duration = match self.behavior_mode {
+                        BehaviorMode::Static => {
+                            Duration::from_secs(rand::thread_rng().gen_range(3..7))
+                        }
                         BehaviorMode::Quiet => {
                             Duration::from_secs(rand::thread_rng().gen_range(5..10))
                         }
