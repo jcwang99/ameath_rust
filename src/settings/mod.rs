@@ -519,20 +519,23 @@ impl SettingsWindow {
                 self.selection_start = None;
 
                 let fields = vec![
-                    (230.0, 30.0, 500.0),  // Key
-                    (230.0, 130.0, 500.0), // URL
-                    (230.0, 230.0, 500.0), // Model
-                    (230.0, 330.0, 150.0), // Steps
-                    (405.0, 330.0, 150.0), // L1
-                    (580.0, 330.0, 150.0), // L2
-                    (230.0, 530.0, 500.0), // Tavily
-                    (230.0, 630.0, 500.0), // System
-                    (230.0, 430.0, 150.0), // Interval
+                    (230.0, 30.0, 500.0),  // 0: Key
+                    (230.0, 130.0, 500.0), // 1: URL
+                    (230.0, 230.0, 500.0), // 2: Model
+                    (230.0, 330.0, 150.0), // 3: Steps
+                    (405.0, 330.0, 150.0), // 4: L1
+                    (580.0, 330.0, 150.0), // 5: L2
+                    (230.0, 430.0, 150.0), // 6: Interval
+                    (230.0, 530.0, 500.0), // 7: Tavily
+                    (230.0, 630.0, 500.0), // 8: Brave
+                    (230.0, 730.0, 500.0), // 9: FC URL
+                    (230.0, 830.0, 500.0), // 10: FC Key
+                    (230.0, 930.0, 500.0), // 11: System
                 ];
 
                 for (i, (fx, fy, fw)) in fields.iter().enumerate() {
                     let input_y = card_y + fy + 25.0;
-                    let input_h = if i == 7 { 250.0 } else { 45.0 };
+                    let input_h = if i == 11 { 250.0 } else { 45.0 };
 
                     if lx >= *fx && lx <= *fx + *fw && ly >= input_y && ly <= input_y + input_h {
                         self.focused_field = Some(i);
@@ -543,7 +546,7 @@ impl SettingsWindow {
                         // Since it's not present, no change is made here regarding `max_width` in `get_metrics_dw`.
 
                         let text = self.get_field_text(i, ai_config);
-                        if i == 7 {
+                        if i == 11 {
                             // System prompt multi-line
                             let text_x = lx - fx - 15.0;
                             let text_y =
@@ -561,7 +564,8 @@ impl SettingsWindow {
                             if _is_right_click {
                                 // Right click handled in SettingsAction usually but we might want it here too
                             } else {
-                                if lx >= *fx + *fw - 45.0 && (i == 0 || i == 6) {
+                                if lx >= *fx + *fw - 45.0 && (i == 0 || i == 7 || i == 8 || i == 10)
+                                {
                                     self.show_api_key = !self.show_api_key;
                                     self.selection_start = None;
                                 } else {
@@ -610,15 +614,18 @@ impl SettingsWindow {
                     ai_config.l2_merge_threshold.to_string()
                 }
             }
-            6 => ai_config.tavily_api_key.clone(),
-            7 => ai_config.system_prompt.clone(),
-            8 => {
+            6 => {
                 if ai_config.interaction_frequency == 0 {
                     String::new()
                 } else {
                     ai_config.interaction_frequency.to_string()
                 }
             }
+            7 => ai_config.tavily_api_key.clone(),
+            8 => ai_config.brave_api_key.clone(),
+            9 => ai_config.firecrawl_url.clone(),
+            10 => ai_config.firecrawl_api_key.clone(),
+            11 => ai_config.system_prompt.clone(),
             _ => String::new(),
         }
     }
@@ -637,11 +644,14 @@ impl SettingsWindow {
             5 => {
                 ai_config.l2_merge_threshold = text.parse().unwrap_or(0);
             }
-            6 => ai_config.tavily_api_key = text,
-            7 => ai_config.system_prompt = text,
-            8 => {
+            6 => {
                 ai_config.interaction_frequency = text.parse().unwrap_or(0);
             }
+            7 => ai_config.tavily_api_key = text,
+            8 => ai_config.brave_api_key = text,
+            9 => ai_config.firecrawl_url = text,
+            10 => ai_config.firecrawl_api_key = text,
+            11 => ai_config.system_prompt = text,
             _ => {}
         }
     }
@@ -707,7 +717,7 @@ impl SettingsWindow {
         let has_shift = modifiers.shift_key();
 
         if let Key::Named(NamedKey::ArrowUp) = &event.logical_key {
-            if field_idx == 7 {
+            if field_idx == 11 {
                 let (lx, ly) = self.get_xy_from_cursor(&text, self.cursor_pos, 1.0);
                 let line_height = 20.0;
                 self.cursor_pos = self.get_cursor_from_xy(&text, lx, ly - line_height + 5.0, 1.0);
@@ -719,7 +729,7 @@ impl SettingsWindow {
             }
         }
         if let Key::Named(NamedKey::ArrowDown) = &event.logical_key {
-            if field_idx == 7 {
+            if field_idx == 11 {
                 let (lx, ly) = self.get_xy_from_cursor(&text, self.cursor_pos, 1.0);
                 let line_height = 20.0;
                 self.cursor_pos = self.get_cursor_from_xy(&text, lx, ly + line_height + 5.0, 1.0);

@@ -30,7 +30,7 @@ pub fn draw(
     let sc = |val: f32| -> f32 { val * scale };
 
     let card_w = (560.0 * scale) as u32;
-    let card_h = (950.0 * scale) as u32;
+    let card_h = (1300.0 * scale) as u32;
     let card_y_raw = (sy_val(120) as f32 + scroll_y) as i32;
 
     draw_rounded_rect(
@@ -53,12 +53,15 @@ pub fn draw(
         ("ReAct Steps", ai_config.react_limit.to_string()),
         ("L1 Summary", ai_config.l1_summary_threshold.to_string()),
         ("L2 Merge", ai_config.l2_merge_threshold.to_string()),
-        ("Tavily Key", ai_config.tavily_api_key.clone()),
-        ("System Prompt", ai_config.system_prompt.clone()),
         (
             "Interact Interval (min)",
             ai_config.interaction_frequency.to_string(),
         ),
+        ("Tavily Key", ai_config.tavily_api_key.clone()),
+        ("Brave Key", ai_config.brave_api_key.clone()),
+        ("Firecrawl URL", ai_config.firecrawl_url.clone()),
+        ("Firecrawl Key", ai_config.firecrawl_api_key.clone()),
+        ("System Prompt", ai_config.system_prompt.clone()),
     ];
 
     for (i, (label, val)) in fields.iter().enumerate() {
@@ -69,9 +72,12 @@ pub fn draw(
             3 => (230.0, 330.0, 150.0),
             4 => (405.0, 330.0, 150.0),
             5 => (580.0, 330.0, 150.0),
-            8 => (230.0, 430.0, 150.0),
-            6 => (230.0, 530.0, 500.0),
-            7 => (230.0, 630.0, 500.0),
+            6 => (230.0, 430.0, 150.0),
+            7 => (230.0, 530.0, 500.0),
+            8 => (230.0, 630.0, 500.0),
+            9 => (230.0, 730.0, 500.0),
+            10 => (230.0, 830.0, 500.0),
+            11 => (230.0, 930.0, 500.0),
             _ => (0.0, 0.0, 0.0),
         };
 
@@ -89,7 +95,7 @@ pub fn draw(
 
         let input_y_raw = fy_scaled_raw + sc(25.0) as i32;
         let input_w = sc(fw as f32) as u32;
-        let input_h = if i == 7 {
+        let input_h = if i == 11 {
             let input_h_logical = 250.0;
             sc(input_h_logical) as u32
         } else {
@@ -128,7 +134,8 @@ pub fn draw(
         );
 
         let val_chars: Vec<char> = val.chars().collect();
-        let is_masked = (i == 0 || i == 6) && !val.is_empty() && !state.show_api_key;
+        let is_masked =
+            (i == 0 || i == 7 || i == 8 || i == 10) && !val.is_empty() && !state.show_api_key;
         let mut display_chars: Vec<char> = if is_masked {
             let mask_char = if is_focused { '•' } else { '*' };
             std::iter::repeat(mask_char)
@@ -148,7 +155,7 @@ pub fn draw(
             COLOR_TEXT_MAIN
         };
 
-        if i == 0 || i == 6 {
+        if i == 0 || i == 7 || i == 8 || i == 10 {
             let eye_x = s(fx as u32 + fw as u32 - 45) as i32;
             let eye_y = input_y_raw + sc(12.0) as i32;
             let eye_col = if state.show_api_key {
@@ -159,7 +166,7 @@ pub fn draw(
             draw_rect(buffer, w, eye_x, eye_y + 4, 16, 16, eye_col, w, h);
         }
 
-        if i == 7 {
+        if i == 11 {
             // Multi-line rendering for System Prompt
             let final_text: String = display_chars.iter().collect();
             let max_width = sc(500.0 - 40.0) as u32;
@@ -360,7 +367,7 @@ pub fn draw(
 
     // Content height tracking
     let viewport_h_phys = sc(600.0);
-    // Last card is System Prompt at 630.0, height 200.0. Add 100 padding.
-    let content_h_phys = sc(630.0 + 200.0 + 100.0);
+    // Last card is System Prompt at 930.0, height 250.0. Add 100 padding.
+    let content_h_phys = sc(930.0 + 250.0 + 100.0);
     (viewport_h_phys, content_h_phys)
 }
