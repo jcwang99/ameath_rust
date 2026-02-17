@@ -401,7 +401,6 @@ impl SettingsWindow {
                         active_sys_prompt_rect: &mut self.active_sys_prompt_rect,
                         system_prompt_metrics_cache: &mut self.system_prompt_metrics_cache,
                         system_prompt_hash: self.system_prompt_hash,
-                        config_hash: self.last_config_hash,
                         draw_cursor: false,
                     };
                     let (vh, ch, cursor_rect) = tabs::ai::draw(
@@ -431,7 +430,7 @@ impl SettingsWindow {
                             let (_, content) = &self.history[i];
                             let mut h_hasher = DefaultHasher::new();
                             content.hash(&mut h_hasher);
-                            self.history_hashes[i] = h_hasher.finish();
+                            let _h_hash = h_hasher.finish();
                             let (_, mh) =
                                 crate::ui_primitives::get_metrics_dw(content, sc(16.0), max_text_w);
                             self.history_metrics_cache[i] = mh;
@@ -439,7 +438,6 @@ impl SettingsWindow {
                     }
                     let mut history_state = tabs::history::HistoryTabState {
                         history: &self.history,
-                        history_hashes: &self.history_hashes,
                         history_metrics_cache: &self.history_metrics_cache,
                         history_scroll_states: &mut self.history_scroll_states,
                         history_item_rects: &mut self.history_item_rects,

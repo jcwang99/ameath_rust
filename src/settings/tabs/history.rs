@@ -3,7 +3,6 @@ use crate::ui_primitives::*;
 
 pub struct HistoryTabState<'a> {
     pub history: &'a [(String, String)],
-    pub history_hashes: &'a [u64],
     pub history_metrics_cache: &'a [f32],
     pub history_scroll_states: &'a mut Vec<f32>,
     pub history_item_rects: &'a mut Vec<(f64, f64, f64, f64)>,
@@ -72,124 +71,47 @@ pub fn draw(
         let card_w = sc(490.0) as u32;
         let card_h = item_h_fixed as u32;
 
-        // WHOLE CARD CACHING
-        let mut card_hasher = std::collections::hash_map::DefaultHasher::new();
-        use std::hash::{Hash, Hasher};
-        state.history_hashes[i].hash(&mut card_hasher);
-        (scroll as i32).hash(&mut card_hasher);
-        let card_key = LayoutKey {
-            text_hash: card_hasher.finish(),
-            font_size_bits: sc(16.0).to_bits(),
-            max_w: card_w,
-            font_family_hash: (is_user as u64),
-            is_bold: is_user,
-            is_centered: false,
-        };
+        // 1. Background (Directly into main buffer)
+        draw_rounded_rect(
+            buffer,
+            w,
+            s(230) as i32,
+            y_pos_i,
+            card_w,
+            card_h,
+            8,
+            card_color,
+            w,
+            h,
+        );
 
-        let card_blit_success = {
-            let cache = get_raster_cache().read().unwrap();
-            if let Some(entry) = cache.map.get(&card_key) {
-                blit_opaque(
-                    buffer,
-                    w,
-                    s(230) as i32,
-                    y_pos_i,
-                    entry.tw,
-                    entry.th,
-                    &entry.pixels,
-                    w,
-                    h,
-                    0,
-                );
-                true
-            } else {
-                false
-            }
-        };
+        // 2. Role
+        draw_text_dw_ex(
+            buffer,
+            w,
+            role,
+            s(230) as i32 + sc(10.0) as i32,
+            y_pos_i + sc(10.0) as i32,
+            sc(14.0),
+            text_color,
+            card_w,
+            sc(30.0) as u32,
+            0.0,
+        );
 
-        if !card_blit_success {
-            // Render the whole card into a temporary buffer
-            let mut card_buffer = vec![COLOR_BG_APP; (card_w * card_h) as usize];
-
-            // 1. Background
-            draw_rounded_rect_internal(
-                &mut card_buffer,
-                card_w,
-                0,
-                0,
-                card_w,
-                card_h,
-                8,
-                card_color,
-            );
-
-            // 2. Role
-            draw_text_dw_ex(
-                &mut card_buffer,
-                card_w,
-                role,
-                sc(10.0) as i32,
-                sc(10.0) as i32,
-                sc(14.0),
-                text_color,
-                card_w,
-                sc(30.0) as u32,
-                0.0,
-            );
-
-            // 3. Content (Inside the card buffer)
-            draw_text_dw_h(
-                &mut card_buffer,
-                card_w,
-                content,
-                state.history_hashes[i],
-                sc(10.0) as i32,
-                sc(35.0) as i32,
-                sc(16.0),
-                COLOR_TEXT_MAIN,
-                sc(450.0) as u32,
-                view_h as u32,
-                scroll * scale,
-            );
-
-            // Blit to main surface
-            blit_opaque(
-                buffer,
-                w,
-                s(230) as i32,
-                y_pos_i,
-                card_w as i32,
-                card_h as i32,
-                &card_buffer,
-                w,
-                h,
-                0,
-            );
-
-            // Store in cache
-            let pixel_count = card_buffer.len();
-            let mut cache = get_raster_cache().write().unwrap();
-            // Evict if over 12MB (increased for whole cards)
-            while cache.total_pixels + pixel_count > (12 * 1024 * 1024 / 4)
-                && !cache.order.is_empty()
-            {
-                let oldest = cache.order.remove(0);
-                if let Some(entry) = cache.map.remove(&oldest) {
-                    cache.total_pixels -= entry.pixel_count;
-                }
-            }
-            cache.order.push(card_key.clone());
-            cache.total_pixels += pixel_count;
-            cache.map.insert(
-                card_key,
-                RasterEntry {
-                    pixels: card_buffer,
-                    tw: card_w as i32,
-                    th: card_h as i32,
-                    pixel_count,
-                },
-            );
-        }
+        // 3. Content
+        draw_text_dw_ex(
+            buffer,
+            w,
+            content,
+            s(230) as i32 + sc(10.0) as i32,
+            y_pos_i + sc(35.0) as i32,
+            sc(16.0),
+            COLOR_TEXT_MAIN,
+            sc(450.0) as u32,
+            view_h as u32,
+            scroll * scale,
+        );
 
         if full_content_h > view_h {
             let sb_w = sc(4.0) as u32;

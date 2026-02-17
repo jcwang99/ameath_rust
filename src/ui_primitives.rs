@@ -20,8 +20,8 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteObject, GetDC, SelectObject, BITMAPINFO,
-    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC,
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
+    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC,
 };
 
 #[cfg(target_os = "windows")]
@@ -35,11 +35,26 @@ struct ScratchpadRenderer {
 }
 
 #[cfg(target_os = "windows")]
+impl Drop for ScratchpadRenderer {
+    fn drop(&mut self) {
+        unsafe {
+            if self.h_bitmap.0 != 0 {
+                DeleteObject(self.h_bitmap);
+            }
+            if self.hdc_mem.0 != 0 {
+                let _ = DeleteDC(self.hdc_mem);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
 impl ScratchpadRenderer {
     fn new() -> Self {
         unsafe {
             let hdc_screen = GetDC(HWND(0));
             let hdc_mem = CreateCompatibleDC(hdc_screen);
+            ReleaseDC(HWND(0), hdc_screen);
             Self {
                 hdc_mem,
                 h_bitmap: HBITMAP(0),
@@ -232,17 +247,19 @@ pub fn get_or_create_layout_ex(
 
     {
         let mut cache = get_layout_cache().write().unwrap();
-        let mut found = false;
         if cache.map.contains_key(&key) {
             // LRU Promotion
             if let Some(pos) = cache.order.iter().position(|k| k == &key) {
                 cache.order.remove(pos);
             }
             cache.order.push(key.clone());
-            found = true;
-        }
-        if found {
             return cache.map.get(&key).unwrap().clone();
+        }
+
+        // Evict if over limit (100 layouts is plenty)
+        while cache.order.len() >= 100 {
+            let oldest = cache.order.remove(0);
+            cache.map.remove(&oldest);
         }
     }
 
@@ -523,57 +540,6 @@ fn blit_solid(
     }
 }
 
-pub fn blit_opaque(
-    buffer: &mut [u32],
-    surface_w: u32,
-    dest_x: i32,
-    dest_y: i32,
-    tw: i32,
-    th: i32,
-    src_pixels: &[u32],
-    max_w: u32,
-    max_h: u32,
-    src_y_off: i32,
-) {
-    let surface_h = (buffer.len() as u32) / surface_w.max(1);
-    let start_y = dest_y.max(0);
-    // max_h is an absolute boundary
-    let end_y = (dest_y + (th - src_y_off))
-        .min(max_h as i32)
-        .min(surface_h as i32);
-    if start_y >= end_y {
-        return;
-    }
-
-    let start_x = dest_x.max(0);
-    // max_w is an absolute boundary
-    let end_x = (dest_x + tw).min(max_w as i32).min(surface_w as i32);
-    if start_x >= end_x {
-        return;
-    }
-
-    let surface_w = surface_w as usize;
-    let tw = tw as usize;
-    let start_x = start_x as usize;
-    let end_x = end_x as usize;
-    let copy_len = end_x - start_x;
-    let diff_x = (start_x as i32 - dest_x) as usize;
-
-    for y in start_y..end_y {
-        let dy = (y - dest_y) as i32;
-        let src_row = (dy + src_y_off) as usize;
-        let dest_row = y as usize * surface_w;
-
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                src_pixels.as_ptr().add(src_row * tw + diff_x),
-                buffer.as_mut_ptr().add(dest_row + start_x),
-                copy_len,
-            );
-        }
-    }
-}
-
 pub fn draw_rounded_rect_internal(
     buffer: &mut [u32],
     surface_w: u32,
@@ -629,22 +595,6 @@ pub fn draw_rounded_rect_internal(
                 }
             }
         }
-    }
-}
-
-pub fn draw_rect_internal(
-    buffer: &mut [u32],
-    surface_w: u32,
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-    color: u32,
-) {
-    let surface_w = surface_w as usize;
-    for dy in y..y + height {
-        let row_start = dy as usize * surface_w + x as usize;
-        buffer[row_start..row_start + width as usize].fill(color);
     }
 }
 
@@ -803,12 +753,27 @@ fn draw_text_dw_ex_internal(
     scroll_offset: f32,
 ) {
     unsafe {
-        let layout = get_or_create_layout(text, font_size, max_w);
+        let layout = get_or_create_layout_ex(
+            text,
+            font_size,
+            max_w,
+            "Microsoft YaHei",
+            key.is_bold,
+            key.is_centered,
+        );
         let mut metrics = std::mem::zeroed();
         layout.GetMetrics(&mut metrics).unwrap();
 
+        let is_huge = metrics.height > 1000.0;
+
+        // Target height: if huge, only render the visible window to save massive memory
         let tw = (metrics.width.ceil() as i32 + 10).min(max_w as i32 + 10);
-        let th = (metrics.height.ceil() as i32 + 2).min(8000);
+        let th = if is_huge {
+            // Render viewport-sized chunk (e.g. 1024px)
+            1024.min(max_h as i32 + 2)
+        } else {
+            (metrics.height.ceil() as i32 + 2).min(2048)
+        };
 
         SCRATCHPAD.with(|sp| {
             let mut sp = sp.borrow_mut();
@@ -821,6 +786,7 @@ fn draw_text_dw_ex_internal(
                 b: 0.0,
                 a: 0.0,
             }));
+
             let r = ((color >> 16) & 0xFF) as f32 / 255.0;
             let g = ((color >> 8) & 0xFF) as f32 / 255.0;
             let b = (color & 0xFF) as f32 / 255.0;
@@ -828,15 +794,26 @@ fn draw_text_dw_ex_internal(
                 .CreateSolidColorBrush(&D2D1_COLOR_F { r, g, b, a: 1.0 }, None)
                 .unwrap();
 
+            let draw_offset_y = if is_huge {
+                // For "huge" text, we draw a viewport-sized chunk.
+                // scroll_offset is usually negative (down), so draw at scroll_offset (e.g. -500)
+                // so that the line at layout_y = 500 is at scratchpad_y = 0.
+                scroll_offset
+            } else {
+                0.0
+            };
+
             rt.DrawTextLayout(
-                windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F { x: 0.0, y: 0.0 },
+                windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F {
+                    x: 0.0,
+                    y: draw_offset_y,
+                },
                 &layout,
                 &brush,
                 windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_NONE,
             );
             rt.EndDraw(None, None).unwrap();
 
-            // Extract pixels for cache
             let pixel_count = (tw * th) as usize;
             let mut captured_pixels = vec![0u32; pixel_count];
             let src_w = sp.width;
@@ -851,6 +828,8 @@ fn draw_text_dw_ex_internal(
             }
 
             // Blit to screen
+            // If huge, we already baked the scroll into the transform, so blit at offset 0
+            let effective_scroll = if is_huge { 0.0 } else { scroll_offset };
             blit_pixels(
                 buffer,
                 surface_w,
@@ -862,31 +841,32 @@ fn draw_text_dw_ex_internal(
                 color,
                 x.max(0) as u32 + max_w,
                 y.max(0) as u32 + max_h,
-                -(scroll_offset as i32),
+                -(effective_scroll as i32),
             );
 
-            // Update cache
-            let mut cache = get_raster_cache().write().unwrap();
-
-            // Limit to ~2M pixels (~8MB)
-            while cache.total_pixels + pixel_count > 2_000_000 && !cache.order.is_empty() {
-                let oldest_key = cache.order.remove(0);
-                if let Some(old_entry) = cache.map.remove(&oldest_key) {
-                    cache.total_pixels -= old_entry.pixel_count;
+            // ONLY skip cache if it's truly giant to avoid re-rasterizing medium text
+            // Also bypass if it's a "huge" scrolled item to avoid stale rendering bug
+            if metrics.height < 1500.0 && !is_huge {
+                let mut cache = get_raster_cache().write().unwrap();
+                // Limit to ~1M pixels (~4MB)
+                while cache.total_pixels + pixel_count > 1_000_000 && !cache.order.is_empty() {
+                    let oldest_key = cache.order.remove(0);
+                    if let Some(old_entry) = cache.map.remove(&oldest_key) {
+                        cache.total_pixels -= old_entry.pixel_count;
+                    }
                 }
+                cache.order.push(key.clone());
+                cache.total_pixels += pixel_count;
+                cache.map.insert(
+                    key,
+                    RasterEntry {
+                        pixels: captured_pixels,
+                        tw,
+                        th,
+                        pixel_count,
+                    },
+                );
             }
-
-            cache.order.push(key.clone());
-            cache.total_pixels += pixel_count;
-            cache.map.insert(
-                key,
-                RasterEntry {
-                    pixels: captured_pixels,
-                    tw,
-                    th,
-                    pixel_count,
-                },
-            );
         });
     }
 }
