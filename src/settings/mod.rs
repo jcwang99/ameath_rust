@@ -481,17 +481,36 @@ impl SettingsWindow {
             self.last_base_state_hash = base_state_hash;
         }
 
+        let mut buffer = self.surface.buffer_mut().unwrap();
+
+        // 5. Layer Composition (Dirty Optimization)
+        let only_cursor_blink = !needs_static_redraw && !self.is_dirty;
+
+        if only_cursor_blink {
+            // SURGICAL RESTORE: If ONLY blinking, don't copy all 600k pixels.
+            // Just restore the old cursor area from the static cache.
+            if let Some((cx, cy, cw, ch)) = self.cursor_cache {
+                let surface_w = w as usize;
+                let static_buf = &self.static_layer_buffer;
+                for row in 0..ch {
+                    let y_idx = (cy + row as i32) as usize;
+                    let range_start = y_idx * surface_w + cx as usize;
+                    let range_end = range_start + cw as usize;
+                    if range_end <= buffer.len() && range_end <= static_buf.len() {
+                        buffer[range_start..range_end]
+                            .copy_from_slice(&static_buf[range_start..range_end]);
+                    }
+                }
+            }
+        } else {
+            // Full copy if something else changed or first frame
+            buffer.copy_from_slice(&self.static_layer_buffer);
+        }
+
         self.last_state_hash = current_hash;
         self.is_dirty = false;
 
-        let mut buffer = self.surface.buffer_mut().unwrap();
-        // Copy cached static layer to screen
-        buffer.copy_from_slice(&self.static_layer_buffer);
-
-        // Rendering params needed for transient drawing
-        let scale = (w as f32 / 800.0).min(h as f32 / 750.0);
-        let off_x = (w as f32 - 800.0 * scale) / 2.0;
-        let off_y = (h as f32 - 750.0 * scale) / 2.0;
+        // Rendering params (Already calculated in outer scope)
 
         // 6. Transient Layer (Cursor)
         let elapsed_ms = self.last_cursor_action.elapsed().as_millis();

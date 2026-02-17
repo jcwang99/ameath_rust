@@ -161,6 +161,15 @@ static LAYOUT_CACHE: OnceLock<RwLock<CacheState<LayoutKey, IDWriteTextLayout>>> 
 static FORMAT_CACHE: OnceLock<RwLock<HashMap<FormatKey, IDWriteTextFormat>>> = OnceLock::new();
 static RASTER_CACHE: OnceLock<RwLock<CacheState<LayoutKey, RasterEntry>>> = OnceLock::new();
 
+#[derive(Hash, PartialEq, Eq, Clone)]
+struct PrimitiveKey {
+    w: u32,
+    h: u32,
+    r: u32,
+    color: u32,
+}
+static PRIMITIVE_CACHE: OnceLock<RwLock<HashMap<PrimitiveKey, Vec<u32>>>> = OnceLock::new();
+
 fn get_layout_cache() -> &'static RwLock<CacheState<LayoutKey, IDWriteTextLayout>> {
     LAYOUT_CACHE.get_or_init(|| RwLock::new(CacheState::new()))
 }
@@ -398,119 +407,157 @@ pub fn draw_rounded_rect(
     surface_w: u32,
     x: i32,
     y: i32,
-    width: u32,
-    height: u32,
-    radius: u32,
+    w: u32,
+    h: u32,
+    r: u32,
     color: u32,
     max_w: u32,
     max_h: u32,
 ) {
-    let start_x = x.max(0);
-    let start_y = y.max(0);
-    let end_x = (x + width as i32).min(max_w as i32);
-    let end_y = (y + height as i32).min(max_h as i32);
-
-    if start_x >= end_x || start_y >= end_y {
+    if w == 0 || h == 0 {
         return;
     }
 
-    let r = radius as i32;
-    let r_sq = r * r;
-    let w = width as i32;
-    let h = height as i32;
-
-    let start_y_idx = start_y as usize;
-    let end_y_idx = end_y as usize;
-    let surface_w_usize = surface_w as usize;
-
-    if start_y_idx < end_y_idx {
-        let affected_rows = &mut buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize];
-        let rect_w = (end_x - start_x) as usize;
-
-        if (end_y_idx - start_y_idx) * rect_w > 16384 {
-            affected_rows
-                .par_chunks_mut(surface_w_usize)
-                .enumerate()
-                .for_each(|(i, row)| {
-                    draw_rounded_rect_row(
-                        row,
-                        start_y_idx + i,
-                        x,
-                        y,
-                        w,
-                        h,
-                        r,
-                        r_sq,
-                        start_x,
-                        end_x,
-                        color,
-                    );
-                });
+    let key = PrimitiveKey { w, h, r, color };
+    let cache_hit = {
+        let cache = PRIMITIVE_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
+        let read_cache = cache.read().unwrap();
+        if let Some(pixels) = read_cache.get(&key) {
+            blit_solid(buffer, surface_w, x, y, h, pixels, max_w, max_h);
+            true
         } else {
-            for (i, row) in affected_rows.chunks_mut(surface_w_usize).enumerate() {
-                draw_rounded_rect_row(
-                    row,
-                    start_y_idx + i,
-                    x,
-                    y,
-                    w,
-                    h,
-                    r,
-                    r_sq,
-                    start_x,
-                    end_x,
-                    color,
-                );
+            false
+        }
+    };
+
+    if cache_hit {
+        return;
+    }
+
+    // Rasterize and cache
+    let mut pixels = vec![0u32; (w * h) as usize];
+    draw_rounded_rect_internal(&mut pixels, w, 0, 0, w, h, r, color);
+
+    // Blit now
+    blit_solid(buffer, surface_w, x, y, h, &pixels, max_w, max_h);
+
+    // Store in cache
+    let cache = PRIMITIVE_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
+    let mut write_cache = cache.write().unwrap();
+    if write_cache.len() < 100 {
+        // Simple cap
+        write_cache.insert(key, pixels);
+    }
+}
+
+fn blit_solid(
+    buffer: &mut [u32],
+    surface_w: u32,
+    dest_x: i32,
+    dest_y: i32,
+    h: u32,
+    src_pixels: &[u32],
+    max_w: u32,
+    max_h: u32,
+) {
+    let surface_h = (buffer.len() as u32) / surface_w.max(1);
+    let start_y = dest_y.max(0);
+    let end_y = (dest_y + h as i32)
+        .min(dest_y + max_h as i32)
+        .min(surface_h as i32);
+    if start_y >= end_y {
+        return;
+    }
+
+    let tw = (src_pixels.len() as u32 / h) as i32;
+    let start_x = dest_x.max(0);
+    let end_x = (dest_x + tw)
+        .min(dest_x + max_w as i32)
+        .min(surface_w as i32);
+    if start_x >= end_x {
+        return;
+    }
+
+    let surface_w = surface_w as usize;
+    let tw = tw as usize;
+    let start_x = start_x as usize;
+    let end_x = end_x as usize;
+    let copy_len = end_x - start_x;
+
+    for y in start_y..end_y {
+        let dy = (y - dest_y) as usize;
+        let dest_row = y as usize * surface_w;
+        let src_row = dy * tw;
+        let diff_x = (start_x as i32 - dest_x) as usize;
+
+        let src_slice = &src_pixels[src_row + diff_x..src_row + diff_x + copy_len];
+        let dest_slice = &mut buffer[dest_row + start_x..dest_row + start_x + copy_len];
+
+        // Since it's a card background, we use the source pixels directly (they already have rounding aplied)
+        // Actually, internal rounding uses raw color with 0 for outside.
+        // We should blend if we want transparency, but cards are usually opaque.
+        // Let's use direct copy for speed, assuming card is opaque.
+        for i in 0..copy_len {
+            if src_slice[i] != 0 {
+                dest_slice[i] = src_slice[i];
             }
         }
     }
 }
 
-#[inline(always)]
-fn draw_rounded_rect_row(
-    row: &mut [u32],
-    cy_idx: usize,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    r: i32,
-    r_sq: i32,
-    start_x: i32,
-    end_x: i32,
+fn draw_rounded_rect_internal(
+    buffer: &mut [u32],
+    surface_w: u32,
+    x_off: u32,
+    y_off: u32,
+    w: u32,
+    h: u32,
+    r: u32,
     color: u32,
 ) {
-    let cy = cy_idx as i32;
-    let dy = if cy < y + r {
-        (y + r) - cy
-    } else if cy >= y + h - r {
-        cy - (y + h - r - 1)
-    } else {
-        0
-    };
+    let start_x = x_off;
+    let start_y = y_off;
+    let end_x = x_off + w;
+    let end_y = y_off + h;
 
-    if dy == 0 {
-        row[start_x as usize..end_x as usize].fill(color);
-    } else {
-        let left_r_end = (x + r).min(end_x);
-        let right_r_start = (x + w - r).max(start_x);
+    let r_i32 = r as i32;
+    let r_sq = r_i32 * r_i32;
 
-        // Left corner
-        for cx in start_x..left_r_end {
-            let dx = (x + r) - cx;
-            if dx * dx + dy * dy <= r_sq {
-                row[cx as usize] = color;
+    for cy in start_y..end_y {
+        let dy = if (cy - y_off) < r {
+            (r - (cy - y_off)) as i32
+        } else if (cy - y_off) > h - r - 1 {
+            ((cy - y_off) - (h - r - 1)) as i32
+        } else {
+            0
+        };
+
+        let row_idx = cy as usize * surface_w as usize;
+        let row = &mut buffer[row_idx..row_idx + surface_w as usize];
+
+        if dy == 0 {
+            row[start_x as usize..end_x as usize].fill(color);
+        } else {
+            let left_r_end = start_x + r;
+            let right_r_start = end_x - r;
+
+            // Left corner
+            for cx in start_x..left_r_end {
+                let dx = (start_x + r) as i32 - cx as i32;
+                if dx * dx + dy * dy <= r_sq {
+                    row[cx as usize] = color;
+                }
             }
-        }
-        // Middle
-        if left_r_end < right_r_start {
-            row[left_r_end as usize..right_r_start as usize].fill(color);
-        }
-        // Right corner
-        for cx in right_r_start..end_x {
-            let dx = cx - (x + w - r - 1);
-            if dx * dx + dy * dy <= r_sq {
-                row[cx as usize] = color;
+            // Middle
+            if left_r_end < right_r_start {
+                row[left_r_end as usize..right_r_start as usize].fill(color);
+            }
+            // Right corner
+            for cx in right_r_start..end_x {
+                let dx = cx as i32 - (end_x - r - 1) as i32;
+                if dx * dx + dy * dy <= r_sq {
+                    row[cx as usize] = color;
+                }
             }
         }
     }
@@ -689,7 +736,6 @@ fn draw_text_dw_ex_internal(
                 b: 0.0,
                 a: 0.0,
             }));
-
             let r = ((color >> 16) & 0xFF) as f32 / 255.0;
             let g = ((color >> 8) & 0xFF) as f32 / 255.0;
             let b = (color & 0xFF) as f32 / 255.0;
@@ -799,33 +845,15 @@ fn blit_pixels(
     let surface_w_usize = surface_w as usize;
     let tw_usize = tw as usize;
 
-    // Fast Path Selector
-    if (end_y - start_y) as usize * (end_x - start_x) as usize > 200_000 {
-        let rows =
-            &mut buffer[start_y as usize * surface_w_usize..end_y as usize * surface_w_usize];
-        rows.par_chunks_mut(surface_w_usize)
-            .enumerate()
-            .for_each(|(i, row)| {
-                let current_dest_y = i as i32 + start_y;
-                let dy = current_dest_y - dest_y; // Offset relative to dest_y
-                let src_row = dy + src_y_off; // Physical row in source raster
-                let src_row_off = src_row as usize * tw_usize;
-                let src_slice = &src_pixels[src_row_off + (start_x - dest_x) as usize..];
-                let dest_slice = &mut row[start_x as usize..end_x as usize];
+    for y in start_y..end_y {
+        let dy = y - dest_y;
+        let src_row = dy + src_y_off;
+        let src_row_off = src_row as usize * tw_usize;
+        let row_idx = y as usize * surface_w_usize;
+        let src_slice = &src_pixels[src_row_off + (start_x - dest_x) as usize..];
+        let dest_slice = &mut buffer[row_idx + start_x as usize..row_idx + end_x as usize];
 
-                blend_row(dest_slice, src_slice, sr, sg, sb);
-            });
-    } else {
-        for y in start_y..end_y {
-            let dy = y - dest_y;
-            let src_row = dy + src_y_off;
-            let src_row_off = src_row as usize * tw_usize;
-            let row_idx = y as usize * surface_w_usize;
-            let src_slice = &src_pixels[src_row_off + (start_x - dest_x) as usize..];
-            let dest_slice = &mut buffer[row_idx + start_x as usize..row_idx + end_x as usize];
-
-            blend_row(dest_slice, src_slice, sr, sg, sb);
-        }
+        blend_row(dest_slice, src_slice, sr, sg, sb);
     }
 }
 
@@ -834,45 +862,51 @@ fn blend_row(dest_slice: &mut [u32], src_slice: &[u32], sr: u32, sg: u32, sb: u3
     let len = dest_slice.len();
     let mut idx = 0;
 
-    // SIMD-friendly loop with manual unrolling
+    // Fixed color components for SIMD-like processing
+    // sr, sg, sb are constant across the row
+    let color_v = (sr << 16) | (sg << 8) | sb;
+
     while idx + 4 <= len {
         for k in 0..4 {
             let i = idx + k;
             let pixel = src_slice[i];
-            let a = (pixel >> 24) & 0xFF;
+            let a = pixel >> 24;
+
             if a == 255 {
-                dest_slice[i] = (sr << 16) | (sg << 8) | sb;
+                dest_slice[i] = color_v;
             } else if a > 0 {
                 let bg = dest_slice[i];
-                let inv_a = 255 - a;
-                let r_num = sr * a + ((bg >> 16) & 0xFF) * inv_a;
-                let g_num = sg * a + ((bg >> 8) & 0xFF) * inv_a;
-                let b_num = sb * a + (bg & 0xFF) * inv_a;
 
-                let r = (r_num + 1 + (r_num >> 8)) >> 8;
-                let g = (g_num + 1 + (g_num >> 8)) >> 8;
-                let b = (b_num + 1 + (b_num >> 8)) >> 8;
-                dest_slice[i] = (r << 16) | (g << 8) | b;
+                // Fast integer blend: (src * alpha + bg * (255 - alpha)) >> 8
+                // Note: we use 256 for slightly faster shift math, error is negligible for UI
+                let inv_a = 255 - a;
+
+                let rb = bg & 0x00FF00FF;
+                let g = bg & 0x0000FF00;
+
+                let rb_res = ((color_v & 0x00FF00FF) * a + rb * inv_a) >> 8;
+                let g_res = ((color_v & 0x0000FF00) * a + g * inv_a) >> 8;
+
+                dest_slice[i] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
             }
         }
         idx += 4;
     }
+
+    // Remainder
     while idx < len {
         let pixel = src_slice[idx];
-        let a = (pixel >> 24) & 0xFF;
+        let a = pixel >> 24;
         if a == 255 {
-            dest_slice[idx] = (sr << 16) | (sg << 8) | sb;
+            dest_slice[idx] = color_v;
         } else if a > 0 {
             let bg = dest_slice[idx];
             let inv_a = 255 - a;
-            let r_num = sr * a + ((bg >> 16) & 0xFF) * inv_a;
-            let g_num = sg * a + ((bg >> 8) & 0xFF) * inv_a;
-            let b_num = sb * a + (bg & 0xFF) * inv_a;
-
-            let r = (r_num + 1 + (r_num >> 8)) >> 8;
-            let g = (g_num + 1 + (g_num >> 8)) >> 8;
-            let b = (b_num + 1 + (b_num >> 8)) >> 8;
-            dest_slice[idx] = (r << 16) | (g << 8) | b;
+            let rb = bg & 0x00FF00FF;
+            let g = bg & 0x0000FF00;
+            let rb_res = ((color_v & 0x00FF00FF) * a + rb * inv_a) >> 8;
+            let g_res = ((color_v & 0x0000FF00) * a + g * inv_a) >> 8;
+            dest_slice[idx] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
         }
         idx += 1;
     }

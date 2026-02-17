@@ -1119,13 +1119,14 @@ fn main() {
                     }
                     
                     // --- OPTIMIZATION: Precise scheduling ---
-                    let mut next_deadline = Instant::now() + Duration::from_secs(1);
+                    let now = Instant::now();
+                    let mut next_deadline = now + Duration::from_secs(1);
                     
                     if pet.state != PetState::Drag {
                         next_deadline = next_deadline.min(pet.next_frame_at());
                     }
                     if is_thinking {
-                        next_deadline = next_deadline.min(Instant::now() + Duration::from_millis(100));
+                        next_deadline = next_deadline.min(now + Duration::from_millis(100));
                     }
 
                     let needs_high_freq = pet.state == PetState::Move || 
@@ -1136,21 +1137,21 @@ fn main() {
                                          pomodoro_manager.visible;
 
                     if needs_high_freq {
-                        next_deadline = next_deadline.min(Instant::now() + target_frame_duration);
+                        next_deadline = next_deadline.min(now + target_frame_duration);
                     }
 
                     if chat_window.is_visible() {
                         let blink_deadline = chat_window.next_blink_at();
-                        // Request redraw slightly before or at deadline
-                        if Instant::now().duration_since(blink_deadline - Duration::from_millis(5)) < Duration::from_millis(10) || Instant::now() >= blink_deadline {
+                        if now >= blink_deadline - Duration::from_millis(10) {
                              chat_window.request_redraw_actual();
                         }
+                        // Only wake up for blink if we are close or if no animation is active
                         next_deadline = next_deadline.min(blink_deadline);
                     }
 
                     if let Some(sw) = &settings_win {
                         let blink_deadline = sw.next_blink_at();
-                        if Instant::now().duration_since(blink_deadline - Duration::from_millis(5)) < Duration::from_millis(10) || Instant::now() >= blink_deadline {
+                        if now >= blink_deadline - Duration::from_millis(10) {
                              sw.request_redraw_actual();
                         }
                         next_deadline = next_deadline.min(blink_deadline);
