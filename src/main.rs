@@ -470,6 +470,9 @@ fn main() {
                                     }
                                 }
                             }
+                            WindowEvent::Focused(true) => {
+                                ui_primitives::harvest_memory();
+                            }
                             _ => {}
                         }
                     } else if let Some(sw) = &mut settings_win {
@@ -477,6 +480,9 @@ fn main() {
                             match event {
                                 WindowEvent::CloseRequested => {
                                     settings_win = None;
+                                    ui_primitives::harvest_memory();
+                                }
+                                WindowEvent::Focused(true) => {
                                     ui_primitives::harvest_memory();
                                 }
                                 WindowEvent::MouseInput { state, button: btn, .. } => {
@@ -601,7 +607,10 @@ fn main() {
                                                         sw.request_redraw();
                                                     }
                                                 }
-                                                settings::SettingsAction::None => {}
+                                                settings::SettingsAction::RequestGc => {
+                                                    ui_primitives::harvest_memory();
+                                                }
+                                                _ => {}
                                             }
                                         }
                                     } else {

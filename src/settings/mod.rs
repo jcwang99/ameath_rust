@@ -29,6 +29,7 @@ pub enum SettingsAction {
     RequestHistory,
     SetMonitor(String),
     SelectMusicPath,
+    RequestGc,
 }
 
 pub struct SettingsWindow {
@@ -595,7 +596,7 @@ impl SettingsWindow {
                         return SettingsAction::RequestHistory;
                     }
                     self.window.request_redraw();
-                    return SettingsAction::None;
+                    return SettingsAction::RequestGc;
                 }
             }
         }

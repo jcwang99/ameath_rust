@@ -50,6 +50,18 @@ impl Drop for ScratchpadRenderer {
 
 #[cfg(target_os = "windows")]
 impl ScratchpadRenderer {
+    fn reset(&mut self) {
+        unsafe {
+            if self.h_bitmap.0 != 0 {
+                DeleteObject(self.h_bitmap);
+                self.h_bitmap = HBITMAP(0);
+            }
+            self.width = 0;
+            self.height = 0;
+            self.bits = std::ptr::null_mut();
+        }
+    }
+
     fn new() -> Self {
         unsafe {
             let hdc_screen = GetDC(HWND(0));
@@ -183,7 +195,7 @@ struct PrimitiveKey {
     r: u32,
     color: u32,
 }
-static PRIMITIVE_CACHE: OnceLock<RwLock<HashMap<PrimitiveKey, Vec<u32>>>> = OnceLock::new();
+static PRIMITIVE_CACHE: OnceLock<RwLock<CacheState<PrimitiveKey, Vec<u32>>>> = OnceLock::new();
 
 fn get_layout_cache() -> &'static RwLock<CacheState<LayoutKey, IDWriteTextLayout>> {
     LAYOUT_CACHE.get_or_init(|| RwLock::new(CacheState::new()))
@@ -212,9 +224,12 @@ pub fn harvest_memory() {
     }
     if let Some(cache) = PRIMITIVE_CACHE.get() {
         let mut lock = cache.write().unwrap();
-        lock.clear();
+        lock.map.clear();
+        lock.order.clear();
+        lock.total_pixels = 0;
     }
-    // We keep FORMAT_CACHE as it's very small and expensive to re-create
+    #[cfg(target_os = "windows")]
+    SCRATCHPAD.with(|sp| sp.borrow_mut().reset());
 }
 
 pub fn get_or_create_layout_ex(
@@ -457,10 +472,16 @@ pub fn draw_rounded_rect(
 
     let key = PrimitiveKey { w, h, r, color };
     let cache_hit = {
-        let cache = PRIMITIVE_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
-        let read_cache = cache.read().unwrap();
-        if let Some(pixels) = read_cache.get(&key) {
+        let cache_lock = PRIMITIVE_CACHE.get_or_init(|| RwLock::new(CacheState::new()));
+        let mut cache = cache_lock.write().unwrap();
+        if let Some(pixels) = cache.map.get(&key) {
             blit_solid(buffer, surface_w, x, y, h, pixels, max_w, max_h);
+
+            // LRU promotion
+            if let Some(pos) = cache.order.iter().position(|k| k == &key) {
+                let k = cache.order.remove(pos);
+                cache.order.push(k);
+            }
             true
         } else {
             false
@@ -478,12 +499,18 @@ pub fn draw_rounded_rect(
     // Blit now
     blit_solid(buffer, surface_w, x, y, h, &pixels, max_w, max_h);
 
-    // Store in cache
-    let cache = PRIMITIVE_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
-    let mut write_cache = cache.write().unwrap();
-    if write_cache.len() < 100 {
-        // Simple cap
-        write_cache.insert(key, pixels);
+    // Update cache with LRU limit
+    {
+        let cache_lock = PRIMITIVE_CACHE.get_or_init(|| RwLock::new(CacheState::new()));
+        let mut cache = cache_lock.write().unwrap();
+
+        while cache.order.len() >= 50 {
+            let oldest = cache.order.remove(0);
+            cache.map.remove(&oldest);
+        }
+
+        cache.order.push(key.clone());
+        cache.map.insert(key, pixels);
     }
 }
 
