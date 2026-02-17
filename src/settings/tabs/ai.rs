@@ -3,6 +3,10 @@ use crate::types::AiConfig;
 use crate::ui_primitives::*;
 use rusttype::Scale;
 
+thread_local! {
+    static AI_SCRATCH_BUFFER: std::cell::RefCell<Vec<u32>> = std::cell::RefCell::new(Vec::new());
+}
+
 pub struct AiTabState<'a> {
     pub focused_field: Option<usize>,
     pub show_api_key: bool,
@@ -46,10 +50,7 @@ pub fn draw(
     state.config_hash.hash(&mut ai_card_hasher);
     state.focused_field.hash(&mut ai_card_hasher);
     state.show_api_key.hash(&mut ai_card_hasher);
-    state
-        .system_prompt_scroll_offset
-        .to_bits()
-        .hash(&mut ai_card_hasher);
+    // REMOVED system_prompt_scroll_offset from hash to prevent cache thrashing
     scale.to_bits().hash(&mut ai_card_hasher);
     let ai_card_hash = ai_card_hasher.finish();
 
@@ -85,239 +86,240 @@ pub fn draw(
 
     if !ai_blit_success {
         // Render the entire 1300px card into a temporary buffer
-        let mut ai_card_buffer = vec![COLOR_BG_APP; (card_w * card_h) as usize];
+        AI_SCRATCH_BUFFER.with(|buf_ref| {
+            let mut ai_card_buffer = buf_ref.borrow_mut();
+            let needed_size = (card_w * card_h) as usize;
+            if ai_card_buffer.len() < needed_size {
+                ai_card_buffer.resize(needed_size, COLOR_BG_APP);
+            }
+            // Fill with BG
+            for p in ai_card_buffer.iter_mut().take(needed_size) {
+                *p = COLOR_BG_APP;
+            }
 
-        // 1. Background
-        draw_rounded_rect_internal(
-            &mut ai_card_buffer,
-            card_w,
-            0,
-            0,
-            card_w,
-            card_h,
-            12,
-            COLOR_BG_CARD,
-        );
-
-        let mut temp_num = String::new();
-        for i in 0..fields_count {
-            temp_num.clear();
-            let (label, fx, fy, fw, is_multiline) = match i {
-                0 => ("API Key", 230.0, 30.0, 500.0, false),
-                1 => ("Base URL", 230.0, 130.0, 500.0, false),
-                2 => ("Model", 230.0, 230.0, 500.0, false),
-                3 => ("ReAct Steps", 230.0, 330.0, 150.0, false),
-                4 => ("L1 Summary", 405.0, 330.0, 150.0, false),
-                5 => ("L2 Merge", 580.0, 330.0, 150.0, false),
-                6 => ("Interact Interval (min)", 230.0, 430.0, 150.0, false),
-                7 => ("Tavily Key", 230.0, 530.0, 500.0, false),
-                8 => ("Brave Key", 230.0, 630.0, 500.0, false),
-                9 => ("Firecrawl URL", 230.0, 730.0, 500.0, false),
-                10 => ("Firecrawl Key", 230.0, 830.0, 500.0, false),
-                11 => ("System Prompt", 230.0, 930.0, 500.0, true),
-                _ => ("", 0.0, 0.0, 0.0, false),
-            };
-
-            let fx_rel = sc(fx - 210.0) as i32;
-            let fy_rel = sc(fy) as i32;
-            let input_y_rel = fy_rel + sc(25.0) as i32;
-            let input_h = if is_multiline {
-                sc(250.0) as u32
-            } else {
-                sc(45.0) as u32
-            };
-
-            let input_w = sc(fw as f32) as u32;
-
-            let is_focused = state.focused_field == Some(i);
-            let border_col = if is_focused {
-                COLOR_PRIMARY
-            } else {
-                COLOR_BORDER
-            };
-
-            // Label
-            draw_text_dw_ex(
-                &mut ai_card_buffer,
-                card_w,
-                label,
-                fx_rel,
-                fy_rel,
-                sc(14.0),
-                COLOR_TEXT_SEC,
-                card_w,
-                sc(20.0) as u32,
-                0.0,
-            );
-
-            // Input Border
+            // 1. Background
             draw_rounded_rect_internal(
                 &mut ai_card_buffer,
                 card_w,
-                fx_rel as u32,
-                input_y_rel as u32,
-                input_w,
-                input_h,
-                8,
-                border_col,
-            );
-
-            // Input BG
-            draw_rounded_rect_internal(
-                &mut ai_card_buffer,
+                0,
+                0,
                 card_w,
-                (fx_rel + 1) as u32,
-                (input_y_rel + 1) as u32,
-                input_w - 2,
-                input_h.saturating_sub(2),
-                7,
+                card_h,
+                12,
                 COLOR_BG_CARD,
             );
 
-            // Value
-            let val: &str = match i {
-                0 => &ai_config.api_key,
-                1 => &ai_config.base_url,
-                2 => &ai_config.model,
-                3 => {
-                    temp_num = ai_config.react_limit.to_string();
-                    &temp_num
-                }
-                4 => {
-                    temp_num = ai_config.l1_summary_threshold.to_string();
-                    &temp_num
-                }
-                5 => {
-                    temp_num = ai_config.l2_merge_threshold.to_string();
-                    &temp_num
-                }
-                6 => {
-                    temp_num = ai_config.interaction_frequency.to_string();
-                    &temp_num
-                }
-                7 => &ai_config.tavily_api_key,
-                8 => &ai_config.brave_api_key,
-                9 => &ai_config.firecrawl_url,
-                10 => &ai_config.firecrawl_api_key,
-                11 => &ai_config.system_prompt,
-                _ => "",
-            };
+            let mut temp_num = String::new();
+            for i in 0..fields_count {
+                temp_num.clear();
+                let (label, fx, fy, fw, is_multiline) = match i {
+                    0 => ("API Key", 230.0, 30.0, 500.0, false),
+                    1 => ("Base URL", 230.0, 130.0, 500.0, false),
+                    2 => ("Model", 230.0, 230.0, 500.0, false),
+                    3 => ("ReAct Steps", 230.0, 330.0, 150.0, false),
+                    4 => ("L1 Summary", 405.0, 330.0, 150.0, false),
+                    5 => ("L2 Merge", 580.0, 330.0, 150.0, false),
+                    6 => ("Interact Interval (min)", 230.0, 430.0, 150.0, false),
+                    7 => ("Tavily Key", 230.0, 530.0, 500.0, false),
+                    8 => ("Brave Key", 230.0, 630.0, 500.0, false),
+                    9 => ("Firecrawl URL", 230.0, 730.0, 500.0, false),
+                    10 => ("Firecrawl Key", 230.0, 830.0, 500.0, false),
+                    11 => ("System Prompt", 230.0, 930.0, 500.0, true),
+                    _ => ("", 0.0, 0.0, 0.0, false),
+                };
 
-            let val_chars: Vec<char> = val.chars().collect();
-            let is_masked =
-                (i == 0 || i == 7 || i == 8 || i == 10) && !val.is_empty() && !state.show_api_key;
-            let display_chars: Vec<char> = if is_masked {
-                let mask_char = if is_focused { '•' } else { '*' };
-                std::iter::repeat(mask_char)
-                    .take(val_chars.len().min(32))
-                    .collect()
-            } else {
-                if val.is_empty() {
-                    (if is_focused { "" } else { "None" }).chars().collect()
+                let fx_rel = sc(fx - 210.0) as i32;
+                let fy_rel = sc(fy) as i32;
+                let input_y_rel = fy_rel + sc(25.0) as i32;
+                let input_h = if is_multiline {
+                    sc(250.0) as u32
                 } else {
-                    if !is_focused && val_chars.len() > 50 && i != 11 {
-                        let mut v = val_chars.iter().take(47).cloned().collect::<Vec<_>>();
-                        v.extend("...".chars());
-                        v
-                    } else {
-                        val_chars.clone()
-                    }
-                }
-            };
+                    sc(45.0) as u32
+                };
 
-            let display_col = if val.is_empty() {
-                COLOR_TEXT_DIM
-            } else {
-                COLOR_TEXT_MAIN
-            };
-            let final_text: String = display_chars.iter().collect();
+                let input_w = sc(fw as f32) as u32;
 
-            if i == 11 {
-                // Multi-line for System Prompt
-                draw_text_dw_h(
-                    &mut ai_card_buffer,
-                    card_w,
-                    &final_text,
-                    state.system_prompt_hash,
-                    fx_rel + sc(15.0) as i32,
-                    input_y_rel + sc(12.0) as i32,
-                    sc(14.0),
-                    display_col,
-                    sc(500.0 - 40.0) as u32,
-                    input_h.saturating_sub(sc(24.0) as u32),
-                    state.system_prompt_scroll_offset * scale,
-                );
-            } else {
+                let is_focused = state.focused_field == Some(i);
+                let border_col = if is_focused {
+                    COLOR_PRIMARY
+                } else {
+                    COLOR_BORDER
+                };
+
+                // Label
                 draw_text_dw_ex(
                     &mut ai_card_buffer,
                     card_w,
-                    &final_text,
-                    fx_rel + sc(15.0) as i32,
-                    input_y_rel + sc(12.0) as i32,
+                    label,
+                    fx_rel,
+                    fy_rel,
                     sc(14.0),
-                    display_col,
-                    input_w - sc(30.0) as u32,
-                    sc(30.0) as u32,
+                    COLOR_TEXT_SEC,
+                    card_w,
+                    sc(20.0) as u32,
                     0.0,
                 );
-            }
 
-            // Eye Icon for password fields
-            if i == 0 || i == 7 || i == 8 || i == 10 {
-                let eye_x = fx_rel + sc(fw as f32 - 45.0) as i32;
-                let eye_y = input_y_rel + sc(12.0) as i32;
-                let eye_col = if state.show_api_key {
-                    COLOR_PRIMARY
-                } else {
-                    COLOR_TEXT_SEC
-                };
-                // Draw eye as a simple rect for now
-                draw_rect_internal(
+                // Input Border
+                draw_rounded_rect_internal(
                     &mut ai_card_buffer,
                     card_w,
-                    eye_x as u32,
-                    (eye_y + 4) as u32,
-                    16,
-                    16,
-                    eye_col,
+                    fx_rel as u32,
+                    input_y_rel as u32,
+                    input_w,
+                    input_h,
+                    8,
+                    border_col,
                 );
-            }
-        }
 
-        // Blit to screen
-        blit_opaque(
-            buffer,
-            w,
-            s(210) as i32,
-            card_y_raw,
-            card_w as i32,
-            card_h as i32,
-            &ai_card_buffer,
-            w,
-            h,
-            0,
-        );
+                // Input BG
+                draw_rounded_rect_internal(
+                    &mut ai_card_buffer,
+                    card_w,
+                    (fx_rel + 1) as u32,
+                    (input_y_rel + 1) as u32,
+                    input_w - 2,
+                    input_h.saturating_sub(2),
+                    7,
+                    COLOR_BG_CARD,
+                );
 
-        // Store in cache
-        let pixel_count = ai_card_buffer.len();
-        let mut cache = get_raster_cache().write().unwrap();
-        while cache.total_pixels + pixel_count > (16 * 1024 * 1024 / 4) && !cache.order.is_empty() {
-            let oldest = cache.order.remove(0);
-            if let Some(entry) = cache.map.remove(&oldest) {
-                cache.total_pixels -= entry.pixel_count;
+                // Value
+                let val: &str = match i {
+                    0 => &ai_config.api_key,
+                    1 => &ai_config.base_url,
+                    2 => &ai_config.model,
+                    3 => {
+                        temp_num = ai_config.react_limit.to_string();
+                        &temp_num
+                    }
+                    4 => {
+                        temp_num = ai_config.l1_summary_threshold.to_string();
+                        &temp_num
+                    }
+                    5 => {
+                        temp_num = ai_config.l2_merge_threshold.to_string();
+                        &temp_num
+                    }
+                    6 => {
+                        temp_num = ai_config.interaction_frequency.to_string();
+                        &temp_num
+                    }
+                    7 => &ai_config.tavily_api_key,
+                    8 => &ai_config.brave_api_key,
+                    9 => &ai_config.firecrawl_url,
+                    10 => &ai_config.firecrawl_api_key,
+                    11 => &ai_config.system_prompt,
+                    _ => "",
+                };
+
+                let val_chars: Vec<char> = val.chars().collect();
+                let is_masked = (i == 0 || i == 7 || i == 8 || i == 10)
+                    && !val.is_empty()
+                    && !state.show_api_key;
+                let display_chars: Vec<char> = if is_masked {
+                    let mask_char = if is_focused { '•' } else { '*' };
+                    std::iter::repeat(mask_char)
+                        .take(val_chars.len().min(32))
+                        .collect()
+                } else {
+                    if val.is_empty() {
+                        (if is_focused { "" } else { "None" }).chars().collect()
+                    } else {
+                        if !is_focused && val_chars.len() > 50 && i != 11 {
+                            let mut v = val_chars.iter().take(47).cloned().collect::<Vec<_>>();
+                            v.extend("...".chars());
+                            v
+                        } else {
+                            val_chars.clone()
+                        }
+                    }
+                };
+
+                let display_col = if val.is_empty() {
+                    COLOR_TEXT_DIM
+                } else {
+                    COLOR_TEXT_MAIN
+                };
+                let final_text: String = display_chars.iter().collect();
+
+                if i == 11 {
+                    // SKIP drawing content into static cache for multiline prompt
+                    // It will be drawn as a dynamic overlay instead
+                } else {
+                    draw_text_dw_ex(
+                        &mut ai_card_buffer,
+                        card_w,
+                        &final_text,
+                        fx_rel + sc(15.0) as i32,
+                        input_y_rel + sc(12.0) as i32,
+                        sc(14.0),
+                        display_col,
+                        input_w - sc(30.0) as u32,
+                        sc(30.0) as u32,
+                        0.0,
+                    );
+                }
+
+                // Eye Icon for password fields
+                if i == 0 || i == 7 || i == 8 || i == 10 {
+                    let eye_x = fx_rel + sc(fw as f32 - 45.0) as i32;
+                    let eye_y = input_y_rel + sc(12.0) as i32;
+                    let eye_col = if state.show_api_key {
+                        COLOR_PRIMARY
+                    } else {
+                        COLOR_TEXT_SEC
+                    };
+                    // Draw eye as a simple rect for now
+                    draw_rect_internal(
+                        &mut ai_card_buffer,
+                        card_w,
+                        eye_x as u32,
+                        (eye_y + 4) as u32,
+                        16,
+                        16,
+                        eye_col,
+                    );
+                }
             }
-        }
-        cache.order.push(ai_card_key.clone());
-        cache.total_pixels += pixel_count;
-        cache.map.insert(
-            ai_card_key,
-            RasterEntry {
-                pixels: ai_card_buffer,
-                tw: card_w as i32,
-                th: card_h as i32,
-                pixel_count,
-            },
-        );
+
+            // Blit to screen
+            blit_opaque(
+                buffer,
+                w,
+                s(210) as i32,
+                card_y_raw,
+                card_w as i32,
+                card_h as i32,
+                &ai_card_buffer,
+                w,
+                h,
+                0,
+            );
+
+            // Store in cache
+            let pixel_count = needed_size;
+            let mut cache = get_raster_cache().write().unwrap();
+            while cache.total_pixels + pixel_count > (16 * 1024 * 1024 / 4)
+                && !cache.order.is_empty()
+            {
+                let oldest = cache.order.remove(0);
+                if let Some(entry) = cache.map.remove(&oldest) {
+                    cache.total_pixels -= entry.pixel_count;
+                }
+            }
+            cache.order.push(ai_card_key.clone());
+            cache.total_pixels += pixel_count;
+            cache.map.insert(
+                ai_card_key,
+                RasterEntry {
+                    pixels: ai_card_buffer[..needed_size].to_vec(),
+                    tw: card_w as i32,
+                    th: card_h as i32,
+                    pixel_count,
+                },
+            );
+        });
     }
 
     // Interaction State Restoration (Required for scrolling/clicking prompt regardless of cache)
@@ -421,7 +423,6 @@ pub fn draw(
             }
         };
 
-        let final_text: String = display_chars.iter().collect();
         let text_start_x = s(fx as u32) as i32 + sc(15.0) as i32;
         let text_start_y = input_y_raw + sc(12.0) as i32;
 
@@ -429,7 +430,7 @@ pub fn draw(
         if let Some(sel_start_idx) = state.selection_start {
             if i == 11 {
                 let rects = get_selection_rects(
-                    &final_text,
+                    &ai_config.system_prompt,
                     sc(14.0),
                     sc(500.0 - 40.0) as u32,
                     sel_start_idx,
@@ -480,7 +481,7 @@ pub fn draw(
 
         let (px, py) = if i == 11 {
             get_xy_from_cursor_index(
-                &final_text,
+                &ai_config.system_prompt,
                 sc(14.0),
                 sc(500.0 - 40.0) as u32,
                 state.cursor_pos,
@@ -522,6 +523,35 @@ pub fn draw(
                 );
             }
         }
+    }
+
+    // DYNAMIC CONTENT OVERLAY (Always render System Prompt)
+    {
+        let fx = 230.0;
+        let fy = 930.0;
+        let fy_scaled_raw = card_y_raw + sc(fy) as i32;
+        let input_y_raw = fy_scaled_raw + sc(25.0) as i32;
+        let input_h = sc(250.0) as u32;
+        let text_start_x = s(fx as u32) as i32 + sc(15.0) as i32;
+        let text_start_y = input_y_raw + sc(12.0) as i32;
+
+        draw_text_dw_h(
+            buffer,
+            w,
+            &ai_config.system_prompt,
+            state.system_prompt_hash,
+            text_start_x,
+            text_start_y,
+            sc(14.0),
+            if ai_config.system_prompt.is_empty() {
+                COLOR_TEXT_DIM
+            } else {
+                COLOR_TEXT_MAIN
+            },
+            sc(500.0 - 40.0) as u32,
+            input_h.saturating_sub(sc(24.0) as u32),
+            state.system_prompt_scroll_offset * scale,
+        );
     }
 
     // System Prompt Scrollbar
