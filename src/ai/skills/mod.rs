@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 pub mod browser;
 pub mod memory_skill;
+pub mod reminder_skill;
 pub mod system;
 
 #[async_trait]
@@ -24,6 +25,7 @@ impl SkillManager {
     pub fn new(
         memory: Arc<crate::ai::memory::MemoryManager>,
         config: &crate::types::AiConfig,
+        scheduler: crate::interaction::ActionScheduler,
     ) -> Self {
         let mut manager = Self {
             skills: HashMap::new(),
@@ -43,6 +45,9 @@ impl SkillManager {
             config.firecrawl_api_key.clone(),
         )));
         manager.register(Arc::new(memory_skill::MemorySkill::new(memory)));
+        manager.register(Arc::new(reminder_skill::ScheduleReminderSkill::new(
+            scheduler,
+        )));
 
         manager
     }

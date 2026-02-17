@@ -12,7 +12,7 @@ pub struct ChatKernel {
 }
 
 impl ChatKernel {
-    pub fn new(config: &AiConfig) -> Self {
+    pub fn new(config: &AiConfig, scheduler: crate::interaction::ActionScheduler) -> Self {
         let client = if config.api_key.is_empty() {
             None
         } else {
@@ -20,7 +20,7 @@ impl ChatKernel {
         };
 
         let memory = Arc::new(MemoryManager::new());
-        let skills = SkillManager::new(Arc::clone(&memory), config);
+        let skills = SkillManager::new(Arc::clone(&memory), config, scheduler);
 
         Self {
             config: config.clone(),

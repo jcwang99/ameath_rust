@@ -61,7 +61,9 @@ fn main() {
     // Global Hotkey Setup
     let hotkey_manager = GlobalHotKeyManager::new().unwrap();
     let hotkey = HotKey::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyM);
-    hotkey_manager.register(hotkey).unwrap();
+    if let Err(e) = hotkey_manager.register(hotkey) {
+        eprintln!("Warning: Failed to register global hotkey (Alt+Shift+M): {:?}. Another process might be using it.", e);
+    }
     let hotkey_channel = GlobalHotKeyEvent::receiver();
 
     // Load assets (Right-facing by default)
@@ -191,13 +193,14 @@ fn main() {
     let mut music_player = music_player::MusicPlayer::new();
 
     // AI Kernel & Channel
+    let scheduler = interaction::ActionScheduler::new();
     let (ai_tx, ai_rx) = std::sync::mpsc::channel::<String>();
-    let mut chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
+    let mut chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
     let music_dir = window_config.music_path.clone().unwrap_or_else(|| std::path::PathBuf::from("assets/music"));
     if music_dir.exists() {
         music_player.set_path(music_dir);
     }
-    let mut interaction_manager = interaction::InteractionManager::new(ai_config.clone());
+    let mut interaction_manager = interaction::InteractionManager::new(ai_config.clone(), scheduler.clone());
     let (path_tx, path_rx) = std::sync::mpsc::channel::<Option<std::path::PathBuf>>();
 
     let quotes = vec![
@@ -297,7 +300,7 @@ fn main() {
                                  thinking_start = Some(Instant::now());
                                  
                                  // Update kernel with current config if changed
-                                 chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
+                                 chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
                                  let kernel = chat_kernel.clone();
                                  let tx = ai_tx.clone();
                                  let input = msg.clone();
@@ -354,6 +357,7 @@ fn main() {
                                             }
 
                                             if is_click {
+                                                let mut handled = false;
                                                 if menu_manager.visible {
                                                     if let Some(pos) = last_cursor_pos {
                                                         let (cur_pw, _cur_ph) = pet.get_scaled_size();
@@ -361,6 +365,7 @@ fn main() {
                                                         let menu_y = pet_off_y as i32;
 
                                                         if let Some(action) = menu_manager.check_hit(pos.x, pos.y, menu_x, menu_y) {
+                                                            handled = true;
                                                             match action {
                                                                 menu::MenuAction::Chat => {
                                                                     if let Some(monitor) = window.current_monitor() {
@@ -412,11 +417,18 @@ fn main() {
                                                     }
                                                 }
 
-                                                if !is_click {
-                                                    pet.end_drag();
-                                                } else {
-                                                    if let Some(&quote) = rand::seq::SliceRandom::choose(&quotes[..], &mut rand::thread_rng()) {
-                                                        bubble_manager.show(quote, Duration::from_secs(4), pet.scale);
+                                                if !handled {
+                                                    // Only show quote if clicking directly on pet body
+                                                    if let Some(pos) = last_cursor_pos {
+                                                        if let Ok(win_pos) = window.outer_position() {
+                                                            let monitor_mx = win_pos.x as f64 + pos.x - monitor_offset.0 as f64;
+                                                            let monitor_my = win_pos.y as f64 + pos.y - monitor_offset.1 as f64;
+                                                            if pet.check_hit(monitor_mx, monitor_my) {
+                                                                if let Some(&quote) = rand::seq::SliceRandom::choose(&quotes[..], &mut rand::thread_rng()) {
+                                                                    bubble_manager.show(quote, Duration::from_secs(4), pet.scale);
+                                                                }
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             } else {
@@ -515,19 +527,19 @@ fn main() {
                                                 settings::SettingsAction::SetAiApiKey(key) => {
                                                     ai_config.api_key = key;
                                                     ai_config.save();
-                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
+                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
                                                     sw.request_redraw();
                                                 }
                                                 settings::SettingsAction::SetAiBaseUrl(url) => {
                                                     ai_config.base_url = url;
                                                     ai_config.save();
-                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
+                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
                                                     sw.request_redraw();
                                                 }
                                                 settings::SettingsAction::SetAiModel(model) => {
                                                     ai_config.model = model;
                                                     ai_config.save();
-                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
+                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
                                                     sw.request_redraw();
                                                 }
                                                 settings::SettingsAction::SetAiReactLimit(limit) => {
@@ -577,7 +589,7 @@ fn main() {
                                                 settings::SettingsAction::SetAiSystemPrompt(prompt) => {
                                                     ai_config.system_prompt = prompt;
                                                     ai_config.save();
-                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config));
+                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
                                                     sw.request_redraw();
                                                 }
                                                 settings::SettingsAction::RequestHistory => {

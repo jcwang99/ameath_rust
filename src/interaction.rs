@@ -5,6 +5,63 @@ use std::time::{Duration, Instant};
 use sysinfo::{Components, Disks, Networks, System};
 
 use crate::types::AiConfig;
+use std::sync::{Arc, Mutex};
+
+#[derive(Debug, Clone)]
+pub struct ScheduledItem {
+    pub time: Instant,
+    pub memo: String,
+}
+
+#[derive(Clone)]
+pub struct ActionScheduler {
+    pub queue: Arc<Mutex<Vec<ScheduledItem>>>,
+}
+
+impl ActionScheduler {
+    pub fn new() -> Self {
+        Self {
+            queue: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn schedule(&self, minutes: u32, memo: String) -> Result<String, String> {
+        let mut q = self.queue.lock().unwrap();
+        if q.len() >= 5 {
+            return Err(
+                "Too many active reminders (max 5). Please wait for some to trigger.".to_string(),
+            );
+        }
+
+        // Safety: Enforce 1 minute minimum
+        let mins = minutes.max(1);
+        let trigger_time = Instant::now() + Duration::from_secs(mins as u64 * 60);
+
+        q.push(ScheduledItem {
+            time: trigger_time,
+            memo: memo.clone(),
+        });
+
+        // Keep sorted by time
+        q.sort_by_key(|i| i.time);
+
+        Ok(format!("Scheduled: '{}' in {} minutes.", memo, mins))
+    }
+
+    pub fn poll(&self) -> Option<String> {
+        let mut q = self.queue.lock().unwrap();
+        if q.is_empty() {
+            return None;
+        }
+
+        let now = Instant::now();
+        if now >= q[0].time {
+            let item = q.remove(0);
+            return Some(item.memo);
+        }
+        None
+    }
+}
 
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::LPARAM;
@@ -366,10 +423,11 @@ pub struct InteractionManager {
     last_interaction: Instant,
     config: AiConfig,
     base_interval: Duration,
+    scheduler: ActionScheduler,
 }
 
 impl InteractionManager {
-    pub fn new(config: AiConfig) -> Self {
+    pub fn new(config: AiConfig, scheduler: ActionScheduler) -> Self {
         let base_interval = Duration::from_secs(config.interaction_frequency * 60);
 
         Self {
@@ -377,6 +435,7 @@ impl InteractionManager {
             last_interaction: Instant::now(),
             config,
             base_interval,
+            scheduler,
         }
     }
 
@@ -392,6 +451,13 @@ impl InteractionManager {
         }
 
         let now = Instant::now();
+
+        // 0. Poll Scheduler FIRST (Explicit User/AI Requests take precedence)
+        if let Some(memo) = self.scheduler.poll() {
+            self.last_interaction = now; // Reset routine timer too
+            return Some(format!("[SYSTEM_EVENT] Scheduled Reminder: {}", memo));
+        }
+
         let elapsed = now.duration_since(self.last_interaction);
 
         // 1. Basic Timer Check with Randomness
