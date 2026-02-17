@@ -264,6 +264,12 @@ impl MemoryManager {
         Ok(())
     }
 
+    pub fn delete_fact(&self, key: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM facts WHERE key = ?1", params![key])?;
+        Ok(())
+    }
+
     pub fn get_facts(&self) -> Result<Vec<(String, String)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT key, value FROM facts")?;

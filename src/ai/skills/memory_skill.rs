@@ -21,7 +21,7 @@ impl Skill for MemorySkill {
     }
 
     fn description(&self) -> &str {
-        "Maintain the core Fact Board about the user. Use this to permanently 'learn' and 'set' important user preferences, habits, or facts, or 'get' them to provide personalized help."
+        "Maintain the core Fact Board about the user. Use this to permanently 'learn' and 'set' important user preferences, habits, or facts, 'get' them to provide personalized help, or 'delete' obsolete facts."
     }
 
     async fn execute(&self, args: Value) -> Result<String, String> {
@@ -47,7 +47,12 @@ impl Skill for MemorySkill {
                     Ok(format!("Fact not found for key: {}", key))
                 }
             }
-            _ => Err("Invalid action. Use 'set' or 'get'.".to_string()),
+            "delete" => {
+                let key = args["key"].as_str().ok_or("Missing 'key'")?;
+                self.memory.delete_fact(key).map_err(|e| e.to_string())?;
+                Ok(format!("Fact deleted: {}", key))
+            }
+            _ => Err("Invalid action. Use 'set', 'get' or 'delete'.".to_string()),
         }
     }
 
@@ -62,8 +67,8 @@ impl Skill for MemorySkill {
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["set", "get"],
-                            "description": "The action: 'set' to record/update a persistent fact (e.g. user likes), 'get' to retrieve context."
+                            "enum": ["set", "get", "delete"],
+                            "description": "The action: 'set' to record/update a persistent fact, 'get' to retrieve context, or 'delete' to remove obsolete info."
                         },
                         "key": {
                             "type": "string",
