@@ -31,8 +31,16 @@ impl SkillManager {
 
         // Register default skills
         manager.register(Arc::new(system::SystemSkill::new()));
-        manager.register(Arc::new(browser::BrowserSkill::new(
+        // Register independent browser skills
+        manager.register(Arc::new(browser::TavilySearchSkill::new(
             config.tavily_api_key.clone(),
+        )));
+        manager.register(Arc::new(browser::BraveSearchSkill::new(
+            config.brave_api_key.clone(),
+        )));
+        manager.register(Arc::new(browser::WebScrapeSkill::new(
+            config.firecrawl_url.clone(),
+            config.firecrawl_api_key.clone(),
         )));
         manager.register(Arc::new(memory_skill::MemorySkill::new(memory)));
 

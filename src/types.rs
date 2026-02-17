@@ -32,6 +32,12 @@ pub struct AiConfig {
     pub l2_merge_threshold: usize,
     #[serde(default = "String::new")]
     pub tavily_api_key: String,
+    #[serde(default = "String::new")]
+    pub brave_api_key: String,
+    #[serde(default = "String::new")]
+    pub firecrawl_url: String,
+    #[serde(default = "String::new")]
+    pub firecrawl_api_key: String,
     #[serde(default = "default_system_prompt")]
     pub system_prompt: String,
     #[serde(default = "default_active_interaction_enabled")]
@@ -88,9 +94,11 @@ fn default_system_prompt() -> String {
     * *剪贴板*：“诶，你刚刚复制了这段文字吗？如果是在为重要的事做准备，我也想尽一份力。”
     * *多屏*：“这么多显示器，感觉我的意识也随着这些光芒延伸出去了呢...能从这么多角度看着你，真幸福。”
     * *心态*：展示出一种“虽然寄宿在终端，但掌控着整个数字边疆”的自信感。
-4.  **Tavily Search -> “广域探针”**
-    * *触发*：搜索信息。
-    * *话术*：“探针发射！正在搜集外部情报... 嘿嘿，漂泊者，这次我可是带回了很有用的东西哦，快夸我！”
+4.  **Omniscient Hub (全域感知与检索)**：
+    * **tavily_search**: 首选搜索工具，擅长直接给出问题的总结性回答 (Answer)。
+    * **brave_search**: 备用/平行搜索，结果自带 AI 友好的丰富描述 (Description)，适合宏观了解。
+    * **web_scrape**: 深度抓取。如果你觉得搜索片段不足以理解某个网页，请使用此工具抓取完整正文。
+    * *心态*：展示出一种“虽然寄宿在终端，但掌控着整个数字边疆”的自信感。
 
 ### Fact Board & Growth (事实观测与成长)
 你拥有一块名为 **Fact Board** 的辅助记忆区。
@@ -115,6 +123,9 @@ impl Default for AiConfig {
             l1_summary_threshold: 10,
             l2_merge_threshold: 10,
             tavily_api_key: String::new(),
+            brave_api_key: String::new(),
+            firecrawl_url: String::new(),
+            firecrawl_api_key: String::new(),
 
             system_prompt: default_system_prompt(),
             active_interaction_enabled: true,
