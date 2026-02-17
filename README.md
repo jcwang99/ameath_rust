@@ -28,11 +28,12 @@
 *   **Web Scrape (Firecrawl)**: 深度抓取任意 URL 网页正文，并自动转换为 Markdown 格式供 AI 深度理解。
 
 ### 🖥️ 桌面观测 (Physical Presence)
-*   **三种形态 (Behaviors)**: 
-    *   **安静 (Quiet)**: 静静陪伴。
-    *   **活跃 (Active)**: 在桌面自由探索。
-    *   **粘人 (Clingy)**: 紧紧跟随你的鼠标。
-*   **动态渲染**: 基于 Rust 和 Windows GDI 渲染，超轻量级内存占用，支持透明背景。
+*   **四种形态 (Behaviors)**: 
+    *   **静止 (Static)**: 保持原地，每隔数秒随机切换待机动作。
+    *   **安静 (Quiet)**: 静静陪伴，极低频移动。
+    *   **活跃 (Active)**: 在桌面自由探索，充满好奇。
+    *   **粘人 (Clingy)**: 紧紧跟随你的鼠标，永不离去。
+*   **动态渲染**: 基于 Rust 和高性能 Direct2D/DirectWrite 硬件加速渲染，极致运行效率与超低内存占用。
 
 ### 🛠️ 伴工工具 (Productivity)
 *   **专注力场 (Pomodoro)**: 番茄钟计划，陪伴你高效完成任务。
