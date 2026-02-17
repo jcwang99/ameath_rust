@@ -23,6 +23,8 @@ use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
     BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC,
 };
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
 
 #[cfg(target_os = "windows")]
 struct ScratchpadRenderer {
@@ -162,7 +164,7 @@ struct FormatKey {
 }
 
 pub struct RasterEntry {
-    pub pixels: Vec<u32>,
+    pub alpha: Vec<u8>,
     pub tw: i32,
     pub th: i32,
     pub pixel_count: usize,
@@ -193,9 +195,8 @@ struct PrimitiveKey {
     w: u32,
     h: u32,
     r: u32,
-    color: u32,
 }
-static PRIMITIVE_CACHE: OnceLock<RwLock<CacheState<PrimitiveKey, Vec<u32>>>> = OnceLock::new();
+static PRIMITIVE_CACHE: OnceLock<RwLock<CacheState<PrimitiveKey, Vec<u8>>>> = OnceLock::new();
 
 fn get_layout_cache() -> &'static RwLock<CacheState<LayoutKey, IDWriteTextLayout>> {
     LAYOUT_CACHE.get_or_init(|| RwLock::new(CacheState::new()))
@@ -229,7 +230,14 @@ pub fn harvest_memory() {
         lock.total_pixels = 0;
     }
     #[cfg(target_os = "windows")]
-    SCRATCHPAD.with(|sp| sp.borrow_mut().reset());
+    {
+        SCRATCHPAD.with(|sp| sp.borrow_mut().reset());
+        // Force OS to reclaim unused physical memory
+        unsafe {
+            let handle = GetCurrentProcess();
+            let _ = SetProcessWorkingSetSize(handle, !0, !0);
+        }
+    }
 }
 
 pub fn get_or_create_layout_ex(
@@ -470,12 +478,12 @@ pub fn draw_rounded_rect(
         return;
     }
 
-    let key = PrimitiveKey { w, h, r, color };
+    let key = PrimitiveKey { w, h, r };
     let cache_hit = {
         let cache_lock = PRIMITIVE_CACHE.get_or_init(|| RwLock::new(CacheState::new()));
         let mut cache = cache_lock.write().unwrap();
-        if let Some(pixels) = cache.map.get(&key) {
-            blit_solid(buffer, surface_w, x, y, h, pixels, max_w, max_h);
+        if let Some(alpha) = cache.map.get(&key) {
+            blit_alpha(buffer, surface_w, x, y, h, alpha, color, max_w, max_h);
 
             // LRU promotion
             if let Some(pos) = cache.order.iter().position(|k| k == &key) {
@@ -492,12 +500,12 @@ pub fn draw_rounded_rect(
         return;
     }
 
-    // Rasterize and cache
-    let mut pixels = vec![0u32; (w * h) as usize];
-    draw_rounded_rect_internal(&mut pixels, w, 0, 0, w, h, r, color);
+    // Rasterize and cache (Alpha only)
+    let mut alpha = vec![0u8; (w * h) as usize];
+    draw_rounded_rect_alpha_internal(&mut alpha, w, 0, 0, w, h, r);
 
     // Blit now
-    blit_solid(buffer, surface_w, x, y, h, &pixels, max_w, max_h);
+    blit_alpha(buffer, surface_w, x, y, h, &alpha, color, max_w, max_h);
 
     // Update cache with LRU limit
     {
@@ -510,31 +518,30 @@ pub fn draw_rounded_rect(
         }
 
         cache.order.push(key.clone());
-        cache.map.insert(key, pixels);
+        cache.map.insert(key, alpha);
     }
 }
 
-fn blit_solid(
+fn blit_alpha(
     buffer: &mut [u32],
     surface_w: u32,
     dest_x: i32,
     dest_y: i32,
     h: u32,
-    src_pixels: &[u32],
+    src_alpha: &[u8],
+    color: u32,
     max_w: u32,
     max_h: u32,
 ) {
     let surface_h = (buffer.len() as u32) / surface_w.max(1);
     let start_y = dest_y.max(0);
-    // max_h is an absolute boundary
     let end_y = (dest_y + h as i32).min(max_h as i32).min(surface_h as i32);
     if start_y >= end_y {
         return;
     }
 
-    let tw = (src_pixels.len() as u32 / h) as i32;
+    let tw = (src_alpha.len() as u32 / h) as i32;
     let start_x = dest_x.max(0);
-    // max_w is an absolute boundary
     let end_x = (dest_x + tw).min(max_w as i32).min(surface_w as i32);
     if start_x >= end_x {
         return;
@@ -542,40 +549,51 @@ fn blit_solid(
 
     let surface_w = surface_w as usize;
     let tw = tw as usize;
-    let start_x = start_x as usize;
-    let end_x = end_x as usize;
-    let copy_len = end_x - start_x;
+    let start_x_u = start_x as usize;
+    let end_x_u = end_x as usize;
+    let copy_len = end_x_u - start_x_u;
+
+    let r_src = ((color >> 16) & 0xFF) as u32;
+    let g_src = ((color >> 8) & 0xFF) as u32;
+    let b_src = (color & 0xFF) as u32;
 
     for y in start_y..end_y {
         let dy = (y - dest_y) as usize;
-        let dest_row = y as usize * surface_w;
-        let src_row = dy * tw;
-        let diff_x = (start_x as i32 - dest_x) as usize;
+        let dest_row_base = y as usize * surface_w;
+        let src_row_base = dy * tw;
+        let x_off = (start_x - dest_x) as usize;
 
-        let src_slice = &src_pixels[src_row + diff_x..src_row + diff_x + copy_len];
-        let dest_slice = &mut buffer[dest_row + start_x..dest_row + start_x + copy_len];
+        let src_slice = &src_alpha[src_row_base + x_off..src_row_base + x_off + copy_len];
+        let dest_slice =
+            &mut buffer[dest_row_base + start_x_u..dest_row_base + start_x_u + copy_len];
 
-        // Since it's a card background, we use the source pixels directly (they already have rounding aplied)
-        // Actually, internal rounding uses raw color with 0 for outside.
-        // We should blend if we want transparency, but cards are usually opaque.
-        // Let's use direct copy for speed, assuming card is opaque.
         for i in 0..copy_len {
-            if src_slice[i] != 0 {
-                dest_slice[i] = src_slice[i];
+            let a = src_slice[i] as u32;
+            if a == 255 {
+                dest_slice[i] = color;
+            } else if a > 0 {
+                let d = dest_slice[i];
+                let r_dest = (d >> 16) & 0xFF;
+                let g_dest = (d >> 8) & 0xFF;
+                let b_dest = d & 0xFF;
+
+                let r = (r_src * a + r_dest * (255 - a)) / 255;
+                let g = (g_src * a + g_dest * (255 - a)) / 255;
+                let b = (b_src * a + b_dest * (255 - a)) / 255;
+                dest_slice[i] = (r << 16) | (g << 8) | b;
             }
         }
     }
 }
 
-pub fn draw_rounded_rect_internal(
-    buffer: &mut [u32],
+pub fn draw_rounded_rect_alpha_internal(
+    alpha: &mut [u8],
     surface_w: u32,
     x_off: u32,
     y_off: u32,
     w: u32,
     h: u32,
     r: u32,
-    color: u32,
 ) {
     let start_x = x_off;
     let start_y = y_off;
@@ -595,10 +613,10 @@ pub fn draw_rounded_rect_internal(
         };
 
         let row_idx = cy as usize * surface_w as usize;
-        let row = &mut buffer[row_idx..row_idx + surface_w as usize];
+        let row = &mut alpha[row_idx..row_idx + surface_w as usize];
 
         if dy == 0 {
-            row[start_x as usize..end_x as usize].fill(color);
+            row[start_x as usize..end_x as usize].fill(255);
         } else {
             let left_r_end = start_x + r;
             let right_r_start = end_x - r;
@@ -607,18 +625,18 @@ pub fn draw_rounded_rect_internal(
             for cx in start_x..left_r_end {
                 let dx = (start_x + r) as i32 - cx as i32;
                 if dx * dx + dy * dy <= r_sq {
-                    row[cx as usize] = color;
+                    row[cx as usize] = 255;
                 }
             }
             // Middle
             if left_r_end < right_r_start {
-                row[left_r_end as usize..right_r_start as usize].fill(color);
+                row[left_r_end as usize..right_r_start as usize].fill(255);
             }
             // Right corner
             for cx in right_r_start..end_x {
                 let dx = cx as i32 - (end_x - r - 1) as i32;
                 if dx * dx + dy * dy <= r_sq {
-                    row[cx as usize] = color;
+                    row[cx as usize] = 255;
                 }
             }
         }
@@ -684,14 +702,14 @@ pub fn draw_text_dw_h(
     let found_and_blit = {
         let cache = get_raster_cache().read().unwrap();
         if let Some(entry) = cache.map.get(&key) {
-            blit_pixels(
+            blit_alpha_pixels(
                 buffer,
                 surface_w,
                 x,
                 y,
                 entry.tw,
                 entry.th,
-                &entry.pixels,
+                &entry.alpha,
                 color,
                 x.max(0) as u32 + max_w,
                 y.max(0) as u32 + max_h,
@@ -842,29 +860,29 @@ fn draw_text_dw_ex_internal(
             rt.EndDraw(None, None).unwrap();
 
             let pixel_count = (tw * th) as usize;
-            let mut captured_pixels = vec![0u32; pixel_count];
+            let mut captured_alpha = vec![0u8; pixel_count];
             let src_w = sp.width;
             for dy in 0..th {
                 let src_off = (dy * src_w) as usize;
                 let dest_off = (dy * tw) as usize;
-                std::ptr::copy_nonoverlapping(
-                    scratch_bits.add(src_off),
-                    captured_pixels.as_mut_ptr().add(dest_off),
-                    tw as usize,
-                );
+                for dx in 0..tw {
+                    let pixel = *scratch_bits.add(src_off + dx as usize);
+                    // D2D White on Transparent: the blue channel (or any) represents the mask
+                    captured_alpha[dest_off + dx as usize] = (pixel & 0xFF) as u8;
+                }
             }
 
             // Blit to screen
             // If huge, we already baked the scroll into the transform, so blit at offset 0
             let effective_scroll = if is_huge { 0.0 } else { scroll_offset };
-            blit_pixels(
+            blit_alpha_pixels(
                 buffer,
                 surface_w,
                 x,
                 y,
                 tw,
                 th,
-                &captured_pixels,
+                &captured_alpha,
                 color,
                 x.max(0) as u32 + max_w,
                 y.max(0) as u32 + max_h,
@@ -887,7 +905,7 @@ fn draw_text_dw_ex_internal(
                 cache.map.insert(
                     key,
                     RasterEntry {
-                        pixels: captured_pixels,
+                        alpha: captured_alpha,
                         tw,
                         th,
                         pixel_count,
@@ -898,14 +916,14 @@ fn draw_text_dw_ex_internal(
     }
 }
 
-pub fn blit_pixels(
+pub fn blit_alpha_pixels(
     buffer: &mut [u32],
     surface_w: u32,
     dest_x: i32,
     dest_y: i32,
     tw: i32,
     th: i32,
-    src_pixels: &[u32],
+    src_alpha: &[u8],
     color: u32,
     max_w: u32,
     max_h: u32,
@@ -942,62 +960,35 @@ pub fn blit_pixels(
         let src_row = dy + src_y_off;
         let src_row_off = src_row as usize * tw_usize;
         let row_idx = y as usize * surface_w_usize;
-        let src_slice = &src_pixels[src_row_off + (start_x - dest_x) as usize..];
+        let src_slice = &src_alpha[src_row_off + (start_x - dest_x) as usize..];
         let dest_slice = &mut buffer[row_idx + start_x as usize..row_idx + end_x as usize];
 
-        blend_row(dest_slice, src_slice, sr, sg, sb);
+        blend_row_u8(dest_slice, src_slice, sr, sg, sb);
     }
 }
 
 #[inline(always)]
-fn blend_row(dest_slice: &mut [u32], src_slice: &[u32], sr: u32, sg: u32, sb: u32) {
+fn blend_row_u8(dest_slice: &mut [u32], src_alpha: &[u8], sr: u32, sg: u32, sb: u32) {
     let len = dest_slice.len();
     let mut idx = 0;
 
-    // Fixed color components for SIMD-like processing
-    // sr, sg, sb are constant across the row
     let color_v = (sr << 16) | (sg << 8) | sb;
 
-    while idx + 4 <= len {
-        for k in 0..4 {
-            let i = idx + k;
-            let pixel = src_slice[i];
-            let a = pixel >> 24;
-
-            if a == 255 {
-                dest_slice[i] = color_v;
-            } else if a > 0 {
-                let bg = dest_slice[i];
-
-                // Fast integer blend: (src * alpha + bg * (255 - alpha)) >> 8
-                // Note: we use 256 for slightly faster shift math, error is negligible for UI
-                let inv_a = 255 - a;
-
-                let rb = bg & 0x00FF00FF;
-                let g = bg & 0x0000FF00;
-
-                let rb_res = ((color_v & 0x00FF00FF) * a + rb * inv_a) >> 8;
-                let g_res = ((color_v & 0x0000FF00) * a + g * inv_a) >> 8;
-
-                dest_slice[i] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
-            }
-        }
-        idx += 4;
-    }
-
-    // Remainder
     while idx < len {
-        let pixel = src_slice[idx];
-        let a = pixel >> 24;
+        let a = src_alpha[idx] as u32;
+
         if a == 255 {
             dest_slice[idx] = color_v;
         } else if a > 0 {
             let bg = dest_slice[idx];
             let inv_a = 255 - a;
+
             let rb = bg & 0x00FF00FF;
             let g = bg & 0x0000FF00;
+
             let rb_res = ((color_v & 0x00FF00FF) * a + rb * inv_a) >> 8;
             let g_res = ((color_v & 0x0000FF00) * a + g * inv_a) >> 8;
+
             dest_slice[idx] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
         }
         idx += 1;

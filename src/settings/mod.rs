@@ -75,11 +75,7 @@ pub struct SettingsWindow {
     pub last_state_hash: u64,
     pub last_config_hash: u64,
 
-    // Layered Rendering Caches
-    pub static_layer_buffer: Vec<u32>,
-    pub skeleton_layer_buffer: Vec<u32>,
-    pub last_base_state_hash: u64,
-    pub last_skeleton_hash: u64,
+    // Layered Rendering Caches (Removed for memory savings)
     pub cursor_cache: Option<(i32, i32, u32, u32)>,
 }
 
@@ -135,10 +131,6 @@ impl SettingsWindow {
             is_dirty: true,
             last_state_hash: 0,
             last_config_hash: 0,
-            static_layer_buffer: Vec::new(),
-            skeleton_layer_buffer: Vec::new(),
-            last_base_state_hash: 0,
-            last_skeleton_hash: 0,
             cursor_cache: None,
             dragging_history_idx: None,
             dragging_sys_prompt: false,
@@ -273,12 +265,8 @@ impl SettingsWindow {
             return;
         }
 
-        let needs_skeleton_redraw = self.is_dirty
-            || self.last_skeleton_hash != skeleton_hash
-            || self.skeleton_layer_buffer.len() != (w * h) as usize;
-        let needs_static_redraw = needs_skeleton_redraw
-            || self.last_base_state_hash != base_state_hash
-            || self.static_layer_buffer.len() != (w * h) as usize;
+        let mut buffer = self.surface.buffer_mut().unwrap();
+        buffer.fill(COLOR_BG_APP);
 
         // Scaling (Target 800x750)
         let scale = (w as f32 / 800.0).min(h as f32 / 750.0);
@@ -289,253 +277,197 @@ impl SettingsWindow {
         let s = |val: u32| -> u32 { (val as f32 * scale + off_x) as u32 };
         let sy_val = |val: u32| -> u32 { (val as f32 * scale + off_y) as u32 };
 
-        // REDRAW SKELETON LAYER (SIDEBAR + HEADER)
-        if needs_skeleton_redraw {
-            self.skeleton_layer_buffer.resize((w * h) as usize, 0);
-            self.skeleton_layer_buffer.fill(COLOR_BG_APP);
-            let skel_buf = &mut self.skeleton_layer_buffer;
-
-            // Sidebar
-            draw_rect(skel_buf, w, 0, 0, s(180), h, COLOR_BG_SIDEBAR, w, h);
-            let icons = ["🏠", "🎨", "🧠", "📜", "ℹ️"];
-            for i in 0..5 {
-                let color = if self.current_tab == i {
-                    COLOR_PRIMARY
-                } else {
-                    COLOR_TEXT_SEC
-                };
-                draw_text(
-                    skel_buf,
-                    w,
-                    &[],
-                    icons[i],
-                    s(75) as i32,
-                    sy_val(60 + i as u32 * 80) as i32,
-                    sc(32.0),
-                    color,
-                );
-            }
-
-            // Header Background & Static Text
-            let (title, sub) = match self.current_tab {
-                0 => ("Home", "Welcome to Ameath!"),
-                1 => ("Appearance", "Customize your pet's look"),
-                2 => ("AI Brain", "Connect Ameath to the cloud"),
-                3 => ("History", "Recent Local Memory (Last 50)"),
-                _ => ("About", "Ameath v0.1.0"),
+        // DRAW UI CONTENT DIRECTLY TO SURFACE BUFFER
+        // Sidebar
+        draw_rect(&mut buffer, w, 0, 0, s(180), h, COLOR_BG_SIDEBAR, w, h);
+        let icons = ["🏠", "🎨", "🧠", "📜", "ℹ️"];
+        for i in 0..5 {
+            let color = if self.current_tab == i {
+                COLOR_PRIMARY
+            } else {
+                COLOR_TEXT_SEC
             };
-            let header_h = sy_val(120);
-            draw_rect(
-                skel_buf,
+            draw_text(
+                &mut buffer,
                 w,
-                s(180) as i32,
-                0,
-                w - s(180),
-                header_h,
-                COLOR_BG_APP,
+                &[],
+                icons[i],
+                s(75) as i32,
+                sy_val(60 + i as u32 * 80) as i32,
+                sc(32.0),
+                color,
+            );
+        }
+
+        // Header Background & Static Text
+        let (title, sub) = match self.current_tab {
+            0 => ("Home", "Welcome to Ameath!"),
+            1 => ("Appearance", "Customize your pet's look"),
+            2 => ("AI Brain", "Connect Ameath to the cloud"),
+            3 => ("History", "Recent Local Memory (Last 50)"),
+            _ => ("About", "Ameath v0.1.0"),
+        };
+        let header_h = sy_val(120);
+        draw_rect(
+            &mut buffer,
+            w,
+            s(180) as i32,
+            0,
+            w - s(180),
+            header_h,
+            COLOR_BG_APP,
+            w,
+            h,
+        );
+        draw_text(
+            &mut buffer,
+            w,
+            &[],
+            title,
+            s(220) as i32,
+            sy_val(40) as i32,
+            sc(32.0),
+            COLOR_TEXT_MAIN,
+        );
+        draw_text(
+            &mut buffer,
+            w,
+            &[],
+            sub,
+            s(220) as i32,
+            sy_val(85) as i32,
+            sc(16.0),
+            COLOR_TEXT_SEC,
+        );
+
+        // Tab Content
+        match self.current_tab {
+            0 => {
+                let (vh, ch, _) = tabs::home::draw(&mut buffer, w, h, scale, off_x, off_y);
+                self.viewport_height = vh;
+                self.content_height = ch;
+            }
+            1 => {
+                let mut gen_state = tabs::general::GeneralTabState {
+                    current_scale,
+                    current_mode,
+                    current_music_path,
+                    current_layer,
+                    scroll_offset: self.scroll_offset,
+                    available_monitors: &self.available_monitors,
+                    current_monitor_name: self.current_monitor_name.as_deref(),
+                };
+                let (vh, ch, _) =
+                    tabs::general::draw(&mut buffer, w, h, scale, off_x, off_y, &mut gen_state);
+                self.viewport_height = vh;
+                self.content_height = ch;
+            }
+            2 => {
+                let mut ai_state = tabs::ai::AiTabState {
+                    focused_field: self.focused_field,
+                    show_api_key: self.show_api_key,
+                    cursor_pos: self.cursor_pos,
+                    selection_start: self.selection_start,
+                    last_cursor_action: self.last_cursor_action,
+                    system_prompt_scroll_offset: self.system_prompt_scroll_offset,
+                    active_sys_prompt_content_height: &mut self.active_sys_prompt_content_height,
+                    active_sys_prompt_rect: &mut self.active_sys_prompt_rect,
+                    system_prompt_metrics_cache: &mut self.system_prompt_metrics_cache,
+                    system_prompt_hash: self.system_prompt_hash,
+                    draw_cursor: false,
+                };
+                let (vh, ch, cursor_rect) = tabs::ai::draw(
+                    &mut buffer,
+                    w,
+                    h,
+                    scale,
+                    off_x,
+                    off_y,
+                    self.scroll_offset,
+                    ai_config,
+                    &mut ai_state,
+                );
+                self.viewport_height = vh;
+                self.content_height = ch;
+                self.cursor_cache = cursor_rect;
+            }
+            3 => {
+                // Sync metadata for History tab once (On-demand caching)
+                if self.history_hashes.len() != self.history.len() {
+                    let old_len = self.history_hashes.len();
+                    self.history_hashes.resize(self.history.len(), 0);
+                    self.history_metrics_cache.resize(self.history.len(), 0.0);
+                    let max_text_w = sc(450.0) as u32;
+
+                    for i in old_len..self.history.len() {
+                        let (_, content) = &self.history[i];
+                        let mut h_hasher = DefaultHasher::new();
+                        content.hash(&mut h_hasher);
+                        let _h_hash = h_hasher.finish();
+                        let (_, mh) =
+                            crate::ui_primitives::get_metrics_dw(content, sc(16.0), max_text_w);
+                        self.history_metrics_cache[i] = mh;
+                    }
+                }
+                let mut history_state = tabs::history::HistoryTabState {
+                    history: &self.history,
+                    history_metrics_cache: &self.history_metrics_cache,
+                    history_scroll_states: &mut self.history_scroll_states,
+                    history_item_rects: &mut self.history_item_rects,
+                    scroll_offset: self.scroll_offset * scale,
+                };
+                let (vh, ch, _) =
+                    tabs::history::draw(&mut buffer, w, h, scale, off_x, off_y, &mut history_state);
+                self.viewport_height = vh;
+                self.content_height = ch;
+            }
+            4 => {
+                let (vh, ch, _) = tabs::about::draw(&mut buffer, w, h, scale, off_x, off_y);
+                self.viewport_height = vh;
+                self.content_height = ch;
+            }
+            _ => {}
+        }
+
+        // Global Scrollbar
+        if self.content_height > self.viewport_height {
+            let sb_w = sc(6.0) as u32;
+            let sb_h = sc(600.0);
+            let sb_x = s(785) as i32;
+            let sb_y = sy_val(130);
+            draw_rounded_rect(
+                &mut buffer,
+                w,
+                sb_x,
+                sb_y as i32,
+                sb_w,
+                sb_h as u32,
+                3,
+                COLOR_BG_LIGHT,
                 w,
                 h,
             );
-            draw_text(
-                skel_buf,
+            let ratio = (self.viewport_height / self.content_height).clamp(0.0, 1.0);
+            let hh = (sb_h * ratio).max(sc(30.0));
+            let max_sc = -(self.content_height - self.viewport_height);
+            let prog = if max_sc.abs() < 1.0 {
+                0.0
+            } else {
+                (self.scroll_offset / max_sc).clamp(0.0, 1.0)
+            };
+            let hy = sb_y as f32 + (sb_h - hh) * prog;
+            draw_rounded_rect(
+                &mut buffer,
                 w,
-                &[],
-                title,
-                s(220) as i32,
-                sy_val(40) as i32,
-                sc(32.0),
-                COLOR_TEXT_MAIN,
-            );
-            draw_text(
-                skel_buf,
+                sb_x,
+                hy as i32,
+                sb_w,
+                hh as u32,
+                3,
+                0x00CCCCCC,
                 w,
-                &[],
-                sub,
-                s(220) as i32,
-                sy_val(85) as i32,
-                sc(16.0),
-                COLOR_TEXT_SEC,
+                h,
             );
-
-            self.last_skeleton_hash = skeleton_hash;
-        }
-
-        // REDRAW STATIC LAYER (TAB CONTENT + SKELETON)
-        if needs_static_redraw {
-            self.static_layer_buffer.resize((w * h) as usize, 0);
-            self.static_layer_buffer
-                .copy_from_slice(&self.skeleton_layer_buffer);
-            let static_buf = &mut self.static_layer_buffer;
-
-            // Tab Content
-            match self.current_tab {
-                0 => {
-                    let (vh, ch, _) = tabs::home::draw(static_buf, w, h, scale, off_x, off_y);
-                    self.viewport_height = vh;
-                    self.content_height = ch;
-                }
-                1 => {
-                    let mut gen_state = tabs::general::GeneralTabState {
-                        current_scale,
-                        current_mode,
-                        current_music_path,
-                        current_layer,
-                        scroll_offset: self.scroll_offset,
-                        available_monitors: &self.available_monitors,
-                        current_monitor_name: self.current_monitor_name.as_deref(),
-                    };
-                    let (vh, ch, _) =
-                        tabs::general::draw(static_buf, w, h, scale, off_x, off_y, &mut gen_state);
-                    self.viewport_height = vh;
-                    self.content_height = ch;
-                }
-                2 => {
-                    let mut ai_state = tabs::ai::AiTabState {
-                        focused_field: self.focused_field,
-                        show_api_key: self.show_api_key,
-                        cursor_pos: self.cursor_pos,
-                        selection_start: self.selection_start,
-                        last_cursor_action: self.last_cursor_action,
-                        system_prompt_scroll_offset: self.system_prompt_scroll_offset,
-                        active_sys_prompt_content_height: &mut self
-                            .active_sys_prompt_content_height,
-                        active_sys_prompt_rect: &mut self.active_sys_prompt_rect,
-                        system_prompt_metrics_cache: &mut self.system_prompt_metrics_cache,
-                        system_prompt_hash: self.system_prompt_hash,
-                        draw_cursor: false,
-                    };
-                    let (vh, ch, cursor_rect) = tabs::ai::draw(
-                        static_buf,
-                        w,
-                        h,
-                        scale,
-                        off_x,
-                        off_y,
-                        self.scroll_offset,
-                        ai_config,
-                        &mut ai_state,
-                    );
-                    self.viewport_height = vh;
-                    self.content_height = ch;
-                    self.cursor_cache = cursor_rect;
-                }
-                3 => {
-                    // Sync metadata for History tab once (On-demand caching)
-                    if self.history_hashes.len() != self.history.len() {
-                        let old_len = self.history_hashes.len();
-                        self.history_hashes.resize(self.history.len(), 0);
-                        self.history_metrics_cache.resize(self.history.len(), 0.0);
-                        let max_text_w = sc(450.0) as u32;
-
-                        for i in old_len..self.history.len() {
-                            let (_, content) = &self.history[i];
-                            let mut h_hasher = DefaultHasher::new();
-                            content.hash(&mut h_hasher);
-                            let _h_hash = h_hasher.finish();
-                            let (_, mh) =
-                                crate::ui_primitives::get_metrics_dw(content, sc(16.0), max_text_w);
-                            self.history_metrics_cache[i] = mh;
-                        }
-                    }
-                    let mut history_state = tabs::history::HistoryTabState {
-                        history: &self.history,
-                        history_metrics_cache: &self.history_metrics_cache,
-                        history_scroll_states: &mut self.history_scroll_states,
-                        history_item_rects: &mut self.history_item_rects,
-                        scroll_offset: self.scroll_offset * scale,
-                    };
-                    let (vh, ch, _) = tabs::history::draw(
-                        static_buf,
-                        w,
-                        h,
-                        scale,
-                        off_x,
-                        off_y,
-                        &mut history_state,
-                    );
-                    self.viewport_height = vh;
-                    self.content_height = ch;
-                }
-                4 => {
-                    let (vh, ch, _) = tabs::about::draw(static_buf, w, h, scale, off_x, off_y);
-                    self.viewport_height = vh;
-                    self.content_height = ch;
-                }
-                _ => {}
-            }
-
-            // Global Scrollbar
-            if self.content_height > self.viewport_height {
-                let sb_w = sc(6.0) as u32;
-                let sb_h = sc(600.0);
-                let sb_x = s(785) as i32;
-                let sb_y = sy_val(130);
-                draw_rounded_rect(
-                    static_buf,
-                    w,
-                    sb_x,
-                    sb_y as i32,
-                    sb_w,
-                    sb_h as u32,
-                    3,
-                    COLOR_BG_LIGHT,
-                    w,
-                    h,
-                );
-                let ratio = (self.viewport_height / self.content_height).clamp(0.0, 1.0);
-                let hh = (sb_h * ratio).max(sc(30.0));
-                let max_sc = -(self.content_height - self.viewport_height);
-                let prog = if max_sc.abs() < 1.0 {
-                    0.0
-                } else {
-                    (self.scroll_offset / max_sc).clamp(0.0, 1.0)
-                };
-                let hy = sb_y as f32 + (sb_h - hh) * prog;
-                draw_rounded_rect(
-                    static_buf, w, sb_x, hy as i32, sb_w, hh as u32, 3, 0x00CCCCCC, w, h,
-                );
-            }
-            self.last_base_state_hash = base_state_hash;
-        }
-
-        let mut buffer = self.surface.buffer_mut().unwrap();
-
-        // 5. Layer Composition (Dirty Optimization)
-        let only_cursor_blink = !needs_static_redraw && !self.is_dirty;
-
-        if only_cursor_blink {
-            // SURGICAL RESTORE: If ONLY blinking, don't copy all 600k pixels.
-            // Just restore the old cursor area from the static cache.
-            if let Some((cx, cy, cw, ch)) = self.cursor_cache {
-                let surface_w = w as usize;
-                let static_buf = &self.static_layer_buffer;
-                let surface_h = h as usize;
-
-                for row in 0..ch {
-                    let target_y = cy + row as i32;
-                    if target_y < 0 || target_y >= surface_h as i32 {
-                        continue;
-                    }
-                    let y_idx = target_y as usize;
-                    let row_start = y_idx * surface_w;
-
-                    for col in 0..cw {
-                        let target_x = cx + col as i32;
-                        if target_x < 0 || target_x >= surface_w as i32 {
-                            continue;
-                        }
-                        let x_idx = target_x as usize;
-                        let idx = row_start + x_idx;
-
-                        if idx < buffer.len() && idx < static_buf.len() {
-                            buffer[idx] = static_buf[idx];
-                        }
-                    }
-                }
-            }
-        } else {
-            // Full copy if something else changed or first frame
-            buffer.copy_from_slice(&self.static_layer_buffer);
         }
 
         self.last_state_hash = current_hash;
