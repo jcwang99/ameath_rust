@@ -477,6 +477,46 @@ pub fn draw(
             input_h.saturating_sub(sc(24.0) as u32),
             state.system_prompt_scroll_offset * scale,
         );
+
+        // Draw System Prompt sub-scrollbar if content overflows
+        // Calculate content height directly (like history) to avoid unit mismatch issues
+        let view_h = input_h.saturating_sub(sc(24.0) as u32) as f32;
+        let (_, content_h_logical) =
+            get_metrics_dw(&ai_config.system_prompt, sc(14.0), sc(500.0 - 40.0) as u32);
+        let full_content_h = content_h_logical + sc(24.0); // content + padding in pixels
+
+        if full_content_h > view_h && view_h > 0.0 && full_content_h.is_finite() {
+            let sb_x = text_start_x + sc(500.0 - 40.0) as i32 + sc(4.0) as i32;
+            let sb_y = text_start_y;
+            let sb_w = sc(4.0) as u32;
+            let track_h = view_h as u32;
+
+            // Draw track
+            draw_rect(
+                buffer, w, sb_x, sb_y, sb_w, track_h, 0x00333333, // dark track
+                w, h,
+            );
+
+            // Calculate and draw handle
+            let ratio = view_h / full_content_h;
+            let handle_h = (view_h * ratio).max(sc(20.0)).min(view_h) as u32;
+            let max_scroll = (full_content_h - view_h).max(0.0);
+            let current_scroll = (-state.system_prompt_scroll_offset * scale)
+                .max(0.0)
+                .min(max_scroll);
+            let progress = if max_scroll > 0.0 {
+                current_scroll / max_scroll
+            } else {
+                0.0
+            };
+            let handle_y_offset = ((view_h - handle_h as f32) * progress) as i32;
+            let handle_y = sb_y + handle_y_offset.max(0).min(track_h as i32 - handle_h as i32);
+
+            draw_rect(
+                buffer, w, sb_x, handle_y, sb_w, handle_h, 0x007C4DFF, // accent color handle
+                w, h,
+            );
+        }
     }
 
     // Content height tracking

@@ -900,14 +900,18 @@ impl SettingsWindow {
                 let design_card_y = 120.0;
 
                 // Priority: Sub-scrollbar
+                // Note: dly already includes scroll_offset adjustment (dly = ly - scroll_offset)
+                // So we need to compare with design-space coordinates directly
                 if lx >= 230.0 + 480.0 && lx <= 230.0 + 480.0 + 8.0 {
-                    let input_y = design_card_y + 930.0 + 25.0;
-                    if dly >= input_y && dly <= input_y + 250.0 {
+                    let input_y = design_card_y + 930.0 + 25.0; // Design-space Y
+                    let track_h = 250.0;
+                    if dly >= input_y && dly <= input_y + track_h {
                         self.dragging_sys_prompt = true;
-                        let progress = ((dly - input_y) / 250.0).clamp(0.0, 1.0);
-                        // Bounds check
+                        // Calculate progress (0.0 at top, 1.0 at bottom)
+                        let progress = ((dly - input_y) / track_h).clamp(0.0, 1.0);
+                        // Calculate scroll offset (negative value, 0 at top, -max at bottom)
                         let max_scroll = (self.active_sys_prompt_content_height - 250.0).max(0.0);
-                        self.system_prompt_scroll_offset = progress as f32 * max_scroll;
+                        self.system_prompt_scroll_offset = -(progress * max_scroll as f64) as f32;
                         self.window.request_redraw();
                         return SettingsAction::None;
                     }

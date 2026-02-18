@@ -111,6 +111,50 @@ pub fn draw(
             view_h as u32,
             scroll * scale,
         );
+
+        // 4. Sub-scrollbar (if content overflows)
+        let (_, full_content_h) = get_metrics_dw_ex(
+            content,
+            sc(16.0),
+            sc(450.0) as u32,
+            "Microsoft YaHei",
+            false,
+            false,
+        );
+        if full_content_h > view_h {
+            let sb_x = s(230) as i32 + sc(480.0) as i32;
+            let sb_y = y_pos_i + sc(35.0) as i32;
+            let sb_w = sc(4.0) as u32;
+
+            // Draw track
+            draw_rect(
+                buffer,
+                w,
+                sb_x,
+                sb_y,
+                sb_w,
+                view_h as u32,
+                0x00333333, // dark track
+                w,
+                h,
+            );
+
+            // Calculate and draw handle
+            let ratio = view_h / full_content_h;
+            let handle_h = (view_h * ratio).max(sc(20.0)) as u32;
+            let max_scroll = full_content_h - view_h;
+            let progress = if max_scroll > 0.0 {
+                ((-scroll * scale).max(0.0).min(max_scroll)) / max_scroll
+            } else {
+                0.0
+            };
+            let handle_y = sb_y + ((view_h - handle_h as f32) * progress) as i32;
+
+            draw_rect(
+                buffer, w, sb_x, handle_y, sb_w, handle_h, 0x007C4DFF, // accent color handle
+                w, h,
+            );
+        }
     }
 
     let viewport_h = 600.0;

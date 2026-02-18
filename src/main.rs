@@ -77,8 +77,15 @@ fn main() {
     let move_frames_right = vec![anim::load_gif_from_memory(include_bytes!("../assets/gifs/move.gif"))];
     let drag_frames_right = vec![anim::load_gif_from_memory(include_bytes!("../assets/gifs/drag.gif"))];
 
-    // Load Loading GIF
+    // Load Loading GIF and pre-decompress all frames
     let loading_frames = anim::load_gif_from_memory(include_bytes!("../assets/icons/loading.gif"));
+    let loading_frames_decompressed: Vec<(i32, i32, Vec<u8>)> = loading_frames
+        .iter()
+        .map(|f| {
+            let data = lz4_flex::decompress_size_prepended(&f.lz4_data).unwrap_or_default();
+            (f.width, f.height, data)
+        })
+        .collect();
 
     // Generate Left-facing assets (DELETED mirroring - will flip on-the-fly)
 
@@ -262,6 +269,10 @@ fn main() {
     let mut composite_data: Vec<u8> = Vec::new();
     let mut decompressed_frame_buffer: Vec<u8> = Vec::new();
     let mut pomodoro_data: Vec<u8> = Vec::new();
+    
+    // Frame cache: key = (PetState, variant, frame_idx), value = decompressed pixels
+    // Cache up to 32 frames (approx 8MB for 256KB frames)
+    let mut frame_cache: lru::LruCache<(PetState, usize, usize), Vec<u8>> = lru::LruCache::new(std::num::NonZeroUsize::new(32).unwrap());
     let mut is_hovered = false;
 
     event_loop
@@ -764,7 +775,7 @@ fn main() {
                     
                     let mut loading_w_f = 0.0;
                     let mut loading_h_f = 0.0;
-                    if is_thinking && !loading_frames.is_empty() {
+                    if is_thinking && !loading_frames_decompressed.is_empty() {
                         loading_w_f = 32.0 * draw_scale as f64;
                         loading_h_f = 32.0 * draw_scale as f64;
                     }
@@ -886,8 +897,8 @@ fn main() {
                     
                     let layout_changed = (pet_off_x - last_render_pet_off.0).abs() > 0.1 || (pet_off_y - last_render_pet_off.1).abs() > 0.1 || pos_changed;
                     
-                    let loading_frame_idx = if is_thinking && !loading_frames.is_empty() {
-                        (Instant::now().duration_since(thinking_start.unwrap_or(Instant::now())).as_millis() / 100) as usize % loading_frames.len()
+                    let loading_frame_idx = if is_thinking && !loading_frames_decompressed.is_empty() {
+                        (Instant::now().duration_since(thinking_start.unwrap_or(Instant::now())).as_millis() / 100) as usize % loading_frames_decompressed.len()
                     } else { 0 };
                     let loading_frame_changed = is_thinking && loading_frame_idx != last_loading_frame_idx;
 
@@ -919,15 +930,25 @@ fn main() {
                         let win_h_usize = win_h as usize;
 
                         let facing_right = pet.facing_right;
-                        let frame = pet.current_frame();
                         
-                        // Decompress frame data on-the-fly
-                        if let Ok(data) = lz4_flex::decompress_size_prepended(&frame.lz4_data) {
-                            decompressed_frame_buffer = data;
+                        // Frame cache lookup - get key values first
+                        let cache_key = (pet.state, pet.current_anim_variant, pet.current_frame_idx);
+                        if let Some(cached_data) = frame_cache.get(&cache_key) {
+                            decompressed_frame_buffer.clone_from(cached_data);
                         } else {
-                            // Fallback if decompression fails
-                            decompressed_frame_buffer.resize((frame.width * frame.height * 4) as usize, 0);
+                            // Cache miss: decompress and store
+                            let frame = pet.current_frame();
+                            if let Ok(data) = lz4_flex::decompress_size_prepended(&frame.lz4_data) {
+                                frame_cache.put(cache_key, data.clone());
+                                decompressed_frame_buffer = data;
+                            } else {
+                                // Fallback if decompression fails
+                                decompressed_frame_buffer.resize((frame.width * frame.height * 4) as usize, 0);
+                            }
                         }
+                        
+                        // Get frame reference for rendering (it's the same frame we just cached)
+                        let frame = pet.current_frame();
                         
                         let dest_y_start = pet_off_y as usize;
                         let dest_x_start = pet_off_x as usize;
@@ -1007,32 +1028,29 @@ fn main() {
                                     });
                         }
 
-                        // 1.5 Loading
-                        if is_thinking && !loading_frames.is_empty() {
-                             let f_idx = loading_frame_idx;
-                             let f = &loading_frames[f_idx];
-                             
-                             // Decompress loading frame
-                             let loading_data = lz4_flex::decompress_size_prepended(&f.lz4_data).unwrap_or_default();
+                        // 1.5 Loading (uses pre-decompressed frames)
+                        if is_thinking && !loading_frames_decompressed.is_empty() {
+                             let f_idx = loading_frame_idx % loading_frames_decompressed.len();
+                             let (f_width, f_height, loading_data) = &loading_frames_decompressed[f_idx];
                              
                              let ly = loading_y_f as i32;
                              let lw = loading_w_f as i32;
                              let lh = loading_h_f as i32;
                               if ly >= 0 && lw > 0 && lh > 0 {
-                                  let sx = f.width as f32 / lw as f32;
-                                  let sy = f.height as f32 / lh as f32;
+                                  let sx = *f_width as f32 / lw as f32;
+                                  let sy = *f_height as f32 / lh as f32;
                                   for y in 0..lh as usize {
                                       let src_y = (y as f32 * sy) as usize;
-                                      if src_y >= f.height as usize { continue; }
+                                      if src_y >= *f_height as usize { continue; }
                                       let dy_i32 = ly + y as i32;
                                       if dy_i32 < 0 || dy_i32 >= win_h as i32 { continue; }
                                       
-                                      let src_row_off = src_y * f.width as usize * 4;
+                                      let src_row_off = src_y * *f_width as usize * 4;
                                       let dest_row_off = dy_i32 as usize * win_w_usize * 4;
                                       
                                       for x in 0..lw as usize {
                                           let src_x = (x as f32 * sx) as usize;
-                                          if src_x < f.width as usize {
+                                          if src_x < *f_width as usize {
                                               let s_idx = src_row_off + src_x * 4;
                                               let dx_i32 = loading_x_f as i32 + x as i32;
                                               if dx_i32 >= 0 && dx_i32 < win_w as i32 {
@@ -1056,10 +1074,14 @@ fn main() {
                             let bx = bx_f as i32;
                             if by >= 0 {
                                 if let Some(b_pixels) = bubble_manager.pixel_data() {
-                                    let bw = current_bubble_w_f as u32;
-                                    let bh = current_bubble_h_f as u32;
-
-                                    let b_u32 = unsafe {
+                                    // Use actual pixel data dimensions to avoid mismatch after render_to_buffer updates
+                                    let bw = bubble_manager.current_width as u32;
+                                    let bh = bubble_manager.current_height as u32;
+                                    
+                                    // Safety check: ensure pixel data size matches dimensions
+                                    let expected_len = (bw * bh * 4) as usize;
+                                    if b_pixels.len() == expected_len {
+                                        let b_u32 = unsafe {
                                         std::slice::from_raw_parts(
                                             b_pixels.as_ptr() as *const u32,
                                             b_pixels.len() / 4,
@@ -1082,6 +1104,7 @@ fn main() {
                                         bw,
                                         bh,
                                     );
+                                    }
                                 }
                             }
                         }

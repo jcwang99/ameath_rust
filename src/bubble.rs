@@ -37,7 +37,7 @@ struct BubbleRenderRequest {
 }
 
 struct BubbleRenderResult {
-    pixels: Vec<u8>,
+    pixels: Box<Vec<u8>>, // Use Box to avoid clone cost when sending through channel
     width: i32,
     height: i32,
     text_hash: u64,
@@ -164,9 +164,9 @@ impl SpeechBubble {
 
     // Main thread just copies the latest valid buffer
     pub fn render_to_buffer(&mut self, buffer_ptr: *mut u8, _scale: f32) {
-        // 1. Check for new results from worker
+        // 1. Check for new results from worker (zero-copy: just move the Box)
         while let Ok(res) = self.rx.try_recv() {
-            self.current_pixels = Some(res.pixels);
+            self.current_pixels = Some(*res.pixels); // Unbox the Vec
             self.current_width = res.width;
             self.current_height = res.height;
             self.last_rendered_hash = res.text_hash;
@@ -197,8 +197,9 @@ struct WorkerState {
     hdc_screen: HDC,
     #[cfg(target_os = "windows")]
     h_bitmap: windows::Win32::Graphics::Gdi::HBITMAP,
-    // Reuse buffer to avoid allocations
+    // Double buffering: one for rendering, one for sending
     pixel_buffer: Vec<u8>,
+    spare_buffer: Vec<u8>,
 }
 
 fn worker_loop(rx: Receiver<BubbleRenderRequest>, tx: Sender<BubbleRenderResult>) {
@@ -213,6 +214,7 @@ fn worker_loop(rx: Receiver<BubbleRenderRequest>, tx: Sender<BubbleRenderResult>
             hdc_screen,
             h_bitmap: windows::Win32::Graphics::Gdi::HBITMAP(0),
             pixel_buffer: Vec::new(),
+            spare_buffer: Vec::new(),
         }
     };
 
@@ -470,11 +472,11 @@ fn render_bubble_internal(
 
         GdiFlush();
 
-        // Copy out
-        if state.pixel_buffer.len() < total_bytes {
-            state.pixel_buffer.resize(total_bytes, 0);
+        // Copy out - ensure spare_buffer has enough capacity
+        if state.spare_buffer.len() < total_bytes {
+            state.spare_buffer.resize(total_bytes, 0);
         }
-        std::ptr::copy_nonoverlapping(pixel_ptr, state.pixel_buffer.as_mut_ptr(), total_bytes);
+        std::ptr::copy_nonoverlapping(pixel_ptr, state.spare_buffer.as_mut_ptr(), total_bytes);
 
         // Hashing
         let mut hasher = DefaultHasher::new();
@@ -483,8 +485,12 @@ fn render_bubble_internal(
 
         SelectObject(state.hdc_mem, old_bitmap);
 
+        // Double-buffer swap: move spare_buffer (now containing the rendered data) to the result
+        // and use the old pixel_buffer as the new spare_buffer for next render
+        std::mem::swap(&mut state.pixel_buffer, &mut state.spare_buffer);
+
         Some(BubbleRenderResult {
-            pixels: state.pixel_buffer.clone(), // Clone here is unavoidable for sending to another thread, BUT it's once per update, not per frame!
+            pixels: Box::new(std::mem::take(&mut state.pixel_buffer)), // Zero-copy: just move the Vec into Box
             width,
             height,
             text_hash,

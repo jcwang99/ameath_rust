@@ -30,6 +30,12 @@ pub struct Pomodoro {
     pub font_size: i32,
     pub visible: bool,
     pub current_scale: f32,
+
+    // Cached render data
+    cached_pixels: Option<Vec<u8>>,
+    cached_scale: f32,
+    cached_text: String,
+    needs_redraw: bool,
 }
 
 impl Pomodoro {
@@ -44,6 +50,10 @@ impl Pomodoro {
             font_size: 0,
             visible: false,
             current_scale: 1.0,
+            cached_pixels: None,
+            cached_scale: 0.0,
+            cached_text: String::new(),
+            needs_redraw: true,
         }
     }
 
@@ -88,14 +98,19 @@ impl Pomodoro {
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_update);
 
-        // Limit tick rate
+        // Limit tick rate to 10fps when running (100ms)
         if elapsed < Duration::from_millis(100) {
             return None;
         }
         self.last_update = now;
 
         if self.remaining > elapsed {
+            let old_remaining = self.remaining.as_secs();
             self.remaining -= elapsed;
+            // Only mark dirty if seconds changed (not every 100ms)
+            if self.remaining.as_secs() != old_remaining {
+                self.needs_redraw = true;
+            }
             None
         } else {
             // Phase switch
@@ -128,6 +143,36 @@ impl Pomodoro {
     }
 
     pub fn render_to_buffer(&mut self, buffer_ptr: *mut u8, scale: f32) {
+        let text = self.get_text();
+        let width = (BASE_POMODORO_WIDTH as f32 * scale) as usize;
+        let height = (BASE_POMODORO_HEIGHT as f32 * scale) as usize;
+        let total_bytes = width * height * 4;
+
+        // Check if we can use cached data
+        if !self.needs_redraw
+            && self.cached_pixels.is_some()
+            && (self.cached_scale - scale).abs() < 0.01
+            && self.cached_text == text
+            && self.cached_pixels.as_ref().unwrap().len() == total_bytes
+        {
+            // Use cached pixels
+            if !buffer_ptr.is_null() {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        self.cached_pixels.as_ref().unwrap().as_ptr(),
+                        buffer_ptr,
+                        total_bytes,
+                    );
+                }
+            }
+            return;
+        }
+
+        // Need to render fresh
+        self.needs_redraw = false;
+        self.cached_scale = scale;
+        self.cached_text = text.clone();
+
         #[cfg(target_os = "windows")]
         unsafe {
             let hdc_screen = GetDC(HWND(0));
@@ -341,6 +386,11 @@ impl Pomodoro {
                     *pixel_ptr.add(base + 3) = 255;
                 }
             }
+
+            // Cache the rendered pixels
+            let mut cached = Vec::with_capacity(w_usize * h_usize * 4);
+            cached.extend_from_slice(std::slice::from_raw_parts(pixel_ptr, w_usize * h_usize * 4));
+            self.cached_pixels = Some(cached);
 
             std::ptr::copy_nonoverlapping(pixel_ptr, buffer_ptr, w_usize * h_usize * 4);
 
