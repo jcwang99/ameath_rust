@@ -4,8 +4,7 @@ use crate::ui_primitives::*;
 use rusttype::Scale;
 
 thread_local! {
-    // Reduced from 512x512 (1MB) to 256x256 (256KB) to save memory
-    static AI_SCRATCH_BUFFER: std::cell::RefCell<Vec<u32>> = std::cell::RefCell::new(Vec::with_capacity(256 * 256));
+    static AI_SCRATCH_BUFFER: std::cell::RefCell<Vec<u32>> = std::cell::RefCell::new(Vec::with_capacity(512 * 512));
 }
 
 pub struct AiTabState<'a> {
@@ -478,44 +477,56 @@ pub fn draw(
             input_h.saturating_sub(sc(24.0) as u32),
             state.system_prompt_scroll_offset * scale,
         );
+    }
 
-        // Draw System Prompt sub-scrollbar if content overflows
-        // Calculate content height directly (like history) to avoid unit mismatch issues
-        let view_h = input_h.saturating_sub(sc(24.0) as u32) as f32;
-        let (_, content_h_logical) =
-            get_metrics_dw(&ai_config.system_prompt, sc(14.0), sc(500.0 - 40.0) as u32);
-        let full_content_h = content_h_logical + sc(24.0); // content + padding in pixels
+    // System Prompt Scrollbar
+    {
+        let fy = 930.0;
+        let fy_scaled_raw = card_y_raw + sc(fy) as i32;
+        let input_y_raw = fy_scaled_raw + sc(25.0) as i32;
+        let input_h = sc(250.0);
+        let max_width = sc(500.0 - 40.0) as u32;
+        let layout_h: f32 = if *state.system_prompt_metrics_cache > 0.0f32 {
+            *state.system_prompt_metrics_cache
+        } else {
+            let (_, mh) = get_metrics_dw(&ai_config.system_prompt, sc(14.0), max_width);
+            mh
+        };
+        let full_content_h_px = layout_h + sc(24.0);
 
-        if full_content_h > view_h && view_h > 0.0 && full_content_h.is_finite() {
-            let sb_x = text_start_x + sc(500.0 - 40.0) as i32 + sc(4.0) as i32;
-            let sb_y = text_start_y;
+        if full_content_h_px > input_h {
             let sb_w = sc(4.0) as u32;
-            let track_h = view_h as u32;
-
-            // Draw track
+            let sb_x = s(230 + 480);
             draw_rect(
-                buffer, w, sb_x, sb_y, sb_w, track_h, 0x00333333, // dark track
-                w, h,
+                buffer,
+                w,
+                sb_x as i32,
+                input_y_raw,
+                sb_w,
+                input_h as u32,
+                COLOR_BORDER,
+                w,
+                h,
             );
-
-            // Calculate and draw handle
-            let ratio = view_h / full_content_h;
-            let handle_h = (view_h * ratio).max(sc(20.0)).min(view_h) as u32;
-            let max_scroll = (full_content_h - view_h).max(0.0);
-            let current_scroll = (-state.system_prompt_scroll_offset * scale)
-                .max(0.0)
-                .min(max_scroll);
-            let progress = if max_scroll > 0.0 {
-                current_scroll / max_scroll
-            } else {
+            let ratio = input_h / full_content_h_px;
+            let thumb_h = (input_h * ratio).max(sc(20.0));
+            let max_scroll = -(full_content_h_px - input_h);
+            let progress = if max_scroll.abs() < 1.0 {
                 0.0
+            } else {
+                (state.system_prompt_scroll_offset * scale / max_scroll).clamp(0.0, 1.0)
             };
-            let handle_y_offset = ((view_h - handle_h as f32) * progress) as i32;
-            let handle_y = sb_y + handle_y_offset.max(0).min(track_h as i32 - handle_h as i32);
-
+            let thumb_y = input_y_raw as f32 + (input_h - thumb_h) * progress;
             draw_rect(
-                buffer, w, sb_x, handle_y, sb_w, handle_h, 0x007C4DFF, // accent color handle
-                w, h,
+                buffer,
+                w,
+                sb_x as i32,
+                thumb_y as i32,
+                sb_w,
+                thumb_h as u32,
+                0x00A0A0A0,
+                w,
+                h,
             );
         }
     }
