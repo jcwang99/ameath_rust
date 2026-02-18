@@ -77,6 +77,8 @@ pub struct SettingsWindow {
 
     // Layered Rendering Caches (Removed for memory savings)
     pub cursor_cache: Option<(i32, i32, u32, u32)>,
+    pub cursor_save_under: Vec<u32>,
+    pub last_base_state_hash: u64,
 }
 
 impl SettingsWindow {
@@ -132,6 +134,8 @@ impl SettingsWindow {
             last_state_hash: 0,
             last_config_hash: 0,
             cursor_cache: None,
+            cursor_save_under: Vec::new(),
+            last_base_state_hash: 0,
             dragging_history_idx: None,
             dragging_sys_prompt: false,
         }
@@ -266,6 +270,55 @@ impl SettingsWindow {
         }
 
         let mut buffer = self.surface.buffer_mut().unwrap();
+
+        // 4. SURGICAL CURSOR BLINK (CPU OPTIMIZATION)
+        let is_cursor_on = (self.last_cursor_action.elapsed().as_millis() / 500) % 2 == 0;
+        let only_blink = !self.is_dirty && base_state_hash == self.last_base_state_hash;
+
+        if only_blink {
+            if let Some((cx, cy, cw, ch)) = self.cursor_cache {
+                // Bounds check
+                if cx >= 0
+                    && cy >= 0
+                    && (cx + cw as i32) <= w as i32
+                    && (cy + ch as i32) <= h as i32
+                {
+                    // Restore background if we have it
+                    if !self.cursor_save_under.is_empty() {
+                        let mut idx = 0;
+                        for row in 0..ch {
+                            let y_idx = (cy + row as i32) as usize * w as usize;
+                            for col in 0..cw {
+                                buffer[y_idx + (cx + col as i32) as usize] =
+                                    self.cursor_save_under[idx];
+                                idx += 1;
+                            }
+                        }
+                    }
+
+                    if is_cursor_on && self.focused_field.is_some() {
+                        // Save new background
+                        self.cursor_save_under.clear();
+                        for row in 0..ch {
+                            let y_idx = (cy + row as i32) as usize * w as usize;
+                            for col in 0..cw {
+                                self.cursor_save_under
+                                    .push(buffer[y_idx + (cx + col as i32) as usize]);
+                            }
+                        }
+                        // Draw cursor
+                        draw_rect(&mut buffer, w, cx, cy, cw, ch, COLOR_PRIMARY, w, h);
+                    } else {
+                        self.cursor_save_under.clear();
+                    }
+
+                    self.last_state_hash = current_hash;
+                    buffer.present().unwrap();
+                    return;
+                }
+            }
+        }
+
         buffer.fill(COLOR_BG_APP);
 
         // Scaling (Target 800x750)
@@ -470,24 +523,27 @@ impl SettingsWindow {
             );
         }
 
+        self.last_base_state_hash = base_state_hash;
         self.last_state_hash = current_hash;
         self.is_dirty = false;
 
-        // Rendering params (Already calculated in outer scope)
-
-        // 6. Transient Layer (Cursor)
-        let elapsed_ms = self.last_cursor_action.elapsed().as_millis();
-        let is_cursor_on = (elapsed_ms / 500) % 2 == 0;
-
+        // 5. POST-DRAW CURSOR (Full Redraw Case)
+        self.cursor_save_under.clear();
         if is_cursor_on && self.focused_field.is_some() {
             if let Some((cx, cy, cw, ch)) = self.cursor_cache {
-                // MICRO-REDRAW: Just draw the primary color rect over the buffer
-                // Use absolute bounds check
                 if cx >= 0
                     && cy >= 0
                     && (cx + cw as i32) <= w as i32
                     && (cy + ch as i32) <= h as i32
                 {
+                    // Save pixels BEFORE drawing cursor
+                    for row in 0..ch {
+                        let y_idx = (cy + row as i32) as usize * w as usize;
+                        for col in 0..cw {
+                            self.cursor_save_under
+                                .push(buffer[y_idx + (cx + col as i32) as usize]);
+                        }
+                    }
                     draw_rect(&mut buffer, w, cx, cy, cw, ch, COLOR_PRIMARY, w, h);
                 }
             }

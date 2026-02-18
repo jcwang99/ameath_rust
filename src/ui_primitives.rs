@@ -553,10 +553,6 @@ fn blit_alpha(
     let end_x_u = end_x as usize;
     let copy_len = end_x_u - start_x_u;
 
-    let r_src = ((color >> 16) & 0xFF) as u32;
-    let g_src = ((color >> 8) & 0xFF) as u32;
-    let b_src = (color & 0xFF) as u32;
-
     for y in start_y..end_y {
         let dy = (y - dest_y) as usize;
         let dest_row_base = y as usize * surface_w;
@@ -569,19 +565,20 @@ fn blit_alpha(
 
         for i in 0..copy_len {
             let a = src_slice[i] as u32;
-            if a == 255 {
-                dest_slice[i] = color;
-            } else if a > 0 {
-                let d = dest_slice[i];
-                let r_dest = (d >> 16) & 0xFF;
-                let g_dest = (d >> 8) & 0xFF;
-                let b_dest = d & 0xFF;
+            let d = dest_slice[i];
 
-                let r = (r_src * a + r_dest * (255 - a)) / 255;
-                let g = (g_src * a + g_dest * (255 - a)) / 255;
-                let b = (b_src * a + b_dest * (255 - a)) / 255;
-                dest_slice[i] = (r << 16) | (g << 8) | b;
-            }
+            // Branchless SIMD-friendly blending
+            let rb_dest = d & 0x00FF00FF;
+            let g_dest = d & 0x0000FF00;
+
+            let rb_src = color & 0x00FF00FF;
+            let g_src = color & 0x0000FF00;
+
+            let inv_a = 255 - a;
+            let rb_res = (rb_src * a + rb_dest * inv_a) >> 8;
+            let g_res = (g_src * a + g_dest * inv_a) >> 8;
+
+            dest_slice[i] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
         }
     }
 }
@@ -970,28 +967,20 @@ pub fn blit_alpha_pixels(
 #[inline(always)]
 fn blend_row_u8(dest_slice: &mut [u32], src_alpha: &[u8], sr: u32, sg: u32, sb: u32) {
     let len = dest_slice.len();
-    let mut idx = 0;
-
     let color_v = (sr << 16) | (sg << 8) | sb;
 
-    while idx < len {
-        let a = src_alpha[idx] as u32;
+    for i in 0..len {
+        let a = src_alpha[i] as u32;
+        let bg = dest_slice[i];
+        let inv_a = 255 - a;
 
-        if a == 255 {
-            dest_slice[idx] = color_v;
-        } else if a > 0 {
-            let bg = dest_slice[idx];
-            let inv_a = 255 - a;
+        let rb = bg & 0x00FF00FF;
+        let g = bg & 0x0000FF00;
 
-            let rb = bg & 0x00FF00FF;
-            let g = bg & 0x0000FF00;
+        let rb_res = ((color_v & 0x00FF00FF) * a + rb * inv_a) >> 8;
+        let g_res = ((color_v & 0x0000FF00) * a + g * inv_a) >> 8;
 
-            let rb_res = ((color_v & 0x00FF00FF) * a + rb * inv_a) >> 8;
-            let g_res = ((color_v & 0x0000FF00) * a + g * inv_a) >> 8;
-
-            dest_slice[idx] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
-        }
-        idx += 1;
+        dest_slice[i] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
     }
 }
 
