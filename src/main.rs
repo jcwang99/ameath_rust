@@ -1041,41 +1041,32 @@ fn main() {
                             let bx = bx_f as i32;
                             if by >= 0 {
                                 if let Some(b_pixels) = bubble_manager.pixel_data() {
-                                    let bw = current_bubble_w_f as usize;
-                                    let bh = current_bubble_h_f as usize;
-                                    
-                                    // Parallelized bubble compositing using rayon
-                                    composite_data
-                                        .par_chunks_mut(win_w_usize * 4)
-                                        .enumerate()
-                                        .skip(by as usize)
-                                        .take(bh)
-                                        .for_each(|(dy, dest_row): (usize, &mut [u8])| {
-                                            let y = dy - by as usize;
-                                            let src_row = &b_pixels[y * bw * 4..(y + 1) * bw * 4];
-                                            for x in 0..bw {
-                                                let s_idx = x * 4;
-                                                let alpha = src_row[s_idx + 3];
-                                                if alpha > 0 {
-                                                    let dx = bx as usize + x;
-                                                    if dx < win_w_usize {
-                                                        let d_off = dx * 4;
-                                                        if d_off + 4 <= dest_row.len() {
-                                                            if alpha == 255 {
-                                                                dest_row[d_off..d_off+4].copy_from_slice(&src_row[s_idx..s_idx+4]);
-                                                            } else {
-                                                                // Simple lerp alpha blending if needed (though D2D usually gives 255 for opaque areas)
-                                                                let inv_a = 255 - alpha;
-                                                                for c in 0..3 {
-                                                                    dest_row[d_off+c] = ((src_row[s_idx+c] as u32 * alpha as u32 + dest_row[d_off+c] as u32 * inv_a as u32) / 255) as u8;
-                                                                }
-                                                                dest_row[d_off+3] = 255; // Keep opaque or max
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        });
+                                    let bw = current_bubble_w_f as u32;
+                                    let bh = current_bubble_h_f as u32;
+
+                                    let b_u32 = unsafe {
+                                        std::slice::from_raw_parts(
+                                            b_pixels.as_ptr() as *const u32,
+                                            b_pixels.len() / 4,
+                                        )
+                                    };
+                                    let comp_u32 = unsafe {
+                                        std::slice::from_raw_parts_mut(
+                                            composite_data.as_mut_ptr() as *mut u32,
+                                            composite_data.len() / 4,
+                                        )
+                                    };
+
+                                    ui_primitives::blit_32bit_premultiplied(
+                                        comp_u32,
+                                        win_w as u32,
+                                        win_h as u32,
+                                        b_u32,
+                                        bx,
+                                        by,
+                                        bw,
+                                        bh,
+                                    );
                                 }
                             }
                         }

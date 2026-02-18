@@ -1246,3 +1246,72 @@ pub fn get_selection_rects(
 ) -> Vec<(f32, f32, f32, f32)> {
     Vec::new()
 }
+
+pub fn blit_32bit_premultiplied(
+    buffer: &mut [u32],
+    surface_w: u32,
+    surface_h: u32,
+    src_pixels: &[u32],
+    dest_x: i32,
+    dest_y: i32,
+    max_w: u32,
+    h: u32,
+) {
+    if dest_y < 0
+        || (dest_y + h as i32) > surface_h as i32
+        || dest_x < -(max_w as i32)
+        || dest_x >= surface_w as i32
+    {
+        return;
+    }
+
+    let tw = max_w as usize;
+    let start_x = dest_x.max(0);
+    let end_x = (dest_x + max_w as i32).min(surface_w as i32);
+    if start_x >= end_x {
+        return;
+    }
+
+    let surface_w = surface_w as usize;
+    let start_x_u = start_x as usize;
+    let end_x_u = end_x as usize;
+    let copy_len = end_x_u - start_x_u;
+    let x_off = (start_x - dest_x) as usize;
+
+    for y in 0..h {
+        let dy = (dest_y + y as i32) as usize;
+        let dest_row_base = dy * surface_w;
+        let src_row_base = y as usize * tw;
+
+        let src_slice = &src_pixels[src_row_base + x_off..src_row_base + x_off + copy_len];
+        let dest_slice =
+            &mut buffer[dest_row_base + start_x_u..dest_row_base + start_x_u + copy_len];
+
+        for i in 0..copy_len {
+            let s = src_slice[i];
+            let a = (s >> 24) & 0xFF;
+            if a == 0 {
+                continue;
+            }
+            if a == 255 {
+                dest_slice[i] = s;
+                continue;
+            }
+
+            let d = dest_slice[i];
+            let inv_a = 255 - a;
+
+            // Premultiplied: dest = src + dest * (255 - a) / 255
+            let rb_dest = d & 0x00FF00FF;
+            let g_dest = d & 0x0000FF00;
+
+            let rb_src = s & 0x00FF00FF;
+            let g_src = s & 0x0000FF00;
+
+            let rb_res = rb_src + ((rb_dest * inv_a) >> 8);
+            let g_res = g_src + ((g_dest * inv_a) >> 8);
+
+            dest_slice[i] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
+        }
+    }
+}

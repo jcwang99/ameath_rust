@@ -36,9 +36,12 @@ pub fn draw(
 
     // Process items (O(Visible) for drawing)
     let min_y_vis = sy_val(120) as f32;
-    let max_y_vis = h as f32;
 
-    for i in 0..state.history.len() {
+    let start_idx = ((-(current_y - min_y_vis) / total_item_h).floor() as i32).max(0) as usize;
+    let end_idx =
+        (start_idx + (h as f32 / total_item_h).ceil() as usize + 2).min(state.history.len());
+
+    for i in start_idx..end_idx {
         let (role, content) = &state.history[i];
         let is_user = role == "user";
         let card_color = if is_user { 0x003A3A42 } else { 0x002D2D35 };
@@ -51,18 +54,13 @@ pub fn draw(
         let logical_y = 140.0 + (i as f64 * 190.0);
         let logical_h = 180.0;
 
-        // Add to rects for click detection
+        // Add to rects for click detection (We can still push only visible ones or handling it differently)
         state
             .history_item_rects
             .push((230.0, logical_y, 720.0, logical_y + logical_h));
 
         let y_pos = current_y + (i as f32 * total_item_h);
         let y_pos_i = y_pos as i32;
-
-        // Visibility Check
-        if (y_pos + item_h_fixed) < min_y_vis || y_pos > max_y_vis {
-            continue;
-        }
 
         let scroll = state.history_scroll_states[i];
         let full_content_h = state.history_metrics_cache[i].max(sc(20.0));
