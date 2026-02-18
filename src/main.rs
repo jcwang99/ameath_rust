@@ -57,6 +57,7 @@ fn main() {
     let _guard = rt.enter();
 
     let event_loop = EventLoop::new().unwrap();
+    let settings_proxy = event_loop.create_proxy();
 
     // Global Hotkey Setup
     let hotkey_manager = GlobalHotKeyManager::new().unwrap();
@@ -287,6 +288,11 @@ fn main() {
             }
 
             match event {
+                Event::UserEvent(()) => {
+                    if let Some(sw) = &settings_win {
+                        sw.request_redraw();
+                    }
+                }
                 Event::WindowEvent { window_id, event } => {
                     if let WindowEvent::ModifiersChanged(modifiers) = &event {
                         modifier_state = modifiers.state();
@@ -385,7 +391,7 @@ fn main() {
                                                                 }
                                                                 menu::MenuAction::Settings => {
                                                                     if settings_win.is_none() {
-                                                                         let mut sw = SettingsWindow::new(elwt, winit_icon.clone());
+                                                                         let mut sw = SettingsWindow::new(elwt, settings_proxy.clone(), winit_icon.clone());
                                                                          sw.current_monitor_name = window_config.monitor_name.clone();
                                                                          sw.request_redraw();
                                                                          settings_win = Some(sw);
@@ -684,7 +690,7 @@ fn main() {
                     if let Ok(event) = MenuEvent::receiver().try_recv() {
                         if event.id == settings_id {
                             if settings_win.is_none() {
-                                let sw = SettingsWindow::new(elwt, winit_icon.clone());
+                                let sw = SettingsWindow::new(elwt, settings_proxy.clone(), winit_icon.clone());
                                 sw.request_redraw();
                                 settings_win = Some(sw);
                             } else if let Some(sw) = &settings_win {

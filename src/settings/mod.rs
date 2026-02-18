@@ -7,8 +7,260 @@ use softbuffer::{Context, Surface};
 // use windows::core::ComInterface;
 // use windows::Win32::Graphics::Direct2D::ID2D1DCRenderTarget;
 use std::rc::Rc;
-use winit::event_loop::EventLoopWindowTarget;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex};
+use winit::event_loop::{EventLoopProxy, EventLoopWindowTarget};
 use winit::window::Window;
+
+pub struct SettingsRenderInput {
+    pub w: u32,
+    pub h: u32,
+    pub current_tab: usize,
+    pub scroll_offset: f32,
+    pub focused_field: Option<usize>,
+    pub show_api_key: bool,
+    pub cursor_pos: usize,
+    pub selection_start: Option<usize>,
+    pub last_cursor_action: std::time::Instant,
+    pub system_prompt_scroll_offset: f32,
+    pub history: Vec<(String, String)>,
+    pub history_scroll_states: Vec<f32>,
+    pub history_metrics_cache: Vec<f32>,
+    pub system_prompt_hash: u64,
+    pub system_prompt_metrics_cache: f32,
+    pub current_scale: f32,
+    pub current_mode: String,
+    pub current_music_path: Option<std::path::PathBuf>,
+    pub current_layer: crate::types::WindowLayer,
+    pub ai_config: crate::types::AiConfig,
+}
+
+pub struct RenderResult {
+    pub pixels: Vec<u32>,
+    pub vh: f32,
+    pub ch: f32,
+    pub cursor_rect: Option<(i32, i32, u32, u32)>,
+    pub w: u32,
+    pub h: u32,
+    pub hash: u64,
+    pub active_sys_prompt_rect: Option<(f64, f64, f64, f64)>,
+    pub active_sys_prompt_content_height: f32,
+    pub history_item_rects: Vec<(f64, f64, f64, f64)>,
+}
+
+pub struct RenderRequest {
+    pub input: SettingsRenderInput,
+    pub hash: u64,
+    pub buffer: Vec<u32>,
+}
+
+fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) -> RenderResult {
+    let w = input.w;
+    let h = input.h;
+    let mut vh = 0.0;
+    let mut ch = 0.0;
+    let mut cursor_rect = None;
+    let mut active_sys_prompt_rect = None;
+    let mut active_sys_prompt_content_height = 0.0f32;
+    let mut history_item_rects = Vec::new();
+
+    buffer.fill(COLOR_BG_APP);
+
+    let scale = (w as f32 / 800.0).min(h as f32 / 750.0);
+    let off_x = (w as f32 - 800.0 * scale) / 2.0;
+    let off_y = (h as f32 - 750.0 * scale) / 2.0;
+
+    let sc = |val: f32| -> f32 { val * scale };
+    let s = |val: u32| -> u32 { (val as f32 * scale + off_x) as u32 };
+    let sy_val = |val: u32| -> u32 { (val as f32 * scale + off_y) as u32 };
+
+    // Sidebar
+    draw_rect(buffer, w, 0, 0, s(180), h, COLOR_BG_SIDEBAR, w, h);
+    let icons = ["🏠", "🎨", "🧠", "📜", "ℹ️"];
+    for i in 0..5 {
+        let color = if input.current_tab == i {
+            COLOR_PRIMARY
+        } else {
+            COLOR_TEXT_SEC
+        };
+        draw_text(
+            buffer,
+            w,
+            &[],
+            icons[i],
+            s(75) as i32,
+            sy_val(60 + i as u32 * 80) as i32,
+            sc(32.0),
+            color,
+        );
+    }
+
+    // Header
+    let (title, sub) = match input.current_tab {
+        0 => ("Home", "Welcome to Ameath!"),
+        1 => ("Appearance", "Customize your pet's look"),
+        2 => ("AI Brain", "Connect Ameath to the cloud"),
+        3 => ("History", "Recent Local Memory (Last 50)"),
+        _ => ("About", "Ameath v0.1.0"),
+    };
+    let header_h = sy_val(120);
+    draw_rect(
+        buffer,
+        w,
+        s(180) as i32,
+        0,
+        w - s(180),
+        header_h,
+        COLOR_BG_APP,
+        w,
+        h,
+    );
+    draw_text(
+        buffer,
+        w,
+        &[],
+        title,
+        s(220) as i32,
+        sy_val(40) as i32,
+        sc(32.0),
+        COLOR_TEXT_MAIN,
+    );
+    draw_text(
+        buffer,
+        w,
+        &[],
+        sub,
+        s(220) as i32,
+        sy_val(85) as i32,
+        sc(16.0),
+        COLOR_TEXT_SEC,
+    );
+
+    // Tab Content
+    match input.current_tab {
+        0 => {
+            let (v, c, _) = tabs::home::draw(buffer, w, h, scale, off_x, off_y);
+            vh = v;
+            ch = c;
+        }
+        1 => {
+            let mut gen_state = tabs::general::GeneralTabState {
+                current_scale: input.current_scale,
+                current_mode: &input.current_mode,
+                current_music_path: input.current_music_path.as_deref(),
+                current_layer: input.current_layer,
+                scroll_offset: input.scroll_offset,
+                available_monitors: &[],
+                current_monitor_name: None,
+            };
+            let (v, c, _) = tabs::general::draw(buffer, w, h, scale, off_x, off_y, &mut gen_state);
+            vh = v;
+            ch = c;
+        }
+        2 => {
+            let mut sys_metrics = input.system_prompt_metrics_cache;
+            let mut local_sys_rect = None;
+            let mut local_sys_content_h = 0.0f32;
+            let mut ai_state = tabs::ai::AiTabState {
+                focused_field: input.focused_field,
+                show_api_key: input.show_api_key,
+                cursor_pos: input.cursor_pos,
+                selection_start: input.selection_start,
+                last_cursor_action: input.last_cursor_action,
+                system_prompt_scroll_offset: input.system_prompt_scroll_offset,
+                active_sys_prompt_content_height: &mut local_sys_content_h,
+                active_sys_prompt_rect: &mut local_sys_rect,
+                system_prompt_metrics_cache: &mut sys_metrics,
+                system_prompt_hash: input.system_prompt_hash,
+                draw_cursor: false,
+            };
+            let (v, c, rect) = tabs::ai::draw(
+                buffer,
+                w,
+                h,
+                scale,
+                off_x,
+                off_y,
+                input.scroll_offset,
+                &input.ai_config,
+                &mut ai_state,
+            );
+            vh = v;
+            ch = c;
+            cursor_rect = rect;
+            active_sys_prompt_rect = local_sys_rect;
+            active_sys_prompt_content_height = local_sys_content_h;
+        }
+        3 => {
+            let mut scroll_states = input.history_scroll_states.clone();
+            let mut local_rects = Vec::new();
+            let mut history_state = tabs::history::HistoryTabState {
+                history: &input.history,
+                history_metrics_cache: &input.history_metrics_cache,
+                history_scroll_states: &mut scroll_states,
+                history_item_rects: &mut local_rects,
+                scroll_offset: input.scroll_offset * scale,
+            };
+            let (v, c, _) =
+                tabs::history::draw(buffer, w, h, scale, off_x, off_y, &mut history_state);
+            vh = v;
+            ch = c;
+            history_item_rects = local_rects;
+        }
+        4 => {
+            let (v, c, _) = tabs::about::draw(buffer, w, h, scale, off_x, off_y);
+            vh = v;
+            ch = c;
+        }
+        _ => {}
+    }
+
+    // Scrollbar
+    if ch > vh {
+        let sb_w = sc(6.0) as u32;
+        let sb_h = sc(600.0);
+        let sb_x = s(785) as i32;
+        let sb_y = sy_val(130);
+        draw_rounded_rect(
+            buffer,
+            w,
+            sb_x,
+            sb_y as i32,
+            sb_w,
+            sb_h as u32,
+            3,
+            COLOR_BG_LIGHT,
+            w,
+            h,
+        );
+        let ratio = (vh / ch).clamp(0.0, 1.0);
+        let hh = (sb_h * ratio).max(sc(30.0));
+        let max_sc = -(ch - vh);
+        let prog = if max_sc.abs() < 1.0 {
+            0.0
+        } else {
+            (input.scroll_offset / max_sc).clamp(0.0, 1.0)
+        };
+        let hy = sb_y as f32 + (sb_h - hh) * prog;
+        draw_rounded_rect(
+            buffer, w, sb_x, hy as i32, sb_w, hh as u32, 3, 0x00CCCCCC, w, h,
+        );
+    }
+
+    RenderResult {
+        pixels: buffer.to_vec(),
+        vh,
+        ch,
+        cursor_rect,
+        w,
+        h,
+        hash,
+        active_sys_prompt_rect,
+        active_sys_prompt_content_height,
+        history_item_rects,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
@@ -68,6 +320,7 @@ pub struct SettingsWindow {
     // Layout
     pub is_dragging_scrollbar: bool,
     pub last_size: (u32, u32),
+    pub last_render_scale: f32,
     pub available_monitors: Vec<(String, String)>,
     pub current_monitor_name: Option<String>,
 
@@ -79,10 +332,21 @@ pub struct SettingsWindow {
     pub cursor_cache: Option<(i32, i32, u32, u32)>,
     pub cursor_save_under: Vec<u32>,
     pub last_base_state_hash: u64,
+
+    // Multithreaded Buffer
+    pub render_back_buffer: Arc<Mutex<Option<RenderResult>>>,
+    pub render_in_progress: Arc<AtomicBool>,
+    pub idle_buffers: Arc<Mutex<Vec<Vec<u32>>>>,
+    pub render_tx: Sender<RenderRequest>,
+    pub _proxy: EventLoopProxy<()>,
 }
 
 impl SettingsWindow {
-    pub fn new(event_loop: &EventLoopWindowTarget<()>, icon: Option<winit::window::Icon>) -> Self {
+    pub fn new(
+        event_loop: &EventLoopWindowTarget<()>,
+        proxy: EventLoopProxy<()>,
+        icon: Option<winit::window::Icon>,
+    ) -> Self {
         let window = Rc::new(
             winit::window::WindowBuilder::new()
                 .with_title("Ameath Settings")
@@ -97,6 +361,32 @@ impl SettingsWindow {
 
         let context = Context::new(window.clone()).unwrap();
         let surface = Surface::new(&context, window.clone()).unwrap();
+
+        let available_monitors: Vec<(String, String)> = event_loop
+            .available_monitors()
+            .map(|m| (m.name().unwrap_or_default(), m.name().unwrap_or_default()))
+            .collect();
+
+        let render_back_buffer = Arc::new(Mutex::new(None));
+        let render_in_progress = Arc::new(AtomicBool::new(false));
+        let idle_buffers = Arc::new(Mutex::new(Vec::with_capacity(2)));
+        let (render_tx, render_rx) = mpsc::channel::<RenderRequest>();
+
+        let rb_ptr = render_back_buffer.clone();
+        let rip_ptr = render_in_progress.clone();
+        let p_ptr = proxy.clone();
+
+        std::thread::spawn(move || {
+            while let Ok(mut req) = render_rx.recv() {
+                let res = render_internal(&mut req.buffer, req.input, req.hash);
+                {
+                    let mut lock = rb_ptr.lock().unwrap();
+                    *lock = Some(res);
+                }
+                rip_ptr.store(false, Ordering::SeqCst);
+                let _ = p_ptr.send_event(());
+            }
+        });
 
         Self {
             window,
@@ -124,12 +414,10 @@ impl SettingsWindow {
             system_prompt_metrics_cache: 0.0,
             config_dirty: true,
             is_dragging_scrollbar: false,
-            available_monitors: event_loop
-                .available_monitors()
-                .map(|m| (m.name().unwrap_or_default(), m.name().unwrap_or_default()))
-                .collect(),
+            available_monitors,
             current_monitor_name: None,
             last_size: (800, 750),
+            last_render_scale: 1.0,
             is_dirty: true,
             last_state_hash: 0,
             last_config_hash: 0,
@@ -138,6 +426,11 @@ impl SettingsWindow {
             last_base_state_hash: 0,
             dragging_history_idx: None,
             dragging_sys_prompt: false,
+            render_back_buffer,
+            render_in_progress,
+            idle_buffers,
+            render_tx,
+            _proxy: proxy,
         }
     }
 
@@ -172,6 +465,39 @@ impl SettingsWindow {
         &self.window
     }
 
+    fn create_render_input(
+        &self,
+        current_scale: f32,
+        current_mode: &str,
+        current_music_path: Option<&std::path::Path>,
+        current_layer: crate::types::WindowLayer,
+        ai_config: &crate::types::AiConfig,
+    ) -> SettingsRenderInput {
+        let size = self.window.inner_size();
+        SettingsRenderInput {
+            w: size.width,
+            h: size.height,
+            current_tab: self.current_tab,
+            scroll_offset: self.scroll_offset,
+            focused_field: self.focused_field,
+            show_api_key: self.show_api_key,
+            cursor_pos: self.cursor_pos,
+            selection_start: self.selection_start,
+            last_cursor_action: self.last_cursor_action,
+            system_prompt_scroll_offset: self.system_prompt_scroll_offset,
+            history: self.history.clone(),
+            history_scroll_states: self.history_scroll_states.clone(),
+            history_metrics_cache: self.history_metrics_cache.clone(),
+            system_prompt_hash: self.system_prompt_hash,
+            system_prompt_metrics_cache: self.system_prompt_metrics_cache,
+            current_scale,
+            current_mode: current_mode.to_string(),
+            current_music_path: current_music_path.map(|p| p.to_path_buf()),
+            current_layer,
+            ai_config: ai_config.clone(),
+        }
+    }
+
     pub fn redraw(
         &mut self,
         current_scale: f32,
@@ -189,7 +515,7 @@ impl SettingsWindow {
 
         self.current_monitor_name = self.window.current_monitor().and_then(|m| m.name());
 
-        if self.last_size != (w, h) {
+        if self.last_size != (w, h) || (current_scale - self.last_render_scale).abs() > 0.01 {
             self.surface
                 .resize(
                     std::num::NonZeroU32::new(w).unwrap(),
@@ -197,7 +523,8 @@ impl SettingsWindow {
                 )
                 .unwrap();
             self.last_size = (w, h);
-            self.history_hashes.clear(); // Force re-calculation of everything
+            self.last_render_scale = current_scale;
+            self.history_hashes.clear();
             self.history_metrics_cache.clear();
             self.system_prompt_metrics_cache = 0.0;
             self.is_dirty = true;
@@ -206,13 +533,12 @@ impl SettingsWindow {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
-        // 0. Efficient Config Hashing
+        // 0. Config Hashing (Main Thread)
         if self.config_dirty || self.last_config_hash == 0 {
             let mut config_hasher = DefaultHasher::new();
             ai_config.api_key.hash(&mut config_hasher);
             ai_config.base_url.hash(&mut config_hasher);
             ai_config.model.hash(&mut config_hasher);
-            // Use existing system_prompt_hash if possible
             if self.system_prompt_hash == 0 {
                 let mut s_hasher = DefaultHasher::new();
                 ai_config.system_prompt.hash(&mut s_hasher);
@@ -231,16 +557,10 @@ impl SettingsWindow {
             self.config_dirty = false;
         }
 
-        // 1. Skeleton Hash (Static UI Chrome: Sidebar, Header)
-        let mut skeleton_hasher = DefaultHasher::new();
-        w.hash(&mut skeleton_hasher);
-        h.hash(&mut skeleton_hasher);
-        self.current_tab.hash(&mut skeleton_hasher);
-        let skeleton_hash = skeleton_hasher.finish();
-
-        // 2. Base Hash (Everything except cursor blink)
         let mut base_hasher = DefaultHasher::new();
-        skeleton_hash.hash(&mut base_hasher);
+        w.hash(&mut base_hasher);
+        h.hash(&mut base_hasher);
+        self.current_tab.hash(&mut base_hasher);
         self.scroll_offset.to_bits().hash(&mut base_hasher);
         self.focused_field.hash(&mut base_hasher);
         self.cursor_pos.hash(&mut base_hasher);
@@ -254,36 +574,62 @@ impl SettingsWindow {
         }
         let base_state_hash = base_hasher.finish();
 
-        // 3. Transient Hash (Includes cursor blink ONLY if focused)
         let mut transient_hasher = DefaultHasher::new();
         transient_hasher.write_u64(base_state_hash);
+        let elapsed_ms = self.last_cursor_action.elapsed().as_millis();
+        let is_cursor_on = (elapsed_ms / 500) % 2 == 0;
         if self.focused_field.is_some() {
-            let elapsed_ms = self.last_cursor_action.elapsed().as_millis();
-            let is_cursor_on = (elapsed_ms / 500) % 2 == 0;
             is_cursor_on.hash(&mut transient_hasher);
         }
         let current_hash = transient_hasher.finish();
 
+        // 1. Check Background Result
+        {
+            let mut back_buffer = self.render_back_buffer.lock().unwrap();
+            if let Some(res) = back_buffer.take() {
+                if res.w == w && res.h == h {
+                    let mut buffer = self.surface.buffer_mut().unwrap();
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            res.pixels.as_ptr(),
+                            buffer.as_mut_ptr(),
+                            (w * h) as usize,
+                        );
+                    }
+                    self.viewport_height = res.vh;
+                    self.content_height = res.ch;
+                    self.cursor_cache = res.cursor_rect;
+                    self.active_sys_prompt_rect = res.active_sys_prompt_rect;
+                    self.active_sys_prompt_content_height = res.active_sys_prompt_content_height;
+                    self.history_item_rects = res.history_item_rects;
+
+                    if res.hash == base_state_hash {
+                        self.last_base_state_hash = base_state_hash;
+                        self.is_dirty = false;
+                    }
+
+                    // Recycle pixels back to idle pool
+                    let mut idle = self.idle_buffers.lock().unwrap();
+                    idle.push(res.pixels);
+                }
+            }
+        }
+
         if !self.is_dirty && self.last_state_hash == current_hash {
-            // ZERO-IDLE: Skip presentation if nothing changed
             return;
         }
 
-        let mut buffer = self.surface.buffer_mut().unwrap();
-
-        // 4. SURGICAL CURSOR BLINK (CPU OPTIMIZATION)
-        let is_cursor_on = (self.last_cursor_action.elapsed().as_millis() / 500) % 2 == 0;
+        // 2. Surgical Cursor Blink (Synchronous)
         let only_blink = !self.is_dirty && base_state_hash == self.last_base_state_hash;
-
         if only_blink {
             if let Some((cx, cy, cw, ch)) = self.cursor_cache {
-                // Bounds check
                 if cx >= 0
                     && cy >= 0
                     && (cx + cw as i32) <= w as i32
                     && (cy + ch as i32) <= h as i32
                 {
-                    // Restore background if we have it
+                    let mut buffer = self.surface.buffer_mut().unwrap();
+                    // Restore
                     if !self.cursor_save_under.is_empty() {
                         let mut idx = 0;
                         for row in 0..ch {
@@ -295,9 +641,8 @@ impl SettingsWindow {
                             }
                         }
                     }
-
+                    // Draw
                     if is_cursor_on && self.focused_field.is_some() {
-                        // Save new background
                         self.cursor_save_under.clear();
                         for row in 0..ch {
                             let y_idx = (cy + row as i32) as usize * w as usize;
@@ -306,12 +651,10 @@ impl SettingsWindow {
                                     .push(buffer[y_idx + (cx + col as i32) as usize]);
                             }
                         }
-                        // Draw cursor
                         draw_rect(&mut buffer, w, cx, cy, cw, ch, COLOR_PRIMARY, w, h);
                     } else {
                         self.cursor_save_under.clear();
                     }
-
                     self.last_state_hash = current_hash;
                     buffer.present().unwrap();
                     return;
@@ -319,237 +662,78 @@ impl SettingsWindow {
             }
         }
 
-        buffer.fill(COLOR_BG_APP);
-
-        // Scaling (Target 800x750)
-        let scale = (w as f32 / 800.0).min(h as f32 / 750.0);
-        let off_x = (w as f32 - 800.0 * scale) / 2.0;
-        let off_y = (h as f32 - 750.0 * scale) / 2.0;
-
-        let sc = |val: f32| -> f32 { val * scale };
-        let s = |val: u32| -> u32 { (val as f32 * scale + off_x) as u32 };
-        let sy_val = |val: u32| -> u32 { (val as f32 * scale + off_y) as u32 };
-
-        // DRAW UI CONTENT DIRECTLY TO SURFACE BUFFER
-        // Sidebar
-        draw_rect(&mut buffer, w, 0, 0, s(180), h, COLOR_BG_SIDEBAR, w, h);
-        let icons = ["🏠", "🎨", "🧠", "📜", "ℹ️"];
-        for i in 0..5 {
-            let color = if self.current_tab == i {
-                COLOR_PRIMARY
-            } else {
-                COLOR_TEXT_SEC
-            };
-            draw_text(
-                &mut buffer,
-                w,
-                &[],
-                icons[i],
-                s(75) as i32,
-                sy_val(60 + i as u32 * 80) as i32,
-                sc(32.0),
-                color,
-            );
-        }
-
-        // Header Background & Static Text
-        let (title, sub) = match self.current_tab {
-            0 => ("Home", "Welcome to Ameath!"),
-            1 => ("Appearance", "Customize your pet's look"),
-            2 => ("AI Brain", "Connect Ameath to the cloud"),
-            3 => ("History", "Recent Local Memory (Last 50)"),
-            _ => ("About", "Ameath v0.1.0"),
-        };
-        let header_h = sy_val(120);
-        draw_rect(
-            &mut buffer,
-            w,
-            s(180) as i32,
-            0,
-            w - s(180),
-            header_h,
-            COLOR_BG_APP,
-            w,
-            h,
-        );
-        draw_text(
-            &mut buffer,
-            w,
-            &[],
-            title,
-            s(220) as i32,
-            sy_val(40) as i32,
-            sc(32.0),
-            COLOR_TEXT_MAIN,
-        );
-        draw_text(
-            &mut buffer,
-            w,
-            &[],
-            sub,
-            s(220) as i32,
-            sy_val(85) as i32,
-            sc(16.0),
-            COLOR_TEXT_SEC,
-        );
-
-        // Tab Content
-        match self.current_tab {
-            0 => {
-                let (vh, ch, _) = tabs::home::draw(&mut buffer, w, h, scale, off_x, off_y);
-                self.viewport_height = vh;
-                self.content_height = ch;
-            }
-            1 => {
-                let mut gen_state = tabs::general::GeneralTabState {
-                    current_scale,
-                    current_mode,
-                    current_music_path,
-                    current_layer,
-                    scroll_offset: self.scroll_offset,
-                    available_monitors: &self.available_monitors,
-                    current_monitor_name: self.current_monitor_name.as_deref(),
-                };
-                let (vh, ch, _) =
-                    tabs::general::draw(&mut buffer, w, h, scale, off_x, off_y, &mut gen_state);
-                self.viewport_height = vh;
-                self.content_height = ch;
-            }
-            2 => {
-                let mut ai_state = tabs::ai::AiTabState {
-                    focused_field: self.focused_field,
-                    show_api_key: self.show_api_key,
-                    cursor_pos: self.cursor_pos,
-                    selection_start: self.selection_start,
-                    last_cursor_action: self.last_cursor_action,
-                    system_prompt_scroll_offset: self.system_prompt_scroll_offset,
-                    active_sys_prompt_content_height: &mut self.active_sys_prompt_content_height,
-                    active_sys_prompt_rect: &mut self.active_sys_prompt_rect,
-                    system_prompt_metrics_cache: &mut self.system_prompt_metrics_cache,
-                    system_prompt_hash: self.system_prompt_hash,
-                    draw_cursor: false,
-                };
-                let (vh, ch, cursor_rect) = tabs::ai::draw(
-                    &mut buffer,
-                    w,
-                    h,
-                    scale,
-                    off_x,
-                    off_y,
-                    self.scroll_offset,
-                    ai_config,
-                    &mut ai_state,
-                );
-                self.viewport_height = vh;
-                self.content_height = ch;
-                self.cursor_cache = cursor_rect;
-            }
-            3 => {
-                // Sync metadata for History tab once (On-demand caching)
-                if self.history_hashes.len() != self.history.len() {
-                    let old_len = self.history_hashes.len();
-                    self.history_hashes.resize(self.history.len(), 0);
-                    self.history_metrics_cache.resize(self.history.len(), 0.0);
-                    let max_text_w = sc(450.0) as u32;
-
-                    for i in old_len..self.history.len() {
+        // 3. Trigger Async Redraw if needed
+        if (self.is_dirty || base_state_hash != self.last_base_state_hash)
+            && !self.render_in_progress.load(Ordering::SeqCst)
+        {
+            // Update history metadata before spawning if needed (Main Thread)
+            if self.current_tab == 3 && self.history_metrics_cache.len() != self.history.len() {
+                self.history_metrics_cache.resize(self.history.len(), 0.0);
+                self.history_hashes.resize(self.history.len(), 0);
+                self.history_scroll_states.resize(self.history.len(), 0.0);
+                let scale = (w as f32 / 800.0).min(h as f32 / 750.0);
+                let max_text_w = (450.0 * scale) as u32;
+                for i in 0..self.history.len() {
+                    if self.history_metrics_cache[i] == 0.0 {
                         let (_, content) = &self.history[i];
-                        let mut h_hasher = DefaultHasher::new();
-                        content.hash(&mut h_hasher);
-                        let _h_hash = h_hasher.finish();
                         let (_, mh) =
-                            crate::ui_primitives::get_metrics_dw(content, sc(16.0), max_text_w);
+                            crate::ui_primitives::get_metrics_dw(content, 16.0 * scale, max_text_w);
                         self.history_metrics_cache[i] = mh;
                     }
                 }
-                let mut history_state = tabs::history::HistoryTabState {
-                    history: &self.history,
-                    history_metrics_cache: &self.history_metrics_cache,
-                    history_scroll_states: &mut self.history_scroll_states,
-                    history_item_rects: &mut self.history_item_rects,
-                    scroll_offset: self.scroll_offset * scale,
-                };
-                let (vh, ch, _) =
-                    tabs::history::draw(&mut buffer, w, h, scale, off_x, off_y, &mut history_state);
-                self.viewport_height = vh;
-                self.content_height = ch;
             }
-            4 => {
-                let (vh, ch, _) = tabs::about::draw(&mut buffer, w, h, scale, off_x, off_y);
-                self.viewport_height = vh;
-                self.content_height = ch;
-            }
-            _ => {}
-        }
 
-        // Global Scrollbar
-        if self.content_height > self.viewport_height {
-            let sb_w = sc(6.0) as u32;
-            let sb_h = sc(600.0);
-            let sb_x = s(785) as i32;
-            let sb_y = sy_val(130);
-            draw_rounded_rect(
-                &mut buffer,
-                w,
-                sb_x,
-                sb_y as i32,
-                sb_w,
-                sb_h as u32,
-                3,
-                COLOR_BG_LIGHT,
-                w,
-                h,
+            self.render_in_progress.store(true, Ordering::SeqCst);
+            let input = self.create_render_input(
+                current_scale,
+                current_mode,
+                current_music_path,
+                current_layer,
+                ai_config,
             );
-            let ratio = (self.viewport_height / self.content_height).clamp(0.0, 1.0);
-            let hh = (sb_h * ratio).max(sc(30.0));
-            let max_sc = -(self.content_height - self.viewport_height);
-            let prog = if max_sc.abs() < 1.0 {
-                0.0
-            } else {
-                (self.scroll_offset / max_sc).clamp(0.0, 1.0)
+
+            let mut pixels = {
+                let mut idle = self.idle_buffers.lock().unwrap();
+                idle.pop().unwrap_or_else(|| vec![0u32; (w * h) as usize])
             };
-            let hy = sb_y as f32 + (sb_h - hh) * prog;
-            draw_rounded_rect(
-                &mut buffer,
-                w,
-                sb_x,
-                hy as i32,
-                sb_w,
-                hh as u32,
-                3,
-                0x00CCCCCC,
-                w,
-                h,
-            );
+            if pixels.len() != (w * h) as usize {
+                pixels = vec![0u32; (w * h) as usize];
+            }
+
+            let _ = self.render_tx.send(RenderRequest {
+                input,
+                hash: base_state_hash,
+                buffer: pixels,
+            });
         }
 
-        self.last_base_state_hash = base_state_hash;
-        self.last_state_hash = current_hash;
-        self.is_dirty = false;
-
-        // 5. POST-DRAW CURSOR (Full Redraw Case)
-        self.cursor_save_under.clear();
-        if is_cursor_on && self.focused_field.is_some() {
-            if let Some((cx, cy, cw, ch)) = self.cursor_cache {
-                if cx >= 0
-                    && cy >= 0
-                    && (cx + cw as i32) <= w as i32
-                    && (cy + ch as i32) <= h as i32
-                {
-                    // Save pixels BEFORE drawing cursor
-                    for row in 0..ch {
-                        let y_idx = (cy + row as i32) as usize * w as usize;
-                        for col in 0..cw {
-                            self.cursor_save_under
-                                .push(buffer[y_idx + (cx + col as i32) as usize]);
+        // If we are here, we might be waiting for the background thread.
+        // Or it matched above but we still want to present the cursor.
+        if base_state_hash == self.last_base_state_hash {
+            // We have the base frame, just apply transient cursor
+            let mut buffer = self.surface.buffer_mut().unwrap();
+            self.cursor_save_under.clear();
+            if is_cursor_on && self.focused_field.is_some() {
+                if let Some((cx, cy, cw, ch)) = self.cursor_cache {
+                    if cx >= 0
+                        && cy >= 0
+                        && (cx + cw as i32) <= w as i32
+                        && (cy + ch as i32) <= h as i32
+                    {
+                        for row in 0..ch {
+                            let y_idx = (cy + row as i32) as usize * w as usize;
+                            for col in 0..cw {
+                                self.cursor_save_under
+                                    .push(buffer[y_idx + (cx + col as i32) as usize]);
+                            }
                         }
+                        draw_rect(&mut buffer, w, cx, cy, cw, ch, COLOR_PRIMARY, w, h);
                     }
-                    draw_rect(&mut buffer, w, cx, cy, cw, ch, COLOR_PRIMARY, w, h);
                 }
             }
+            self.last_state_hash = current_hash;
+            buffer.present().unwrap();
         }
-
-        buffer.present().unwrap();
     }
 
     pub fn handle_click(
@@ -1237,16 +1421,16 @@ impl SettingsWindow {
         if self.current_tab == 3 {
             // History Tab
             let mut scrolled_item = false;
-            if self.history_item_rects.len() == self.history.len() {
+            if self.history_item_rects.len() == self.history.len()
+                && self.history_metrics_cache.len() == self.history.len()
+                && self.history_scroll_states.len() == self.history.len()
+            {
                 for (i, (rx_start, ry_start, rx_end, ry_end)) in
                     self.history_item_rects.iter().enumerate()
                 {
                     if dlx >= *rx_start && dlx <= *rx_end && dly >= *ry_start && dly <= *ry_end {
-                        let content = &self.history[i].1;
                         let item_h_fixed_sc = 180.0 * scale as f32;
-                        let max_width = (450.0 * scale) as u32;
-                        let (_, full_h) = get_metrics_dw(content, 16.0 * scale as f32, max_width);
-                        let full_h = full_h.max(20.0 * scale as f32);
+                        let full_h = self.history_metrics_cache[i].max(20.0 * scale as f32);
                         let view_h = item_h_fixed_sc - (40.0 * scale as f32);
 
                         if full_h > view_h {

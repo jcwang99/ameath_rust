@@ -25,9 +25,13 @@ pub fn draw(
     let start_y = sy_val(140);
     let current_y = start_y as f32 + state.scroll_offset;
 
-    state.history_item_rects.clear();
-    if state.history_scroll_states.len() != state.history.len() {
-        state.history_scroll_states.resize(state.history.len(), 0.0);
+    if state.history_item_rects.len() != state.history.len() {
+        state
+            .history_item_rects
+            .resize(state.history.len(), (0.0, 0.0, 0.0, 0.0));
+    }
+    for r in state.history_item_rects.iter_mut() {
+        *r = (0.0, 0.0, 0.0, 0.0);
     }
 
     let item_h_fixed = sc(180.0);
@@ -54,16 +58,21 @@ pub fn draw(
         let logical_y = 140.0 + (i as f64 * 190.0);
         let logical_h = 180.0;
 
-        // Add to rects for click detection (We can still push only visible ones or handling it differently)
-        state
-            .history_item_rects
-            .push((230.0, logical_y, 720.0, logical_y + logical_h));
+        // Add to rects for click detection (Mapped to global index i)
+        if i < state.history_item_rects.len() {
+            state.history_item_rects[i] = (230.0, logical_y, 720.0, logical_y + logical_h);
+        }
 
         let y_pos = current_y + (i as f32 * total_item_h);
         let y_pos_i = y_pos as i32;
 
-        let scroll = state.history_scroll_states[i];
-        let full_content_h = state.history_metrics_cache[i].max(sc(20.0));
+        let scroll = state.history_scroll_states.get(i).copied().unwrap_or(0.0);
+        let full_content_h = state
+            .history_metrics_cache
+            .get(i)
+            .copied()
+            .unwrap_or(sc(20.0))
+            .max(sc(20.0));
         let view_h = item_h_fixed - sc(40.0);
         let start_text_y = y_pos + sc(35.0);
         let card_w = sc(490.0) as u32;
