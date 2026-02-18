@@ -271,8 +271,8 @@ fn main() {
     let mut pomodoro_data: Vec<u8> = Vec::new();
     
     // Frame cache: key = (PetState, variant, frame_idx), value = decompressed pixels
-    // Cache up to 32 frames (approx 8MB for 256KB frames)
-    let mut frame_cache: lru::LruCache<(PetState, usize, usize), Vec<u8>> = lru::LruCache::new(std::num::NonZeroUsize::new(32).unwrap());
+    // Reduced from 32 to 16 frames to save memory (max ~4MB instead of 8MB)
+    let mut frame_cache: lru::LruCache<(PetState, usize, usize), Vec<u8>> = lru::LruCache::new(std::num::NonZeroUsize::new(16).unwrap());
     let mut is_hovered = false;
 
     event_loop

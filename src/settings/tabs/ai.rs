@@ -4,7 +4,8 @@ use crate::ui_primitives::*;
 use rusttype::Scale;
 
 thread_local! {
-    static AI_SCRATCH_BUFFER: std::cell::RefCell<Vec<u32>> = std::cell::RefCell::new(Vec::with_capacity(512 * 512));
+    // Reduced from 512x512 (1MB) to 256x256 (256KB) to save memory
+    static AI_SCRATCH_BUFFER: std::cell::RefCell<Vec<u32>> = std::cell::RefCell::new(Vec::with_capacity(256 * 256));
 }
 
 pub struct AiTabState<'a> {

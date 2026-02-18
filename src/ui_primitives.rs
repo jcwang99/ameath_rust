@@ -82,9 +82,18 @@ impl ScratchpadRenderer {
 
     fn prepare(&mut self, tw: i32, th: i32) -> (&ID2D1DCRenderTarget, *mut u32) {
         unsafe {
+            // Check if buffer is too large (over 4MB) and needs reset to save memory
+            const MAX_BUFFER_SIZE: i32 = 4 * 1024 * 1024 / 4; // 4MB in pixels (4 bytes each)
+            let current_size = self.width * self.height;
+            if current_size > MAX_BUFFER_SIZE && (tw * th) < current_size / 2 {
+                // Reset buffer if it's over 4MB and request is significantly smaller
+                self.reset();
+            }
+
             if self.rt.is_none() || self.width < tw || self.height < th {
-                let target_w = tw.max(self.width).max(1024);
-                let target_h = th.max(self.height).max(512);
+                // Limit max size to prevent excessive memory usage (max 4096x2048 = 32MB)
+                let target_w = tw.max(self.width).max(1024).min(4096);
+                let target_h = th.max(self.height).max(512).min(2048);
 
                 if self.h_bitmap.0 != 0 {
                     let _ = DeleteObject(self.h_bitmap);
@@ -174,6 +183,7 @@ pub struct RasterEntry {
     pub tw: i32,
     pub th: i32,
     pub pixel_count: usize,
+    pub last_used: std::time::Instant, // Track usage for memory management
 }
 
 pub struct CacheState<K, V> {
@@ -225,9 +235,18 @@ pub fn harvest_memory() {
     }
     if let Some(cache) = RASTER_CACHE.get() {
         let mut lock = cache.write().unwrap();
-        lock.map.clear();
-        lock.order.clear();
-        lock.total_pixels = 0;
+        // Remove oldest 50% of entries to save memory while keeping some cache
+        let len = lock.order.len();
+        if len > 10 {
+            let to_remove = len / 2;
+            for _ in 0..to_remove {
+                if let Some(oldest) = lock.order.pop() {
+                    if let Some(entry) = lock.map.remove(&oldest) {
+                        lock.total_pixels -= entry.pixel_count;
+                    }
+                }
+            }
+        }
     }
     if let Some(cache) = PRIMITIVE_CACHE.get() {
         let mut lock = cache.write().unwrap();
@@ -917,6 +936,7 @@ fn draw_text_dw_ex_internal(
                         tw,
                         th,
                         pixel_count,
+                        last_used: std::time::Instant::now(),
                     },
                 );
             }

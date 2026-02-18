@@ -36,7 +36,7 @@ pub struct SettingsRenderInput {
 }
 
 pub struct RenderResult {
-    pub pixels: Vec<u32>,
+    pub pixels: std::sync::Arc<Vec<u32>>, // Use Arc to avoid deep copy when cloning
     pub vh: f32,
     pub ch: f32,
     pub cursor_rect: Option<(i32, i32, u32, u32)>,
@@ -217,7 +217,7 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
     // Scrollbar (Relocated to main thread)
 
     RenderResult {
-        pixels: buffer.to_vec(),
+        pixels: std::sync::Arc::new(buffer.to_vec()),
         vh,
         ch,
         cursor_rect,
@@ -306,7 +306,7 @@ pub struct SettingsWindow {
     pub render_back_buffer: Arc<Mutex<Option<RenderResult>>>,
     pub render_in_progress: Arc<AtomicBool>,
     pub idle_buffers: Arc<Mutex<Vec<Vec<u32>>>>,
-    pub last_background_pixels: Vec<u32>,
+    pub last_background_pixels: std::sync::Arc<Vec<u32>>,
     pub render_tx: Sender<RenderRequest>,
     pub _proxy: EventLoopProxy<()>,
 }
@@ -412,7 +412,7 @@ impl SettingsWindow {
             render_back_buffer,
             render_in_progress,
             idle_buffers,
-            last_background_pixels: Vec::new(),
+            last_background_pixels: std::sync::Arc::new(Vec::new()),
             render_tx,
             _proxy: proxy,
         }
@@ -586,7 +586,7 @@ impl SettingsWindow {
                             (w * h) as usize,
                         );
                     }
-                    self.last_background_pixels = res.pixels.clone();
+                    self.last_background_pixels = res.pixels.clone(); // Arc clone (shallow copy)
                     self.viewport_height = res.vh;
                     self.content_height = res.ch;
                     self.cursor_cache = res.cursor_rect;
@@ -600,10 +600,13 @@ impl SettingsWindow {
                     }
                     consumed_background = true;
 
-                    // Recycle pixels back to idle pool
+                    // Recycle pixels back to idle pool if possible
+                    // Since pixels is Arc, we can only recycle if we're the only owner
                     let mut idle = self.idle_buffers.lock().unwrap();
                     if idle.len() < 2 {
-                        idle.push(res.pixels);
+                        if let Ok(pixels_vec) = std::sync::Arc::try_unwrap(res.pixels) {
+                            idle.push(pixels_vec);
+                        }
                     }
                 }
             }
