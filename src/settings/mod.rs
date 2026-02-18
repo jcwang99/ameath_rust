@@ -374,10 +374,20 @@ impl SettingsWindow {
 
         let rb_ptr = render_back_buffer.clone();
         let rip_ptr = render_in_progress.clone();
+        let idle_buffers_ptr = idle_buffers.clone();
         let p_ptr = proxy.clone();
 
         std::thread::spawn(move || {
             while let Ok(mut req) = render_rx.recv() {
+                // Drain any pending requests and only process the latest one
+                // This is the "Frame Skipping" mechanism
+                while let Ok(next_req) = render_rx.try_recv() {
+                    // Return previous request's buffer to idle pool
+                    let mut idle = idle_buffers_ptr.lock().unwrap();
+                    idle.push(req.buffer);
+                    req = next_req;
+                }
+
                 let res = render_internal(&mut req.buffer, req.input, req.hash);
                 {
                     let mut lock = rb_ptr.lock().unwrap();
@@ -958,12 +968,12 @@ impl SettingsWindow {
                             if dly >= track_y_start && dly <= track_y_start + track_h {
                                 self.dragging_history_idx = Some(i);
                                 let progress = ((dly - track_y_start) / track_h).clamp(0.0, 1.0);
-                                let content = &self.history[i].1;
-                                let max_width = (450.0 * scale) as u32;
-                                let (_, full_h) =
-                                    get_metrics_dw(content, 16.0 * scale as f32, max_width);
-                                let full_h_logical = full_h / scale as f32;
-                                let max_scroll = -(full_h_logical - 140.0).max(0.0);
+                                let content_h_logical = if self.history_metrics_cache.len() > i {
+                                    self.history_metrics_cache[i] / scale as f32
+                                } else {
+                                    0.0
+                                };
+                                let max_scroll = -(content_h_logical - 140.0).max(0.0);
                                 self.history_scroll_states[i] = progress as f32 * max_scroll;
                                 self.window.request_redraw();
                                 return SettingsAction::None;
@@ -1545,11 +1555,12 @@ impl SettingsWindow {
 
         if let Some(idx) = self.dragging_history_idx {
             if idx < self.history.len() {
-                let content = &self.history[idx].1;
                 let view_h = 140.0;
-                let max_width = (450.0 * scale) as u32;
-                let (_, full_h) = get_metrics_dw(content, 16.0 * scale as f32, max_width);
-                let full_h_logical = full_h / scale as f32;
+                let full_h_logical = if self.history_metrics_cache.len() > idx {
+                    self.history_metrics_cache[idx] / scale as f32
+                } else {
+                    0.0
+                };
 
                 if self.history_item_rects.len() > idx {
                     let (_, ry_start, _, _) = self.history_item_rects[idx];
