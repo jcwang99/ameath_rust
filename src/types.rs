@@ -142,7 +142,7 @@ fn default_interaction_frequency() -> u64 {
     20
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BehaviorMode {
     Static,
     Quiet,
@@ -150,7 +150,7 @@ pub enum BehaviorMode {
     Clingy,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WindowLayer {
     Top,
     Bottom,

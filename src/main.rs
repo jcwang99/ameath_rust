@@ -609,7 +609,7 @@ fn main() {
                                                 }
                                                 settings::SettingsAction::RequestHistory => {
                                                     if let Ok(history) = chat_kernel.get_recent_history(50) {
-                                                        sw.history = history;
+                                                        sw.history = std::sync::Arc::new(history);
                                                         sw.request_redraw();
                                                     }
                                                 }
@@ -661,6 +661,15 @@ fn main() {
                     }
                 }
                 Event::AboutToWait => {
+                    // Poll for settings window background updates fallback
+                    if let Some(sw) = &settings_win {
+                         if let Ok(guard) = sw.render_back_buffer.try_lock() {
+                             if guard.is_some() {
+                                 sw.request_redraw();
+                             }
+                         }
+                    }
+
                     // Update target_frame_duration based on current monitor refresh rate
                     if let Some(monitor) = window.current_monitor() {
                         let refresh_rate_millihertz = monitor.refresh_rate_millihertz().unwrap_or(60000);

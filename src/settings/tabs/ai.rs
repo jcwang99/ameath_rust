@@ -479,58 +479,6 @@ pub fn draw(
         );
     }
 
-    // System Prompt Scrollbar
-    {
-        let fy = 930.0;
-        let fy_scaled_raw = card_y_raw + sc(fy) as i32;
-        let input_y_raw = fy_scaled_raw + sc(25.0) as i32;
-        let input_h = sc(250.0);
-        let max_width = sc(500.0 - 40.0) as u32;
-        let layout_h: f32 = if *state.system_prompt_metrics_cache > 0.0f32 {
-            *state.system_prompt_metrics_cache
-        } else {
-            let (_, mh) = get_metrics_dw(&ai_config.system_prompt, sc(14.0), max_width);
-            mh
-        };
-        let full_content_h_px = layout_h + sc(24.0);
-
-        if full_content_h_px > input_h {
-            let sb_w = sc(4.0) as u32;
-            let sb_x = s(230 + 480);
-            draw_rect(
-                buffer,
-                w,
-                sb_x as i32,
-                input_y_raw,
-                sb_w,
-                input_h as u32,
-                COLOR_BORDER,
-                w,
-                h,
-            );
-            let ratio = input_h / full_content_h_px;
-            let thumb_h = (input_h * ratio).max(sc(20.0));
-            let max_scroll = -(full_content_h_px - input_h);
-            let progress = if max_scroll.abs() < 1.0 {
-                0.0
-            } else {
-                (state.system_prompt_scroll_offset * scale / max_scroll).clamp(0.0, 1.0)
-            };
-            let thumb_y = input_y_raw as f32 + (input_h - thumb_h) * progress;
-            draw_rect(
-                buffer,
-                w,
-                sb_x as i32,
-                thumb_y as i32,
-                sb_w,
-                thumb_h as u32,
-                0x00A0A0A0,
-                w,
-                h,
-            );
-        }
-    }
-
     // Content height tracking
     let viewport_h = scrollable_h_logical;
     let content_h = 1450.0;

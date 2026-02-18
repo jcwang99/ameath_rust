@@ -156,6 +156,12 @@ pub struct LayoutKey {
 }
 
 #[derive(Hash, PartialEq, Eq, Clone)]
+pub struct RasterKey {
+    pub layout_key: LayoutKey,
+    pub color: u32,
+}
+
+#[derive(Hash, PartialEq, Eq, Clone)]
 struct FormatKey {
     font_family_hash: u64,
     font_size_bits: u32,
@@ -188,7 +194,7 @@ impl<K: std::hash::Hash + Eq + Clone, V> CacheState<K, V> {
 
 static LAYOUT_CACHE: OnceLock<RwLock<CacheState<LayoutKey, IDWriteTextLayout>>> = OnceLock::new();
 static FORMAT_CACHE: OnceLock<RwLock<HashMap<FormatKey, IDWriteTextFormat>>> = OnceLock::new();
-static RASTER_CACHE: OnceLock<RwLock<CacheState<LayoutKey, RasterEntry>>> = OnceLock::new();
+static RASTER_CACHE: OnceLock<RwLock<CacheState<RasterKey, RasterEntry>>> = OnceLock::new();
 
 #[derive(Hash, PartialEq, Eq, Clone)]
 struct PrimitiveKey {
@@ -206,7 +212,7 @@ fn get_format_cache() -> &'static RwLock<HashMap<FormatKey, IDWriteTextFormat>> 
     FORMAT_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-pub fn get_raster_cache() -> &'static RwLock<CacheState<LayoutKey, RasterEntry>> {
+pub fn get_raster_cache() -> &'static RwLock<CacheState<RasterKey, RasterEntry>> {
     RASTER_CACHE.get_or_init(|| RwLock::new(CacheState::new()))
 }
 
@@ -686,13 +692,17 @@ pub fn draw_text_dw_h(
     font_family_name.hash(&mut family_hasher);
     let font_family_hash = family_hasher.finish();
 
-    let key = LayoutKey {
+    let layout_key = LayoutKey {
         text_hash,
         font_size_bits: font_size.to_bits(),
         max_w,
         font_family_hash,
         is_bold: false,
         is_centered: false,
+    };
+    let key = RasterKey {
+        layout_key: layout_key.clone(),
+        color,
     };
 
     // Fast path: Raster Cache (Read-only first)
@@ -729,7 +739,7 @@ pub fn draw_text_dw_h(
         buffer,
         surface_w,
         text,
-        key,
+        layout_key,
         x,
         y,
         font_size,
@@ -785,7 +795,7 @@ fn draw_text_dw_ex_internal(
     buffer: &mut [u32],
     surface_w: u32,
     text: &str,
-    key: LayoutKey,
+    layout_key: LayoutKey,
     x: i32,
     y: i32,
     font_size: f32,
@@ -800,13 +810,13 @@ fn draw_text_dw_ex_internal(
             font_size,
             max_w,
             "Microsoft YaHei",
-            key.is_bold,
-            key.is_centered,
+            layout_key.is_bold,
+            layout_key.is_centered,
         );
         let mut metrics = std::mem::zeroed();
         layout.GetMetrics(&mut metrics).unwrap();
 
-        let is_huge = metrics.height > 1000.0;
+        let is_huge = metrics.height > 2500.0;
 
         // Target height: if huge, only render the visible window to save massive memory
         let tw = (metrics.width.ceil() as i32 + 10).min(max_w as i32 + 10);
@@ -888,7 +898,8 @@ fn draw_text_dw_ex_internal(
 
             // ONLY skip cache if it's truly giant to avoid re-rasterizing medium text
             // Also bypass if it's a "huge" scrolled item to avoid stale rendering bug
-            if metrics.height < 1500.0 && !is_huge {
+            if metrics.height < 3000.0 && !is_huge {
+                let raster_key = RasterKey { layout_key, color };
                 let mut cache = get_raster_cache().write().unwrap();
                 // Limit to ~1M pixels (~4MB)
                 while cache.total_pixels + pixel_count > 1_000_000 && !cache.order.is_empty() {
@@ -897,10 +908,10 @@ fn draw_text_dw_ex_internal(
                         cache.total_pixels -= old_entry.pixel_count;
                     }
                 }
-                cache.order.push(key.clone());
+                cache.order.push(raster_key.clone());
                 cache.total_pixels += pixel_count;
                 cache.map.insert(
-                    key,
+                    raster_key,
                     RasterEntry {
                         alpha: captured_alpha,
                         tw,

@@ -3,7 +3,6 @@ use crate::ui_primitives::*;
 
 pub struct HistoryTabState<'a> {
     pub history: &'a [(String, String)],
-    pub history_metrics_cache: &'a [f32],
     pub history_scroll_states: &'a mut Vec<f32>,
     pub history_item_rects: &'a mut Vec<(f64, f64, f64, f64)>,
     pub scroll_offset: f32,
@@ -67,14 +66,7 @@ pub fn draw(
         let y_pos_i = y_pos as i32;
 
         let scroll = state.history_scroll_states.get(i).copied().unwrap_or(0.0);
-        let full_content_h = state
-            .history_metrics_cache
-            .get(i)
-            .copied()
-            .unwrap_or(sc(20.0))
-            .max(sc(20.0));
         let view_h = item_h_fixed - sc(40.0);
-        let start_text_y = y_pos + sc(35.0);
         let card_w = sc(490.0) as u32;
         let card_h = item_h_fixed as u32;
 
@@ -119,45 +111,6 @@ pub fn draw(
             view_h as u32,
             scroll * scale,
         );
-
-        if full_content_h > view_h {
-            let sb_w = sc(4.0) as u32;
-            let sb_h = view_h;
-            let sb_x = s(230 + 480);
-            let sb_y_raw = start_text_y;
-
-            draw_rect(
-                buffer,
-                w,
-                sb_x as i32,
-                sb_y_raw as i32,
-                sb_w,
-                sb_h as u32,
-                COLOR_BORDER,
-                w,
-                h,
-            );
-            let ratio = view_h / full_content_h;
-            let h_h = (view_h * ratio).max(sc(20.0));
-            let max_scroll = -(full_content_h - view_h);
-            let progress = if max_scroll.abs() < 1.0 {
-                0.0
-            } else {
-                (scroll * scale / max_scroll).clamp(0.0, 1.0)
-            };
-            let h_y = sb_y_raw + (view_h - h_h) * progress;
-            draw_rect(
-                buffer,
-                w,
-                sb_x as i32,
-                h_y as i32,
-                sb_w,
-                h_h as u32,
-                0x00A0A0A0,
-                w,
-                h,
-            );
-        }
     }
 
     let viewport_h = 600.0;

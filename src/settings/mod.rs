@@ -24,9 +24,8 @@ pub struct SettingsRenderInput {
     pub selection_start: Option<usize>,
     pub last_cursor_action: std::time::Instant,
     pub system_prompt_scroll_offset: f32,
-    pub history: Vec<(String, String)>,
+    pub history: std::sync::Arc<Vec<(String, String)>>,
     pub history_scroll_states: Vec<f32>,
-    pub history_metrics_cache: Vec<f32>,
     pub system_prompt_hash: u64,
     pub system_prompt_metrics_cache: f32,
     pub current_scale: f32,
@@ -197,7 +196,6 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
             let mut local_rects = Vec::new();
             let mut history_state = tabs::history::HistoryTabState {
                 history: &input.history,
-                history_metrics_cache: &input.history_metrics_cache,
                 history_scroll_states: &mut scroll_states,
                 history_item_rects: &mut local_rects,
                 scroll_offset: input.scroll_offset * scale,
@@ -216,37 +214,7 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
         _ => {}
     }
 
-    // Scrollbar
-    if ch > vh {
-        let sb_w = sc(6.0) as u32;
-        let sb_h = sc(600.0);
-        let sb_x = s(785) as i32;
-        let sb_y = sy_val(130);
-        draw_rounded_rect(
-            buffer,
-            w,
-            sb_x,
-            sb_y as i32,
-            sb_w,
-            sb_h as u32,
-            3,
-            COLOR_BG_LIGHT,
-            w,
-            h,
-        );
-        let ratio = (vh / ch).clamp(0.0, 1.0);
-        let hh = (sb_h * ratio).max(sc(30.0));
-        let max_sc = -(ch - vh);
-        let prog = if max_sc.abs() < 1.0 {
-            0.0
-        } else {
-            (input.scroll_offset / max_sc).clamp(0.0, 1.0)
-        };
-        let hy = sb_y as f32 + (sb_h - hh) * prog;
-        draw_rounded_rect(
-            buffer, w, sb_x, hy as i32, sb_w, hh as u32, 3, 0x00CCCCCC, w, h,
-        );
-    }
+    // Scrollbar (Relocated to main thread)
 
     RenderResult {
         pixels: buffer.to_vec(),
@@ -306,7 +274,7 @@ pub struct SettingsWindow {
     pub active_sys_prompt_rect: Option<(f64, f64, f64, f64)>,
 
     // History Tab State
-    pub history: Vec<(String, String)>,
+    pub history: std::sync::Arc<Vec<(String, String)>>,
     pub history_scroll_states: Vec<f32>,
     pub history_item_rects: Vec<(f64, f64, f64, f64)>,
     pub history_hashes: Vec<u64>,
@@ -332,11 +300,13 @@ pub struct SettingsWindow {
     pub cursor_cache: Option<(i32, i32, u32, u32)>,
     pub cursor_save_under: Vec<u32>,
     pub last_base_state_hash: u64,
+    pub last_sent_hash: u64,
 
     // Multithreaded Buffer
     pub render_back_buffer: Arc<Mutex<Option<RenderResult>>>,
     pub render_in_progress: Arc<AtomicBool>,
     pub idle_buffers: Arc<Mutex<Vec<Vec<u32>>>>,
+    pub last_background_pixels: Vec<u32>,
     pub render_tx: Sender<RenderRequest>,
     pub _proxy: EventLoopProxy<()>,
 }
@@ -384,7 +354,9 @@ impl SettingsWindow {
                 while let Ok(next_req) = render_rx.try_recv() {
                     // Return previous request's buffer to idle pool
                     let mut idle = idle_buffers_ptr.lock().unwrap();
-                    idle.push(req.buffer);
+                    if idle.len() < 2 {
+                        idle.push(req.buffer);
+                    }
                     req = next_req;
                 }
 
@@ -415,7 +387,7 @@ impl SettingsWindow {
             system_prompt_scroll_offset: 0.0,
             active_sys_prompt_content_height: 0.0,
             active_sys_prompt_rect: None,
-            history: Vec::new(),
+            history: std::sync::Arc::new(Vec::new()),
             history_scroll_states: Vec::new(),
             history_item_rects: Vec::new(),
             history_hashes: Vec::new(),
@@ -434,11 +406,13 @@ impl SettingsWindow {
             cursor_cache: None,
             cursor_save_under: Vec::new(),
             last_base_state_hash: 0,
+            last_sent_hash: 0,
             dragging_history_idx: None,
             dragging_sys_prompt: false,
             render_back_buffer,
             render_in_progress,
             idle_buffers,
+            last_background_pixels: Vec::new(),
             render_tx,
             _proxy: proxy,
         }
@@ -497,7 +471,6 @@ impl SettingsWindow {
             system_prompt_scroll_offset: self.system_prompt_scroll_offset,
             history: self.history.clone(),
             history_scroll_states: self.history_scroll_states.clone(),
-            history_metrics_cache: self.history_metrics_cache.clone(),
             system_prompt_hash: self.system_prompt_hash,
             system_prompt_metrics_cache: self.system_prompt_metrics_cache,
             current_scale,
@@ -571,14 +544,19 @@ impl SettingsWindow {
         w.hash(&mut base_hasher);
         h.hash(&mut base_hasher);
         self.current_tab.hash(&mut base_hasher);
-        self.scroll_offset.to_bits().hash(&mut base_hasher);
+        // scroll_offset excluded from hash for instant main-thread scrollbar feedback
         self.focused_field.hash(&mut base_hasher);
         self.cursor_pos.hash(&mut base_hasher);
         self.history.len().hash(&mut base_hasher);
         self.last_config_hash.hash(&mut base_hasher);
+        current_scale.to_bits().hash(&mut base_hasher);
+        current_mode.hash(&mut base_hasher);
+        current_music_path.hash(&mut base_hasher);
+        current_layer.hash(&mut base_hasher);
         self.system_prompt_scroll_offset
             .to_bits()
             .hash(&mut base_hasher);
+        self.scroll_offset.to_bits().hash(&mut base_hasher);
         for offset in &self.history_scroll_states {
             offset.to_bits().hash(&mut base_hasher);
         }
@@ -586,6 +564,7 @@ impl SettingsWindow {
 
         let mut transient_hasher = DefaultHasher::new();
         transient_hasher.write_u64(base_state_hash);
+        self.scroll_offset.to_bits().hash(&mut transient_hasher);
         let elapsed_ms = self.last_cursor_action.elapsed().as_millis();
         let is_cursor_on = (elapsed_ms / 500) % 2 == 0;
         if self.focused_field.is_some() {
@@ -594,6 +573,7 @@ impl SettingsWindow {
         let current_hash = transient_hasher.finish();
 
         // 1. Check Background Result
+        let mut consumed_background = false;
         {
             let mut back_buffer = self.render_back_buffer.lock().unwrap();
             if let Some(res) = back_buffer.take() {
@@ -606,6 +586,7 @@ impl SettingsWindow {
                             (w * h) as usize,
                         );
                     }
+                    self.last_background_pixels = res.pixels.clone();
                     self.viewport_height = res.vh;
                     self.content_height = res.ch;
                     self.cursor_cache = res.cursor_rect;
@@ -617,16 +598,78 @@ impl SettingsWindow {
                         self.last_base_state_hash = base_state_hash;
                         self.is_dirty = false;
                     }
+                    consumed_background = true;
 
                     // Recycle pixels back to idle pool
                     let mut idle = self.idle_buffers.lock().unwrap();
-                    idle.push(res.pixels);
+                    if idle.len() < 2 {
+                        idle.push(res.pixels);
+                    }
                 }
             }
         }
 
-        if !self.is_dirty && self.last_state_hash == current_hash {
+        if !consumed_background && !self.is_dirty && self.last_state_hash == current_hash {
             return;
+        }
+
+        // 3. Trigger Async Redraw if needed
+        let hash_mismatch = base_state_hash != self.last_base_state_hash;
+        if (self.is_dirty || hash_mismatch) && base_state_hash != self.last_sent_hash {
+            // Update history metadata before spawning if needed (Main Thread)
+            if self.current_tab == 3 && self.history_metrics_cache.len() != self.history.len() {
+                self.history_metrics_cache.resize(self.history.len(), 0.0);
+                self.history_hashes.resize(self.history.len(), 0);
+                self.history_scroll_states.resize(self.history.len(), 0.0);
+                let scale = (w as f32 / 800.0).min(h as f32 / 750.0);
+                let max_text_w = (450.0 * scale) as u32;
+                for i in 0..self.history.len() {
+                    if self.history_metrics_cache[i] == 0.0 {
+                        let (_, content) = &self.history[i];
+                        let (_, mh) =
+                            crate::ui_primitives::get_metrics_dw(content, 16.0 * scale, max_text_w);
+                        self.history_metrics_cache[i] = mh;
+                    }
+                }
+            }
+
+            self.render_in_progress.store(true, Ordering::SeqCst);
+            self.last_sent_hash = base_state_hash;
+            let input = self.create_render_input(
+                current_scale,
+                current_mode,
+                current_music_path,
+                current_layer,
+                ai_config,
+            );
+
+            let mut pixels = {
+                let mut idle = self.idle_buffers.lock().unwrap();
+                idle.pop().unwrap_or_else(|| vec![0u32; (w * h) as usize])
+            };
+            if pixels.len() != (w * h) as usize {
+                pixels = vec![0u32; (w * h) as usize];
+            }
+
+            let _ = self.render_tx.send(RenderRequest {
+                input,
+                hash: base_state_hash,
+                buffer: pixels,
+            });
+        }
+
+        let mut buffer = self.surface.buffer_mut().unwrap();
+
+        // 1.5 Restore background if no new background frame was just copied
+        // (This happens during smooth scrolling dragging between worker frames)
+        if base_state_hash == self.last_base_state_hash && !self.last_background_pixels.is_empty() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    self.last_background_pixels.as_ptr(),
+                    buffer.as_mut_ptr(),
+                    (w * h) as usize,
+                );
+            }
         }
 
         // 2. Surgical Cursor Blink (Synchronous)
@@ -666,62 +709,34 @@ impl SettingsWindow {
                         self.cursor_save_under.clear();
                     }
                     self.last_state_hash = current_hash;
+                    // Draw scrollbar even in cursor-only update
+                    draw_main_scrollbar(
+                        &mut buffer,
+                        w,
+                        h,
+                        self.viewport_height,
+                        self.content_height,
+                        self.scroll_offset,
+                    );
                     buffer.present().unwrap();
                     return;
                 }
             }
         }
 
-        // 3. Trigger Async Redraw if needed
-        if (self.is_dirty || base_state_hash != self.last_base_state_hash)
-            && !self.render_in_progress.load(Ordering::SeqCst)
-        {
-            // Update history metadata before spawning if needed (Main Thread)
-            if self.current_tab == 3 && self.history_metrics_cache.len() != self.history.len() {
-                self.history_metrics_cache.resize(self.history.len(), 0.0);
-                self.history_hashes.resize(self.history.len(), 0);
-                self.history_scroll_states.resize(self.history.len(), 0.0);
-                let scale = (w as f32 / 800.0).min(h as f32 / 750.0);
-                let max_text_w = (450.0 * scale) as u32;
-                for i in 0..self.history.len() {
-                    if self.history_metrics_cache[i] == 0.0 {
-                        let (_, content) = &self.history[i];
-                        let (_, mh) =
-                            crate::ui_primitives::get_metrics_dw(content, 16.0 * scale, max_text_w);
-                        self.history_metrics_cache[i] = mh;
-                    }
-                }
-            }
+        // 4. Final Composition (Scrollbar + Cursor)
+        // Always redraw scrollbar on top of whatever background we have
+        draw_main_scrollbar(
+            &mut buffer,
+            w,
+            h,
+            self.viewport_height,
+            self.content_height,
+            self.scroll_offset,
+        );
 
-            self.render_in_progress.store(true, Ordering::SeqCst);
-            let input = self.create_render_input(
-                current_scale,
-                current_mode,
-                current_music_path,
-                current_layer,
-                ai_config,
-            );
-
-            let mut pixels = {
-                let mut idle = self.idle_buffers.lock().unwrap();
-                idle.pop().unwrap_or_else(|| vec![0u32; (w * h) as usize])
-            };
-            if pixels.len() != (w * h) as usize {
-                pixels = vec![0u32; (w * h) as usize];
-            }
-
-            let _ = self.render_tx.send(RenderRequest {
-                input,
-                hash: base_state_hash,
-                buffer: pixels,
-            });
-        }
-
-        // If we are here, we might be waiting for the background thread.
-        // Or it matched above but we still want to present the cursor.
+        // If background matches, we can safely draw the surgical cursor
         if base_state_hash == self.last_base_state_hash {
-            // We have the base frame, just apply transient cursor
-            let mut buffer = self.surface.buffer_mut().unwrap();
             self.cursor_save_under.clear();
             if is_cursor_on && self.focused_field.is_some() {
                 if let Some((cx, cy, cw, ch)) = self.cursor_cache {
@@ -741,9 +756,10 @@ impl SettingsWindow {
                     }
                 }
             }
-            self.last_state_hash = current_hash;
-            buffer.present().unwrap();
         }
+
+        self.last_state_hash = current_hash;
+        buffer.present().unwrap();
     }
 
     pub fn handle_click(
@@ -832,6 +848,12 @@ impl SettingsWindow {
                         let col = i % 2;
                         let mx = 230.0 + col as f64 * 165.0;
                         let my = card2_y + 60.0 + row as f64 * 65.0;
+                        if let Some((rx, ry, rw, rh)) = self.active_sys_prompt_rect {
+                            if lx >= rx && lx <= (rx + rw) && ly >= ry && ly <= (ry + rh) {
+                                self.is_dragging_text = true;
+                                self.dragging_sys_prompt = true;
+                            }
+                        }
                         if lx >= mx && lx <= mx + 150.0 && ly >= my && ly <= my + 55.0 {
                             return SettingsAction::SetMode(mode);
                         }
@@ -883,9 +905,8 @@ impl SettingsWindow {
                     if dly >= input_y && dly <= input_y + 250.0 {
                         self.dragging_sys_prompt = true;
                         let progress = ((dly - input_y) / 250.0).clamp(0.0, 1.0);
-                        let view_h = 250.0;
-                        let content_h = self.active_sys_prompt_content_height;
-                        let max_scroll = -(content_h - view_h).max(0.0);
+                        // Bounds check
+                        let max_scroll = (self.active_sys_prompt_content_height - 250.0).max(0.0);
                         self.system_prompt_scroll_offset = progress as f32 * max_scroll;
                         self.window.request_redraw();
                         return SettingsAction::None;
@@ -1663,5 +1684,58 @@ impl SettingsWindow {
         self.dragging_history_idx = None;
         self.dragging_sys_prompt = false;
         self.window.request_redraw();
+    }
+}
+
+fn draw_main_scrollbar(
+    buffer: &mut [u32],
+    w: u32,
+    h: u32,
+    viewport_height: f32,
+    content_height: f32,
+    scroll_offset: f32,
+) {
+    if content_height > viewport_height {
+        let scale = (w as f32 / 800.0).min(h as f32 / 750.0);
+        let off_x = (w as f32 - 800.0 * scale) / 2.0;
+        let off_y = (h as f32 - 750.0 * scale) / 2.0;
+
+        let sc = |val: f32| -> f32 { val * scale };
+        let s = |val: u32| -> u32 { (val as f32 * scale + off_x) as u32 };
+        let sy_val = |val: u32| -> u32 { (val as f32 * scale + off_y) as u32 };
+
+        let sb_w = sc(6.0) as u32;
+        let sb_h = sc(600.0);
+        let sb_x = s(785) as i32;
+        let sb_y = sy_val(130);
+
+        // Track Background
+        draw_rounded_rect(
+            buffer,
+            w,
+            sb_x,
+            sb_y as i32,
+            sb_w,
+            sb_h as u32,
+            3,
+            COLOR_BG_LIGHT,
+            w,
+            h,
+        );
+
+        // Thumb
+        let ratio = (viewport_height / content_height).clamp(0.0, 1.0);
+        let hh = (sb_h * ratio).max(sc(30.0));
+        let max_sc = -(content_height - viewport_height);
+        let prog = if max_sc.abs() < 1.0 {
+            0.0
+        } else {
+            (scroll_offset / max_sc).clamp(0.0, 1.0)
+        };
+        let hy = sb_y as f32 + (sb_h - hh) * prog;
+        draw_rounded_rect(
+            buffer, w, sb_x, hy as i32, sb_w, hh as u32, 3, 0x00CCCCCC, // Light grey thumb
+            w, h,
+        );
     }
 }
