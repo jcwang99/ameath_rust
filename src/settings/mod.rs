@@ -37,6 +37,7 @@ pub struct SettingsRenderInput {
     pub pressed_btn: Option<usize>, // 0-4 for profile buttons, 100+ for fields
     pub show_delete_dialog: bool,
     pub notification: Option<(String, std::time::Instant)>,
+    pub field_scroll_offsets: [f32; 14],
 }
 
 pub struct RenderResult {
@@ -186,6 +187,7 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
                 pressed_btn: input.pressed_btn,
                 show_delete_dialog: input.show_delete_dialog,
                 notification: input.notification,
+                field_scroll_offsets: input.field_scroll_offsets,
             };
             let (v, c, rect) = tabs::ai::draw(
                 buffer,
@@ -313,6 +315,7 @@ pub struct SettingsWindow {
     pub pressed_btn: Option<usize>,
     pub show_delete_dialog: bool,
     pub notification: Option<(String, std::time::Instant)>,
+    pub field_scroll_offsets: [f32; 14],
 
     // Layered Rendering Caches (Removed for memory savings)
     pub cursor_cache: Option<(i32, i32, u32, u32)>,
@@ -431,6 +434,7 @@ impl SettingsWindow {
             last_sent_hash: 0,
             dragging_history_idx: None,
             dragging_sys_prompt: false,
+            field_scroll_offsets: [0.0; 14],
             render_back_buffer,
             render_in_progress,
             idle_buffers,
@@ -504,6 +508,7 @@ impl SettingsWindow {
             pressed_btn: self.pressed_btn,
             show_delete_dialog: self.show_delete_dialog,
             notification: self.notification.clone(),
+            field_scroll_offsets: self.field_scroll_offsets,
         }
     }
 
@@ -606,6 +611,9 @@ impl SettingsWindow {
             time.hash(&mut base_hasher);
         }
         for offset in &self.history_scroll_states {
+            offset.to_bits().hash(&mut base_hasher);
+        }
+        for offset in &self.field_scroll_offsets {
             offset.to_bits().hash(&mut base_hasher);
         }
         let base_state_hash = base_hasher.finish();
@@ -825,14 +833,14 @@ impl SettingsWindow {
         ai_config: &crate::types::AiConfig,
     ) -> SettingsAction {
         let size = self.window.inner_size();
-        let w = size.width as f64;
-        let h = size.height as f64;
+        let w = size.width as f32;
+        let h = size.height as f32;
         let scale = (w / 800.0).min(h / 750.0);
         let off_x = (w - 800.0 * scale) / 2.0;
         let off_y = (h - 750.0 * scale) / 2.0;
 
-        let lx = (x - off_x) / scale;
-        let ly = (y - off_y) / scale;
+        let lx = ((x as f32 - off_x) / scale) as f64;
+        let ly = ((y as f32 - off_y) / scale) as f64;
 
         // DIALOG HANDLING
         if self.show_delete_dialog && self.current_tab == 2 {
@@ -1131,11 +1139,13 @@ impl SettingsWindow {
 
                         if i == 13 {
                             // System prompt multi-line
-                            let text_x = lx - fx - 15.0;
-                            let text_y =
-                                dly - input_y - 12.0 - self.system_prompt_scroll_offset as f64;
+                            let scale_f32 = scale as f32;
+                            let scroll_y = self.system_prompt_scroll_offset * scale_f32;
+                            let layout_x = ((lx - fx - 15.0) * scale as f64) as f32;
+                            let layout_y =
+                                ((dly - input_y - 12.0) * scale as f64) as f32 - scroll_y;
                             self.cursor_pos =
-                                self.get_cursor_from_xy(&text, text_x, text_y, scale as f32);
+                                self.get_cursor_from_xy(&text, layout_x, layout_y, scale_f32);
 
                             if !_is_right_click {
                                 self.selection_start = Some(self.cursor_pos);
@@ -1149,14 +1159,19 @@ impl SettingsWindow {
                                     self.show_api_key = !self.show_api_key;
                                     self.config_dirty = true;
                                 } else {
-                                    let text_x = lx - fx - 15.0;
+                                    let scale_f32 = scale as f32;
+                                    let scroll_x = self.field_scroll_offsets[i];
+                                    let layout_x =
+                                        ((lx - fx - 15.0) * scale as f64) as f32 - scroll_x;
                                     self.cursor_pos =
-                                        self.get_cursor_from_x(&text, text_x, scale as f32);
+                                        self.get_cursor_from_x(&text, layout_x, scale_f32);
                                     self.selection_start = Some(self.cursor_pos);
                                     self.is_dragging_text = true;
                                 }
                             }
                         }
+                        let scale_f32 = scale as f32;
+                        self.ensure_cursor_visible(i, scale_f32, ai_config);
                         self.window.request_redraw();
                         return SettingsAction::None;
                     }
@@ -1170,10 +1185,11 @@ impl SettingsWindow {
             3 => {
                 // Tab 3: History
                 if dlx >= 230.0 + 480.0 && dlx <= 230.0 + 480.0 + 8.0 {
-                    for (i, (_rx_start, ry_start, _rx_end, ry_end)) in
+                    for (i, (rx_start, ry_start, rx_end, ry_end)) in
                         self.history_item_rects.iter().enumerate()
                     {
-                        if dly >= *ry_start && dly <= *ry_end {
+                        if dlx >= *rx_start && dlx <= *rx_end && dly >= *ry_start && dly <= *ry_end
+                        {
                             // Hit a history item row's X range?
                             // Actually history.rs draws scrollbar at s(230 + 480)
                             let track_y_start = *ry_start + 35.0;
@@ -1290,46 +1306,128 @@ impl SettingsWindow {
             11 => ai_config.firecrawl_url = text,
             12 => ai_config.firecrawl_api_key = text,
             13 => {
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-                let mut hasher = DefaultHasher::new();
-                text.hash(&mut hasher);
-                self.system_prompt_hash = hasher.finish();
+                self.system_prompt_hash = 0; // Force re-hash/re-render in ai.rs
                 ai_config.system_prompt = text;
             }
             _ => {}
         }
     }
 
-    fn get_cursor_from_x(&self, text: &str, x: f64, scale: f32) -> usize {
-        get_cursor_index_from_xy(
-            text,
-            14.0 * scale,
-            10000,
-            (x as f32 * scale).max(0.0),
-            7.0 * scale,
-        )
+    fn ensure_cursor_visible(&mut self, field_idx: usize, scale: f32, ai_config: &AiConfig) {
+        if field_idx >= 14 {
+            return;
+        }
+
+        if field_idx == 13 {
+            let text = &ai_config.system_prompt;
+            let mut measurement_text = text.clone();
+            if measurement_text.ends_with('\n') {
+                measurement_text.push(' ');
+            }
+            let (_, py, ch) = self.get_xy_from_cursor(&measurement_text, self.cursor_pos, scale);
+            let py_logical = py as f32; // Relative to text start (scaled)
+            let ch_scaled = ch as f32; // Line height (scaled)
+
+            // Text viewport is smaller than box (padded by 12px top/bottom)
+            let viewport_h_scaled = (250.0 - 24.0) * scale;
+            let mut current_scroll = self.system_prompt_scroll_offset * scale;
+
+            let top_y = py_logical + current_scroll;
+            let bottom_y = top_y + ch_scaled;
+
+            // Pad by 10/30px to keep cursor from hitting edges
+            if top_y < 10.0 {
+                current_scroll = (10.0 - py_logical).min(0.0);
+            } else if bottom_y > viewport_h_scaled - 10.0 {
+                current_scroll = (viewport_h_scaled - 10.0 - (py_logical + ch_scaled)).min(0.0);
+            }
+
+            // Content-aware clamping
+            let (_, mh): (f32, f32) =
+                get_metrics_dw(&measurement_text, 14.0 * scale, (460.0 * scale) as u32);
+            let content_h = mh + 24.0 * scale;
+            let min_scroll = (250.0 * scale - content_h).min(0.0f32);
+            current_scroll = current_scroll.max(min_scroll).min(0.0);
+
+            self.system_prompt_scroll_offset = current_scroll / scale;
+            return;
+        }
+
+        // Single-line fields
+        if field_idx >= 14 {
+            return;
+        } // Skip multiline or invalid
+
+        let fields = vec![
+            (265.0, 30.0, 160.0),   // 0: Profile Name
+            (565.0, 30.0, 45.0),    // 1: Multimodal
+            (230.0, 130.0, 500.0),  // 2: Key
+            (230.0, 230.0, 500.0),  // 3: URL
+            (230.0, 330.0, 500.0),  // 4: Model
+            (230.0, 430.0, 150.0),  // 5: Steps
+            (405.0, 430.0, 150.0),  // 6: L1
+            (580.0, 430.0, 150.0),  // 7: L2
+            (230.0, 530.0, 150.0),  // 8: Int Freq
+            (230.0, 630.0, 500.0),  // 9: Tavily Key
+            (230.0, 730.0, 500.0),  // 10: Brave Key
+            (230.0, 830.0, 500.0),  // 11: FC URL
+            (230.0, 930.0, 500.0),  // 12: FC Key
+            (230.0, 1030.0, 500.0), // 13: System
+        ];
+
+        if field_idx >= fields.len() {
+            return;
+        }
+        let (_fx, _, fw) = fields[field_idx];
+        let text = self.get_field_text(field_idx, ai_config);
+        let font_size = 14.0 * scale;
+        let (total_text_w, _): (f32, f32) = get_metrics_dw(&text, font_size, 1000000);
+
+        let viewport_w_scaled = (fw - 30.0) as f32 * scale;
+        let (px, _, _) = self.get_xy_from_cursor(&text, self.cursor_pos, scale);
+        let cx_logical = px as f32; // This is physical pixels relative to text start
+
+        let mut current_scroll = self.field_scroll_offsets[field_idx];
+
+        // 1. Ensure cursor visibility
+        let visible_x = cx_logical + current_scroll;
+        if visible_x < 5.0 {
+            current_scroll = (5.0f32 - cx_logical).min(0.0);
+        } else if visible_x > viewport_w_scaled - 5.0 {
+            current_scroll = (viewport_w_scaled - 5.0f32 - cx_logical).min(0.0);
+        }
+
+        // 2. Snap-back logic: Ensure we don't show empty space at the end if the text is longer than viewport
+        let min_scroll = (viewport_w_scaled - total_text_w).min(0.0f32);
+        current_scroll = current_scroll.max(min_scroll).min(0.0);
+
+        self.field_scroll_offsets[field_idx] = current_scroll;
     }
 
-    fn get_cursor_from_xy(&self, text: &str, lx: f64, ly: f64, scale: f32) -> usize {
-        let field_idx = self.focused_field.unwrap_or(0);
-        let base_w = if field_idx == 13 { 460.0 } else { 500.0 };
-        let max_width = base_w * scale;
-        get_cursor_index_from_xy(
-            text,
-            14.0 * scale,
-            max_width as u32,
-            (lx as f32 * scale).max(0.0),
-            (ly as f32 * scale).max(0.0),
-        )
+    fn get_cursor_from_x(&self, text: &str, layout_x: f32, scale: f32) -> usize {
+        get_cursor_index_from_xy(text, 14.0 * scale, 1000000, layout_x, 7.0 * scale)
     }
 
-    fn get_xy_from_cursor(&self, text: &str, cursor_pos: usize, scale: f32) -> (f64, f64) {
+    fn get_cursor_from_xy(&self, text: &str, layout_x: f32, layout_y: f32, scale: f32) -> usize {
         let field_idx = self.focused_field.unwrap_or(0);
-        let base_w = if field_idx == 13 { 460.0 } else { 500.0 };
-        let max_width = base_w * scale;
-        let (px, py) = get_xy_from_cursor_index(text, 14.0 * scale, max_width as u32, cursor_pos);
-        (px as f64 / scale as f64, py as f64 / scale as f64)
+        let max_width = if field_idx == 13 {
+            460.0 * scale
+        } else {
+            1000000.0
+        };
+        get_cursor_index_from_xy(text, 14.0 * scale, max_width as u32, layout_x, layout_y)
+    }
+
+    fn get_xy_from_cursor(&self, text: &str, cursor_pos: usize, scale: f32) -> (f64, f64, f64) {
+        let field_idx = self.focused_field.unwrap_or(0);
+        let max_width = if field_idx == 13 {
+            460.0 * scale
+        } else {
+            1000000.0
+        };
+        let (px, py, ch) =
+            get_xy_from_cursor_index(text, 14.0 * scale, max_width as u32, cursor_pos);
+        (px as f64, py as f64, ch as f64)
     }
 
     pub fn handle_key_input(
@@ -1339,7 +1437,7 @@ impl SettingsWindow {
         modifiers: winit::keyboard::ModifiersState,
     ) -> bool {
         let size = self.window.inner_size();
-        let scale = ((size.width as f64 / 800.0).min(size.height as f64 / 750.0)) as f32;
+        let scale = ((size.width as f32 / 800.0).min(size.height as f32 / 750.0)) as f32;
         self.last_cursor_action = std::time::Instant::now();
         if self.current_tab != 2 {
             return false;
@@ -1369,24 +1467,36 @@ impl SettingsWindow {
 
         if let Key::Named(NamedKey::ArrowUp) = &event.logical_key {
             if field_idx == 13 {
-                let (lx, ly) = self.get_xy_from_cursor(&text, self.cursor_pos, scale);
-                let line_height = 20.0;
-                self.cursor_pos = self.get_cursor_from_xy(&text, lx, ly - line_height + 5.0, scale);
+                let (lx, ly, _) = self.get_xy_from_cursor(&text, self.cursor_pos, scale);
+                let line_height = 20.0 * scale; // pixels
+                self.cursor_pos = self.get_cursor_from_xy(
+                    &text,
+                    lx as f32,
+                    ly as f32 - line_height + 5.0 * scale,
+                    scale,
+                );
                 if !has_shift {
                     self.selection_start = None;
                 }
+                self.ensure_cursor_visible(field_idx, scale, ai_config);
                 self.window.request_redraw();
                 return true;
             }
         }
         if let Key::Named(NamedKey::ArrowDown) = &event.logical_key {
             if field_idx == 13 {
-                let (lx, ly) = self.get_xy_from_cursor(&text, self.cursor_pos, scale);
-                let line_height = 20.0;
-                self.cursor_pos = self.get_cursor_from_xy(&text, lx, ly + line_height + 5.0, scale);
+                let (lx, ly, _) = self.get_xy_from_cursor(&text, self.cursor_pos, scale);
+                let line_height = 20.0 * scale; // pixels
+                self.cursor_pos = self.get_cursor_from_xy(
+                    &text,
+                    lx as f32,
+                    ly as f32 + line_height + 5.0 * scale,
+                    scale,
+                );
                 if !has_shift {
                     self.selection_start = None;
                 }
+                self.ensure_cursor_visible(field_idx, scale, ai_config);
                 self.window.request_redraw();
                 return true;
             }
@@ -1404,6 +1514,7 @@ impl SettingsWindow {
                 if self.cursor_pos > 0 {
                     self.cursor_pos -= 1;
                 }
+                self.ensure_cursor_visible(field_idx, scale, ai_config);
                 self.window.request_redraw();
                 return true;
             }
@@ -1418,6 +1529,7 @@ impl SettingsWindow {
                 if self.cursor_pos < chars.len() {
                     self.cursor_pos += 1;
                 }
+                self.ensure_cursor_visible(field_idx, scale, ai_config);
                 self.window.request_redraw();
                 return true;
             }
@@ -1430,6 +1542,7 @@ impl SettingsWindow {
                     self.selection_start = None;
                 }
                 self.cursor_pos = 0;
+                self.ensure_cursor_visible(field_idx, scale, ai_config);
                 self.window.request_redraw();
                 return true;
             }
@@ -1442,6 +1555,7 @@ impl SettingsWindow {
                     self.selection_start = None;
                 }
                 self.cursor_pos = chars.len();
+                self.ensure_cursor_visible(field_idx, scale, ai_config);
                 self.window.request_redraw();
                 return true;
             }
@@ -1465,6 +1579,7 @@ impl SettingsWindow {
                     self.cursor_pos -= 1;
                 }
                 self.set_field_text(field_idx, ai_config, chars.iter().collect());
+                self.ensure_cursor_visible(field_idx, scale, ai_config);
                 ai_config.save();
                 self.window.request_redraw();
                 return true;
@@ -1487,6 +1602,7 @@ impl SettingsWindow {
                     chars.remove(self.cursor_pos);
                 }
                 self.set_field_text(field_idx, ai_config, chars.iter().collect());
+                self.ensure_cursor_visible(field_idx, scale, ai_config);
                 ai_config.save();
                 self.window.request_redraw();
                 return true;
@@ -1503,6 +1619,7 @@ impl SettingsWindow {
                     chars.insert(self.cursor_pos, '\n');
                     self.cursor_pos += 1;
                     self.set_field_text(field_idx, ai_config, chars.iter().collect());
+                    self.ensure_cursor_visible(field_idx, scale, ai_config);
                     ai_config.save();
                     self.window.request_redraw();
                     return true;
@@ -1549,6 +1666,7 @@ impl SettingsWindow {
                                     self.cursor_pos += p_chars.len();
                                 }
                                 self.set_field_text(field_idx, ai_config, chars.iter().collect());
+                                self.ensure_cursor_visible(field_idx, scale, ai_config);
                                 ai_config.save();
                                 self.window.request_redraw();
                             }
@@ -1579,6 +1697,7 @@ impl SettingsWindow {
                         self.cursor_pos += input_chars.len();
                     }
                     self.set_field_text(field_idx, ai_config, chars.iter().collect());
+                    self.ensure_cursor_visible(field_idx, scale, ai_config);
                     ai_config.save();
                     self.window.request_redraw();
                     return true;
@@ -1627,12 +1746,15 @@ impl SettingsWindow {
 
             self.set_field_text(idx, ai_config, chars.iter().collect());
             self.config_dirty = true;
-            if idx == 11 {
+            if idx == 13 {
                 // Invalidate system prompt metrics cache
                 self.system_prompt_hash = 0;
                 self.system_prompt_metrics_cache = 0.0;
             }
             ai_config.save();
+            let size = self.window.inner_size();
+            let scale = ((size.width as f32 / 800.0).min(size.height as f32 / 750.0)) as f32;
+            self.ensure_cursor_visible(idx, scale, ai_config);
             self.last_cursor_action = std::time::Instant::now();
             self.window.request_redraw();
             self.is_dirty = true; // Added for handle_key (IME is a form of key input)
@@ -1882,14 +2004,22 @@ impl SettingsWindow {
 
         if field_idx == 13 {
             // Multi-line cursor drag for System Prompt
-            let text_y = dly as f64 - input_y - 12.0 - self.system_prompt_scroll_offset as f64;
-            if text_y.is_finite() {
-                self.cursor_pos = self.get_cursor_from_xy(&val, text_x, text_y, scale as f32);
+            let scale_f32 = scale as f32;
+            let scroll_y = self.system_prompt_scroll_offset * scale_f32;
+            let layout_x = (text_x as f32) * scale_f32;
+            let layout_y = (dly - input_y - 12.0) as f32 * scale_f32 - scroll_y;
+            if layout_y.is_finite() {
+                self.cursor_pos = self.get_cursor_from_xy(&val, layout_x, layout_y, scale_f32);
             }
         } else if field_idx != 1 {
             // Skip multimodal toggle
-            self.cursor_pos = self.get_cursor_from_x(&val, text_x, scale as f32);
+            let scale_f32 = scale as f32;
+            let scroll_x = self.field_scroll_offsets[field_idx];
+            let layout_x = (text_x as f32) * scale_f32 - scroll_x;
+            self.cursor_pos = self.get_cursor_from_x(&val, layout_x, scale_f32);
         }
+        let scale_f32 = scale as f32;
+        self.ensure_cursor_visible(field_idx, scale_f32, ai_config);
         self.window.request_redraw();
         self.last_cursor_action = std::time::Instant::now();
         self.is_dirty = true;

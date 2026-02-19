@@ -1,7 +1,6 @@
 use crate::theme::*;
 use crate::types::AiConfig;
 use crate::ui_primitives::*;
-use rusttype::Scale;
 
 thread_local! {
     // Reduced from 512x512 (1MB) to 256x256 (256KB) to save memory
@@ -25,6 +24,7 @@ pub struct AiTabState<'a> {
     pub pressed_btn: Option<usize>,
     pub show_delete_dialog: bool,
     pub notification: Option<(String, std::time::Instant)>,
+    pub field_scroll_offsets: [f32; 14],
 }
 
 pub fn draw(
@@ -141,6 +141,8 @@ pub fn draw(
             w,
             sc(20.0) as u32,
             0.0,
+            0.0,
+            w,
         );
 
         // Input Border & BG
@@ -207,9 +209,7 @@ pub fn draw(
             (i == 2 || i == 9 || i == 10 || i == 12) && !val.is_empty() && !state.show_api_key;
         let display_chars: Vec<char> = if is_masked {
             let mask_char = if is_focused { '•' } else { '*' };
-            std::iter::repeat(mask_char)
-                .take(val_chars.len().min(32))
-                .collect()
+            std::iter::repeat(mask_char).take(val_chars.len()).collect()
         } else {
             if val.is_empty() {
                 (if is_focused { "" } else { "None" }).chars().collect()
@@ -242,6 +242,8 @@ pub fn draw(
             input_w.saturating_sub(sc(30.0) as u32),
             sc(30.0) as u32,
             0.0,
+            state.field_scroll_offsets[i],
+            1000000,
         );
 
         // Profile Controls [<] [>] [+] [-] standardized row
@@ -285,6 +287,8 @@ pub fn draw(
                 btn_w,
                 sc(45.0) as u32,
                 0.0,
+                0.0,
+                btn_w,
             );
 
             // [>] Next Profile (at 430)
@@ -324,6 +328,8 @@ pub fn draw(
                 btn_w,
                 sc(45.0) as u32,
                 0.0,
+                0.0,
+                btn_w,
             );
 
             // [+] Add Profile (at 480)
@@ -365,6 +371,8 @@ pub fn draw(
                 add_w_abs,
                 sc(45.0) as u32,
                 0.0,
+                0.0,
+                add_w_abs,
             );
 
             // [-] Delete Profile (at 525)
@@ -406,6 +414,8 @@ pub fn draw(
                 del_w_abs,
                 sc(45.0) as u32,
                 0.0,
+                0.0,
+                sc(45.0) as u32,
             );
         }
 
@@ -455,9 +465,11 @@ pub fn draw(
                 fy_abs,
                 sc(14.0),
                 COLOR_TEXT_SEC,
-                w,
+                sc(45.0) as u32 + 500,
                 sc(20.0) as u32,
                 0.0,
+                0.0,
+                sc(45.0) as u32 + 500,
             );
             let is_multimodal = active_profile.is_multimodal;
             let toggle_bg = if is_multimodal {
@@ -502,6 +514,8 @@ pub fn draw(
                     toggle_dim,
                     toggle_dim,
                     0.0,
+                    0.0,
+                    toggle_dim,
                 );
             }
         }
@@ -539,7 +553,7 @@ pub fn draw(
     // EXTRA OVERLAYS (Cursor, focus indications)
     if let Some(i) = state.focused_field {
         temp_num.clear();
-        let (_label, fx, fy, _fw, is_multiline) = match i {
+        let (_label, fx, fy, fw, is_multiline) = match i {
             0 => ("Active Profile", 265.0, 30.0, 160.0, false),
             2 => ("API Key", 230.0, 130.0, 500.0, false),
             3 => ("Base URL", 230.0, 230.0, 500.0, false),
@@ -609,6 +623,7 @@ pub fn draw(
                     val_chars
                 }
             };
+            let final_text: String = display_chars.iter().collect();
 
             let text_start_x = s(fx as u32) as i32 + sc(15.0) as i32;
             let text_start_y = input_y_raw + sc(12.0) as i32;
@@ -647,27 +662,41 @@ pub fn draw(
                     let min_idx = sel_start_idx.min(state.cursor_pos).min(display_chars.len());
                     let max_idx = sel_start_idx.max(state.cursor_pos).min(display_chars.len());
                     if min_idx != max_idx {
-                        let left_s: String = display_chars[..min_idx].iter().collect();
-                        let mid_s: String = display_chars[min_idx..max_idx].iter().collect();
-                        let lx = text_width(&[], &left_s, Scale::uniform(sc(14.0)));
-                        let mx = text_width(&[], &mid_s, Scale::uniform(sc(14.0)));
-                        draw_rect_alpha(
-                            buffer,
-                            w,
-                            text_start_x + lx as i32,
-                            text_start_y,
-                            mx,
-                            sc(22.0) as u32,
-                            0x00AADDFF,
-                            0.4,
-                            w,
-                            h,
-                        );
+                        let (lx, _, _) =
+                            get_xy_from_cursor_index(&final_text, sc(14.0), 1000000, min_idx);
+                        let (rx, _, _) =
+                            get_xy_from_cursor_index(&final_text, sc(14.0), 1000000, max_idx);
+
+                        let scroll_px = state.field_scroll_offsets[i];
+                        let draw_lx = (text_start_x as f32 + lx + scroll_px) as i32;
+                        let draw_rx = (text_start_x as f32 + rx + scroll_px) as i32;
+
+                        // Clip to box
+                        let box_left = text_start_x;
+                        let box_right = text_start_x + sc(fw as f32 - 30.0) as i32;
+
+                        let final_lx = draw_lx.max(box_left).min(box_right);
+                        let final_rx = draw_rx.max(box_left).min(box_right);
+
+                        if final_rx > final_lx {
+                            draw_rect_alpha(
+                                buffer,
+                                w,
+                                final_lx,
+                                text_start_y,
+                                (final_rx - final_lx) as u32,
+                                sc(22.0) as u32,
+                                0x00AADDFF,
+                                0.4,
+                                w,
+                                h,
+                            );
+                        }
                     }
                 }
             }
 
-            let (px, py) = if i == 13 {
+            let (px, py, _ch) = if i == 13 {
                 get_xy_from_cursor_index(
                     &ai_config.system_prompt,
                     sc(14.0),
@@ -675,29 +704,39 @@ pub fn draw(
                     state.cursor_pos,
                 )
             } else {
-                let cur_idx = state.cursor_pos.min(display_chars.len());
-                let lx = text_width(
-                    &[],
-                    &display_chars[..cur_idx].iter().collect::<String>(),
-                    Scale::uniform(sc(14.0)),
-                );
-                (lx as f32, 0.0)
+                get_xy_from_cursor_index(
+                    &final_text,
+                    sc(14.0),
+                    1000000,
+                    state.cursor_pos.min(display_chars.len()),
+                )
             };
 
-            let cursor_x = text_start_x + px as i32;
-            let cursor_y = text_start_y as f32
-                + py
-                + (if i == 13 {
-                    state.system_prompt_scroll_offset * scale
-                } else {
-                    0.0
-                });
+            let scroll_px = if i == 13 {
+                state.system_prompt_scroll_offset * scale
+            } else {
+                state.field_scroll_offsets[i]
+            };
+
+            let cursor_x =
+                (text_start_x as f32 + px + (if i == 13 { 0.0 } else { scroll_px })) as i32;
+            let cursor_y =
+                (text_start_y as f32 + py + (if i == 13 { scroll_px } else { 0.0 })) as i32;
+
+            // Clipping for single-line fields
+            let is_inside = if i == 13 {
+                cursor_y >= input_y_raw && cursor_y <= (box_bottom_raw - sc(20.0) as i32)
+            } else {
+                let box_left = text_start_x;
+                let box_right = text_start_x + sc(fw as f32 - 30.0) as i32;
+                cursor_x >= box_left && cursor_x <= box_right
+            };
+
             let cursor_visible =
                 (std::time::Instant::now() - state.last_cursor_action).as_millis() % 1000 < 500;
-            if cursor_y >= (input_y_raw as f32) && cursor_y <= (box_bottom_raw as f32 - sc(20.0)) {
-                if cursor_x >= 0 && cursor_y >= 0.0 {
-                    cursor_rect = Some((cursor_x, cursor_y as i32, 2, sc(22.0) as u32));
-                }
+
+            if is_inside {
+                cursor_rect = Some((cursor_x, cursor_y, 2, sc(22.0) as u32));
                 if state.draw_cursor && cursor_visible {
                     draw_rect(
                         buffer,
@@ -741,10 +780,12 @@ pub fn draw(
             sc(500.0 - 40.0) as u32,
             input_h.saturating_sub(sc(24.0) as u32),
             state.system_prompt_scroll_offset * scale,
+            state.field_scroll_offsets[13],
+            sc(500.0 - 40.0) as u32,
         );
 
         let view_h = input_h.saturating_sub(sc(24.0) as u32) as f32;
-        let (_, content_h_logical) =
+        let (_, content_h_logical): (f32, f32) =
             get_metrics_dw(&ai_config.system_prompt, sc(14.0), sc(500.0 - 40.0) as u32);
         let full_content_h = content_h_logical + sc(24.0);
 
@@ -756,7 +797,7 @@ pub fn draw(
             draw_rect(buffer, w, sb_x, sb_y, sb_w, track_h, 0x00333333, w, h);
             let ratio = view_h / full_content_h;
             let handle_h = (view_h * ratio).max(sc(20.0)).min(view_h) as u32;
-            let max_scroll = (full_content_h - view_h).max(0.0);
+            let max_scroll = (full_content_h - view_h).max(0.0f32);
             let progress = if max_scroll > 0.0 {
                 (-state.system_prompt_scroll_offset * scale)
                     .max(0.0)
@@ -810,6 +851,8 @@ pub fn draw(
             dialog_w_abs,
             dialog_h_abs,
             0.0,
+            0.0,
+            dialog_w_abs,
         );
 
         let btn_w_design = 80.0;
@@ -853,6 +896,8 @@ pub fn draw(
             btn_w_abs,
             btn_h_abs,
             0.0,
+            0.0,
+            btn_w_abs,
         );
 
         // YES button
@@ -887,6 +932,8 @@ pub fn draw(
             btn_w_abs,
             btn_h_abs,
             0.0,
+            0.0,
+            btn_w_abs,
         );
     }
 
@@ -927,6 +974,8 @@ pub fn draw(
                 toast_w,
                 toast_h,
                 0.0,
+                0.0,
+                toast_w,
             );
         }
     }

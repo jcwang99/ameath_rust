@@ -4,7 +4,6 @@ use serde_json::Value;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Message {
     pub role: String,
-    #[serde(flatten)]
     pub content: Content,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
@@ -97,9 +96,9 @@ pub struct Choice {
 impl OpenAiClient {
     pub fn new(api_key: String, base_url: String, model: String) -> Self {
         Self {
-            api_key,
-            base_url,
-            model,
+            api_key: api_key.trim().to_string(),
+            base_url: base_url.trim().to_string(),
+            model: model.trim().to_string(),
             http_client: reqwest::Client::new(),
         }
     }

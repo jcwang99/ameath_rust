@@ -228,10 +228,10 @@ impl ChatWindow {
         let (mx, my) = self.mouse_pos;
         let window_height = self.window.inner_size().height as f64;
 
-        // Plus button is now at bottom-left
+        // Plus button is now at bottom-left, below text
         let btn_size = 32.0;
         let btn_x = 10.0;
-        let btn_y = window_height - 10.0 - btn_size;
+        let btn_y = window_height - 5.0 - btn_size; // Margin from bottom
 
         self.plus_button_hovered =
             mx >= btn_x && mx <= btn_x + btn_size && my >= btn_y && my <= btn_y + btn_size;
@@ -483,15 +483,13 @@ impl ChatWindow {
         }
         lines.push(current_line); // Push last line
 
-        let num_lines = lines.len().max(1);
-        let text_height = (num_lines as f32 * line_height) + (padding * 2.0);
+        // Dynamic height calculation
+        let text_h = (lines.len() as f32 * line_height).max(line_height) as u32;
+        let thumbnail_h = if self.thumbnails.is_empty() { 0 } else { 100 };
+        let button_row_h = 40; // Explicit space for the plus button at the bottom
+        let padding_total = (padding * 2.0) as u32;
 
-        let thumb_height = if self.thumbnails.is_empty() {
-            0.0
-        } else {
-            100.0
-        };
-        let target_height = (text_height + thumb_height).max(60.0) as u32;
+        let target_height = padding_total + thumbnail_h + text_h + button_row_h;
 
         // 2. Resize window if needed
         let current_size = self.window.inner_size();
@@ -534,20 +532,45 @@ impl ChatWindow {
 
         // Colors
         let bg_color = 0xFF2D2D2D; // Dark grey
-        let border_color = 0xFFFFFFFF; // White
+        let border_color = 0xFF444444; // Subtle dark border
         let text_color = 0xFFFFFFFF;
         let cursor_color = 0xFF00FF00; // Green cursor
 
         // Fill background
         buffer.fill(0);
 
+        // Draw rounded window background
+        let win_r: i32 = 12;
+        let win_r_sq = win_r * win_r;
         for y in 0..buf_h {
             for x in 0..buf_w {
-                // Border
-                if x < 2 || x >= buf_w - 2 || y < 2 || y >= buf_h - 2 {
-                    buffer[y * buf_w + x] = border_color;
+                let mut draw_bg = true;
+                let dx = if x < win_r as usize {
+                    (win_r as usize - x) as i32
+                } else if x > (buf_w - win_r as usize - 1) {
+                    (x - (buf_w - win_r as usize - 1)) as i32
                 } else {
-                    buffer[y * buf_w + x] = bg_color;
+                    0
+                };
+                let dy = if y < win_r as usize {
+                    (win_r as usize - y) as i32
+                } else if y > (buf_h - win_r as usize - 1) {
+                    (y - (buf_h - win_r as usize - 1)) as i32
+                } else {
+                    0
+                };
+
+                if dx > 0 && dy > 0 && dx * dx + dy * dy > win_r_sq {
+                    draw_bg = false;
+                }
+
+                if draw_bg {
+                    // Subtle border (1px)
+                    if x == 0 || x == buf_w - 1 || y == 0 || y == buf_h - 1 {
+                        buffer[y * buf_w + x] = border_color;
+                    } else {
+                        buffer[y * buf_w + x] = bg_color;
+                    }
                 }
             }
         }
@@ -629,7 +652,7 @@ impl ChatWindow {
             }
         }
 
-        // Draw Plus Button (at bottom-left)
+        // Draw Plus Button (at bottom-left) - Circular, borderless
         let btn_size = 32;
         let btn_x = 10;
         let btn_y = buf_h - 10 - btn_size;
@@ -639,21 +662,27 @@ impl ChatWindow {
         } else {
             0xFF3D3D3D
         };
-        let plus_border = 0xFF888888;
+
+        let radius = btn_size as i32 / 2;
+        let r_sq = radius * radius;
+        let cx = btn_size as i32 / 2;
+        let cy = btn_size as i32 / 2;
 
         for ty in 0..btn_size {
             for tx in 0..btn_size {
-                let px = btn_x + tx;
-                let py = btn_y + ty;
-                if px < buf_w && py < buf_h {
-                    if tx < 1 || tx >= btn_size - 1 || ty < 1 || ty >= btn_size - 1 {
-                        buffer[py * buf_w + px] = plus_border;
-                    } else {
-                        // Plus sign
-                        let is_plus = (tx > 10 && tx < 22 && ty > 15 && ty < 17)
-                            || (ty > 10 && ty < 22 && tx > 15 && tx < 17);
+                let dx = tx as i32 - cx;
+                let dy = ty as i32 - cy;
+
+                if dx * dx + dy * dy <= r_sq {
+                    let px = btn_x + tx;
+                    let py = btn_y + ty;
+                    if px < buf_w && py < buf_h {
+                        // Plus sign centered in circle
+                        let is_plus = (tx > 10 && tx < 22 && ty >= 15 && ty <= 16)
+                            || (ty > 10 && ty < 22 && tx >= 15 && tx <= 16);
+
                         if is_plus {
-                            buffer[py * buf_w + px] = 0xFFFFFFFF;
+                            buffer[py * buf_w + px] = 0xFFBBBBBB; // Slightly greyish plus as in reference
                         } else {
                             buffer[py * buf_w + px] = plus_bg;
                         }
@@ -662,13 +691,13 @@ impl ChatWindow {
             }
         }
 
-        // Draw text (offset right to avoid button)
+        // Draw text (no horizontal offset anymore, starts at padding)
         let text_y_offset = if self.thumbnails.is_empty() {
             0.0
         } else {
             100.0
         };
-        let text_x_offset = 45.0; // Offset for the plus button
+        let text_x_offset = 0.0;
         for (i, line) in lines.iter().enumerate() {
             let y_pos = padding + v_metrics.ascent + (i as f32 * line_height) + text_y_offset;
             let offset = point(padding + text_x_offset, y_pos);

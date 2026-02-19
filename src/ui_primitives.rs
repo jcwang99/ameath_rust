@@ -1,6 +1,6 @@
 use crate::render::{get_d2d_factory, get_dwrite_factory};
 use rayon::prelude::*;
-use rusttype::{Font, Scale};
+use rusttype::Font;
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 use windows::Win32::Foundation::{HWND, RECT};
@@ -130,6 +130,8 @@ impl ScratchpadRenderer {
                                 windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
                             alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
                         },
+                        dpiX: 96.0,
+                        dpiY: 96.0,
                         ..Default::default()
                     };
                     self.rt = Some(d2d_factory.CreateDCRenderTarget(&props).unwrap());
@@ -154,7 +156,7 @@ thread_local! {
     static SCRATCHPAD: std::cell::RefCell<ScratchpadRenderer> = std::cell::RefCell::new(ScratchpadRenderer::new());
 }
 
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Copy)]
 pub struct LayoutKey {
     pub text_hash: u64,
     pub font_size_bits: u32,
@@ -164,10 +166,12 @@ pub struct LayoutKey {
     pub is_centered: bool,
 }
 
-#[derive(Hash, PartialEq, Eq, Clone)]
+#[derive(Hash, PartialEq, Eq, Clone, Copy)]
 pub struct RasterKey {
     pub layout_key: LayoutKey,
     pub color: u32,
+    pub scroll_x_bits: u32,
+    pub scroll_y_bits: u32,
 }
 
 #[derive(Hash, PartialEq, Eq, Clone)]
@@ -356,7 +360,7 @@ pub fn get_or_create_layout_ex(
     unsafe {
         let wide_text: Vec<u16> = text.encode_utf16().collect();
         let layout = dwrite_factory
-            .CreateTextLayout(&wide_text, &text_format, max_w as f32, 10000.0)
+            .CreateTextLayout(&wide_text, &text_format, max_w as f32, 1000000.0)
             .unwrap();
 
         let mut cache = get_layout_cache().write().unwrap();
@@ -450,7 +454,7 @@ pub fn draw_rect_alpha(
         let affected_rows = &mut buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize];
         let rect_w = (max_x - start_x) as usize;
 
-        if (end_y_idx - start_y_idx) * rect_w > 10000 {
+        if (end_y_idx - start_y_idx) * rect_w > 1000000 {
             affected_rows
                 .par_chunks_mut(surface_w_usize)
                 .for_each(|row| {
@@ -679,8 +683,15 @@ pub fn draw_text(
         let surface_h = (buffer.len() as u32) / surface_w.max(1);
         // Use default family for standard draw_text
         draw_text_dw_ex(
-            buffer, surface_w, text, x, y, font_size, color, 10000, surface_h, 0.0,
+            buffer, surface_w, text, x, y, font_size, color, 1000000, surface_h, 0.0, 0.0, 1000000,
         );
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Fallback for non-windows platforms
+        // This is a placeholder and doesn't actually draw anything.
+        // Real implementation would use a different text rendering library.
+        let _ = (buffer, surface_w, _fonts, text, x, y, font_size, color);
     }
 }
 
@@ -697,6 +708,8 @@ pub fn draw_text_dw_h(
     max_w: u32,
     max_h: u32,
     scroll_offset: f32,
+    scroll_x: f32,
+    layout_w: u32,
 ) {
     if text.is_empty() {
         return;
@@ -713,7 +726,7 @@ pub fn draw_text_dw_h(
     let layout_key = LayoutKey {
         text_hash,
         font_size_bits: font_size.to_bits(),
-        max_w,
+        max_w: layout_w,
         font_family_hash,
         is_bold: false,
         is_centered: false,
@@ -721,6 +734,8 @@ pub fn draw_text_dw_h(
     let key = RasterKey {
         layout_key: layout_key.clone(),
         color,
+        scroll_x_bits: scroll_x.to_bits(),
+        scroll_y_bits: scroll_offset.to_bits(),
     };
 
     // Fast path: Raster Cache (Read-only first)
@@ -736,9 +751,10 @@ pub fn draw_text_dw_h(
                 entry.th,
                 &entry.alpha,
                 color,
-                x.max(0) as u32 + max_w,
-                y.max(0) as u32 + max_h,
-                -(scroll_offset as i32),
+                max_w,
+                max_h,
+                0,
+                0,
             );
             true
         } else {
@@ -765,6 +781,8 @@ pub fn draw_text_dw_h(
         max_w,
         max_h,
         scroll_offset,
+        scroll_x,
+        layout_w, // Pass layout_w
     );
 }
 
@@ -779,7 +797,9 @@ pub fn draw_text_dw_ex(
     color: u32,
     max_w: u32,
     max_h: u32,
-    scroll_offset: f32, // Logical pixels
+    scroll_offset: f32,
+    scroll_x: f32,
+    layout_w: u32, // Added layout_w
 ) {
     if text.is_empty() {
         return;
@@ -805,6 +825,8 @@ pub fn draw_text_dw_ex(
         max_w,
         max_h,
         scroll_offset,
+        scroll_x,
+        layout_w,
     );
 }
 
@@ -821,12 +843,14 @@ fn draw_text_dw_ex_internal(
     max_w: u32,
     max_h: u32,
     scroll_offset: f32,
+    scroll_x: f32,
+    layout_w: u32,
 ) {
     unsafe {
         let layout = get_or_create_layout_ex(
             text,
             font_size,
-            max_w,
+            layout_w,
             "Microsoft YaHei",
             layout_key.is_bold,
             layout_key.is_centered,
@@ -864,18 +888,11 @@ fn draw_text_dw_ex_internal(
                 .CreateSolidColorBrush(&D2D1_COLOR_F { r, g, b, a: 1.0 }, None)
                 .unwrap();
 
-            let draw_offset_y = if is_huge {
-                // For "huge" text, we draw a viewport-sized chunk.
-                // scroll_offset is usually negative (down), so draw at scroll_offset (e.g. -500)
-                // so that the line at layout_y = 500 is at scratchpad_y = 0.
-                scroll_offset
-            } else {
-                0.0
-            };
+            let draw_offset_y = scroll_offset;
 
             rt.DrawTextLayout(
                 windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F {
-                    x: 0.0,
+                    x: scroll_x,
                     y: draw_offset_y,
                 },
                 &layout,
@@ -898,8 +915,7 @@ fn draw_text_dw_ex_internal(
             }
 
             // Blit to screen
-            // If huge, we already baked the scroll into the transform, so blit at offset 0
-            let effective_scroll = if is_huge { 0.0 } else { scroll_offset };
+            // Both scrolls are baked into the layout, so blit at src offsets 0
             blit_alpha_pixels(
                 buffer,
                 surface_w,
@@ -909,20 +925,26 @@ fn draw_text_dw_ex_internal(
                 th,
                 &captured_alpha,
                 color,
-                x.max(0) as u32 + max_w,
-                y.max(0) as u32 + max_h,
-                -(effective_scroll as i32),
+                max_w,
+                max_h,
+                0,
+                0,
             );
 
             // ONLY skip cache if it's truly giant to avoid re-rasterizing medium text
             // Also bypass if it's a "huge" scrolled item to avoid stale rendering bug
             if metrics.height < 3000.0 && !is_huge {
-                let raster_key = RasterKey { layout_key, color };
+                let raster_key = RasterKey {
+                    layout_key,
+                    color,
+                    scroll_x_bits: scroll_x.to_bits(),
+                    scroll_y_bits: scroll_offset.to_bits(),
+                };
                 let mut cache = get_raster_cache().write().unwrap();
                 // Limit to ~1M pixels (~4MB)
                 while cache.total_pixels + pixel_count > 1_000_000 && !cache.order.is_empty() {
-                    let oldest_key = cache.order.remove(0);
-                    if let Some(old_entry) = cache.map.remove(&oldest_key) {
+                    let oldest = cache.order.remove(0);
+                    if let Some(old_entry) = cache.map.remove(&oldest) {
                         cache.total_pixels -= old_entry.pixel_count;
                     }
                 }
@@ -954,22 +976,25 @@ pub fn blit_alpha_pixels(
     max_w: u32,
     max_h: u32,
     src_y_off: i32,
+    src_x_off: i32,
 ) {
     let surface_h = (buffer.len() as u32) / surface_w.max(1);
 
     // Physical clipping in destination space
     let start_y = dest_y.max(0);
-    // max_h is an absolute boundary
-    let end_y = (dest_y + (th - src_y_off))
-        .min(max_h as i32)
+    // max_h is relative to dest_y
+    let end_y = (dest_y + (th as i32 - src_y_off))
+        .min(dest_y + max_h as i32)
         .min(surface_h as i32);
     if start_y >= end_y {
         return;
     }
 
     let start_x = dest_x.max(0);
-    // max_w is an absolute boundary
-    let end_x = (dest_x + tw).min(max_w as i32).min(surface_w as i32);
+    // max_w is relative to dest_x
+    let end_x = (dest_x + (tw as i32 - src_x_off))
+        .min(dest_x + max_w as i32)
+        .min(surface_w as i32);
     if start_x >= end_x {
         return;
     }
@@ -986,7 +1011,9 @@ pub fn blit_alpha_pixels(
         let src_row = dy + src_y_off;
         let src_row_off = src_row as usize * tw_usize;
         let row_idx = y as usize * surface_w_usize;
-        let src_slice = &src_alpha[src_row_off + (start_x - dest_x) as usize..];
+        let dx = start_x - dest_x;
+        let src_col = dx + src_x_off;
+        let src_slice = &src_alpha[src_row_off + src_col as usize..];
         let dest_slice = &mut buffer[row_idx + start_x as usize..row_idx + end_x as usize];
 
         blend_row_u8(dest_slice, src_slice, sr, sg, sb);
@@ -1045,23 +1072,6 @@ pub fn get_metrics_dw_ex(
 
 pub fn get_metrics_dw(text: &str, font_size: f32, max_w: u32) -> (f32, f32) {
     get_metrics_dw_ex(text, font_size, max_w, "Microsoft YaHei", false, false)
-}
-
-pub fn text_width(_fonts: &[&Font], text: &str, scale: Scale) -> u32 {
-    #[cfg(target_os = "windows")]
-    {
-        let font_size = scale.x;
-        let layout = get_or_create_layout(text, font_size, 10000);
-        unsafe {
-            let mut metrics = std::mem::zeroed();
-            layout.GetMetrics(&mut metrics).unwrap();
-            return metrics.width.ceil() as u32;
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        0
-    }
 }
 
 #[cfg(target_os = "windows")]
@@ -1152,9 +1162,9 @@ pub fn get_xy_from_cursor_index(
     font_size: f32,
     max_width: u32,
     index: usize,
-) -> (f32, f32) {
+) -> (f32, f32, f32) {
     if text.is_empty() {
-        return (0.0, 0.0);
+        return (0.0, 0.0, font_size);
     }
     unsafe {
         let layout = get_or_create_layout(text, font_size, max_width);
@@ -1170,7 +1180,7 @@ pub fn get_xy_from_cursor_index(
         let mut py = 0.0;
         let mut metrics = std::mem::zeroed();
         let _ = layout.HitTestTextPosition(utf16_pos as u32, false, &mut px, &mut py, &mut metrics);
-        (px, py)
+        (px, py, metrics.height)
     }
 }
 

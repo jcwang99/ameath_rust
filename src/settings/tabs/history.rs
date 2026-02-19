@@ -96,6 +96,8 @@ pub fn draw(
             card_w,
             sc(30.0) as u32,
             0.0,
+            0.0,
+            card_w,
         );
 
         // 3. Content
@@ -110,6 +112,8 @@ pub fn draw(
             sc(450.0) as u32,
             view_h as u32,
             scroll * scale,
+            0.0,
+            sc(450.0) as u32,
         );
 
         // 4. Sub-scrollbar (if content overflows)
