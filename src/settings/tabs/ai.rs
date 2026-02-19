@@ -20,6 +20,11 @@ pub struct AiTabState<'a> {
     pub system_prompt_metrics_cache: &'a mut f32,
     pub system_prompt_hash: u64,
     pub draw_cursor: bool,
+    pub mouse_pos: (f32, f32), // DESIGN SPACE relative to window top (lx, ly)
+    pub content_mouse_pos: (f32, f32), // DESIGN SPACE relative to scroll content (dlx, dly)
+    pub pressed_btn: Option<usize>,
+    pub show_delete_dialog: bool,
+    pub notification: Option<(String, std::time::Instant)>,
 }
 
 pub fn draw(
@@ -40,16 +45,15 @@ pub fn draw(
     let mut cursor_rect = None;
 
     let card_w = (560.0 * scale) as u32;
-    let card_h = (1450.0 * scale) as u32;
+    let card_h = (1650.0 * scale) as u32;
     let card_y_raw = (sy_val(120) as f32 + scroll_y * scale) as i32;
-    let fields_count = 12;
+    let fields_count = 14;
 
     // Viewport boundaries (for visibility check)
     let min_y_vis = sy_val(120) as i32;
     let max_y_vis = h as i32;
 
     // 1. Background (Directly into main buffer, clipped to viewport)
-    // Draw the rounded background only if visible
     let card_start_x = s(210) as i32;
     let card_box_h = card_h as i32;
     if (card_y_raw + card_box_h) >= min_y_vis && card_y_raw <= max_y_vis {
@@ -68,23 +72,40 @@ pub fn draw(
     }
 
     let mut temp_num = String::new();
+    let active_profile = ai_config.active_profile();
+
     for i in 0..fields_count {
         temp_num.clear();
+        let label_owned: String;
         let (label, fx, fy, fw, is_multiline) = match i {
-            0 => ("API Key", 230.0, 30.0, 500.0, false),
-            1 => ("Base URL", 230.0, 130.0, 500.0, false),
-            2 => ("Model", 230.0, 230.0, 500.0, false),
-            3 => ("ReAct Steps", 230.0, 330.0, 150.0, false),
-            4 => ("L1 Summary", 405.0, 330.0, 150.0, false),
-            5 => ("L2 Merge", 580.0, 330.0, 150.0, false),
-            6 => ("Interact Interval (min)", 230.0, 430.0, 150.0, false),
-            7 => ("Tavily Key", 230.0, 530.0, 500.0, false),
-            8 => ("Brave Key", 230.0, 630.0, 500.0, false),
-            9 => ("Firecrawl URL", 230.0, 730.0, 500.0, false),
-            10 => ("Firecrawl Key", 230.0, 830.0, 500.0, false),
-            11 => ("System Prompt", 230.0, 930.0, 500.0, true),
+            0 => {
+                label_owned = format!(
+                    "Active Profile ({}/{})",
+                    ai_config.active_profile_index + 1,
+                    ai_config.profiles.len()
+                );
+                (&label_owned as &str, 265.0, 30.0, 160.0, false)
+            }
+            1 => ("Multimodal (Vision)", 565.0, 30.0, 45.0, false),
+            2 => ("API Key", 230.0, 130.0, 500.0, false),
+            3 => ("Base URL", 230.0, 230.0, 500.0, false),
+            4 => ("Model", 230.0, 330.0, 500.0, false),
+            5 => ("ReAct Steps", 230.0, 430.0, 150.0, false),
+            6 => ("L1 Summary", 405.0, 430.0, 150.0, false),
+            7 => ("L2 Merge", 580.0, 430.0, 150.0, false),
+            8 => ("Interact Interval (min)", 230.0, 530.0, 150.0, false),
+            9 => ("Tavily Key", 230.0, 630.0, 500.0, false),
+            10 => ("Brave Key", 230.0, 730.0, 500.0, false),
+            11 => ("Firecrawl URL", 230.0, 830.0, 500.0, false),
+            12 => ("Firecrawl Key", 230.0, 930.0, 500.0, false),
+            13 => ("System Prompt", 230.0, 1030.0, 500.0, true),
             _ => ("", 0.0, 0.0, 0.0, false),
         };
+
+        if i == 1 {
+            // Multimodal toggle is handled specially below
+            continue;
+        }
 
         let fx_abs = s(fx as u32) as i32;
         let fy_abs = card_y_raw + sc(fy) as i32;
@@ -148,42 +169,42 @@ pub fn draw(
             h,
         );
 
-        // Value Rendering (Dynamic Overlays already handle some of this, but we need the static parts)
-        if i == 11 {
-            // System Prompt content is handled by the dynamic overlay below
+        if i == 13 {
+            // System Prompt content is handled by the dynamic overlay
             continue;
         }
 
         let val: &str = match i {
-            0 => &ai_config.api_key,
-            1 => &ai_config.base_url,
-            2 => &ai_config.model,
-            3 => {
+            0 => &active_profile.name,
+            2 => &active_profile.api_key,
+            3 => &active_profile.base_url,
+            4 => &active_profile.model,
+            5 => {
                 temp_num = ai_config.react_limit.to_string();
                 &temp_num
             }
-            4 => {
+            6 => {
                 temp_num = ai_config.l1_summary_threshold.to_string();
                 &temp_num
             }
-            5 => {
+            7 => {
                 temp_num = ai_config.l2_merge_threshold.to_string();
                 &temp_num
             }
-            6 => {
+            8 => {
                 temp_num = ai_config.interaction_frequency.to_string();
                 &temp_num
             }
-            7 => &ai_config.tavily_api_key,
-            8 => &ai_config.brave_api_key,
-            9 => &ai_config.firecrawl_url,
-            10 => &ai_config.firecrawl_api_key,
+            9 => &ai_config.tavily_api_key,
+            10 => &ai_config.brave_api_key,
+            11 => &ai_config.firecrawl_url,
+            12 => &ai_config.firecrawl_api_key,
             _ => "",
         };
 
         let val_chars: Vec<char> = val.chars().collect();
         let is_masked =
-            (i == 0 || i == 7 || i == 8 || i == 10) && !val.is_empty() && !state.show_api_key;
+            (i == 2 || i == 9 || i == 10 || i == 12) && !val.is_empty() && !state.show_api_key;
         let display_chars: Vec<char> = if is_masked {
             let mask_char = if is_focused { '•' } else { '*' };
             std::iter::repeat(mask_char)
@@ -223,8 +244,173 @@ pub fn draw(
             0.0,
         );
 
+        // Profile Controls [<] [>] [+] [-] standardized row
+        if i == 0 {
+            let btn_x_start = s(230) as i32;
+            let btn_y_start = input_y_abs;
+            let btn_w = sc(30.0) as u32;
+
+            // [<] Prev Profile (at 230)
+            let is_prev_hover = state.content_mouse_pos.0 >= 230.0
+                && state.content_mouse_pos.0 <= 260.0
+                && state.content_mouse_pos.1 >= 55.0
+                && state.content_mouse_pos.1 <= 100.0;
+            let prev_bg = if state.pressed_btn == Some(0) {
+                COLOR_PRIMARY
+            } else if is_prev_hover {
+                0x00444444
+            } else {
+                COLOR_BG_CARD
+            };
+            draw_rounded_rect(
+                buffer,
+                w,
+                btn_x_start,
+                btn_y_start,
+                btn_w,
+                sc(45.0) as u32,
+                8,
+                prev_bg,
+                w,
+                h,
+            );
+            draw_text_dw_ex(
+                buffer,
+                w,
+                "<",
+                btn_x_start + sc(10.0) as i32,
+                btn_y_start + sc(8.0) as i32,
+                sc(20.0),
+                COLOR_TEXT_MAIN,
+                btn_w,
+                sc(45.0) as u32,
+                0.0,
+            );
+
+            // [>] Next Profile (at 430)
+            let next_x_design = 430.0;
+            let next_x = s(next_x_design as u32) as i32;
+            let is_next_hover = state.content_mouse_pos.0 >= next_x_design
+                && state.content_mouse_pos.0 <= next_x_design + 30.0
+                && state.content_mouse_pos.1 >= 55.0
+                && state.content_mouse_pos.1 <= 100.0;
+            let next_bg = if state.pressed_btn == Some(1) {
+                COLOR_PRIMARY
+            } else if is_next_hover {
+                0x00444444
+            } else {
+                COLOR_BG_CARD
+            };
+            draw_rounded_rect(
+                buffer,
+                w,
+                next_x,
+                btn_y_start,
+                btn_w,
+                sc(45.0) as u32,
+                8,
+                next_bg,
+                w,
+                h,
+            );
+            draw_text_dw_ex(
+                buffer,
+                w,
+                ">",
+                next_x + sc(10.0) as i32,
+                btn_y_start + sc(8.0) as i32,
+                sc(20.0),
+                COLOR_TEXT_MAIN,
+                btn_w,
+                sc(45.0) as u32,
+                0.0,
+            );
+
+            // [+] Add Profile (at 480)
+            let add_x_design = 480.0;
+            let add_x = s(add_x_design as u32) as i32;
+            let add_w_design = 35.0;
+            let add_w_abs = sc(add_w_design) as u32;
+            let is_add_hover = state.content_mouse_pos.0 >= add_x_design
+                && state.content_mouse_pos.0 <= add_x_design + add_w_design
+                && state.content_mouse_pos.1 >= 55.0
+                && state.content_mouse_pos.1 <= 100.0;
+            let add_bg = if state.pressed_btn == Some(2) {
+                COLOR_PRIMARY
+            } else if is_add_hover {
+                0x00444444
+            } else {
+                COLOR_BG_CARD
+            };
+            draw_rounded_rect(
+                buffer,
+                w,
+                add_x,
+                btn_y_start,
+                add_w_abs,
+                sc(45.0) as u32,
+                8,
+                add_bg,
+                w,
+                h,
+            );
+            draw_text_dw_ex(
+                buffer,
+                w,
+                "+",
+                add_x + sc(10.0) as i32,
+                btn_y_start + sc(8.0) as i32,
+                sc(20.0),
+                COLOR_TEXT_MAIN,
+                add_w_abs,
+                sc(45.0) as u32,
+                0.0,
+            );
+
+            // [-] Delete Profile (at 525)
+            let del_x_design = 525.0;
+            let del_x = s(del_x_design as u32) as i32;
+            let del_w_design = 35.0;
+            let del_w_abs = sc(del_w_design) as u32;
+            let is_del_hover = state.content_mouse_pos.0 >= del_x_design
+                && state.content_mouse_pos.0 <= del_x_design + del_w_design
+                && state.content_mouse_pos.1 >= 55.0
+                && state.content_mouse_pos.1 <= 100.0;
+            let del_bg = if state.pressed_btn == Some(3) {
+                COLOR_PRIMARY
+            } else if is_del_hover {
+                0x00444444
+            } else {
+                COLOR_BG_CARD
+            };
+            draw_rounded_rect(
+                buffer,
+                w,
+                del_x,
+                btn_y_start,
+                del_w_abs,
+                sc(45.0) as u32,
+                8,
+                del_bg,
+                w,
+                h,
+            );
+            draw_text_dw_ex(
+                buffer,
+                w,
+                "-",
+                del_x + sc(14.0) as i32,
+                btn_y_start + sc(6.0) as i32,
+                sc(24.0),
+                if is_del_hover { 0x00FFFFFF } else { 0x00FF6666 },
+                del_w_abs,
+                sc(45.0) as u32,
+                0.0,
+            );
+        }
+
         // Eye Icon
-        if i == 0 || i == 7 || i == 8 || i == 10 {
+        if i == 2 || i == 9 || i == 10 || i == 12 {
             let eye_x = fx_abs + sc(fw as f32 - 45.0) as i32;
             let eye_y = input_y_abs + sc(12.0) as i32;
             let eye_col = if state.show_api_key {
@@ -246,10 +432,84 @@ pub fn draw(
         }
     }
 
-    // Interaction State Restoration
-    // (Required for scrolling/clicking prompt regardless of cache)
+    // Multimodal Toggle (CheckBox style at 565)
     {
-        let fy = 930.0;
+        let fx = 565.0;
+        let fy = 30.0;
+        let fx_abs = s(fx as u32) as i32;
+        let fy_abs = card_y_raw + sc(fy) as i32;
+        let toggle_y = fy_abs + sc(25.0) as i32;
+        let toggle_dim = sc(45.0) as u32;
+
+        let is_hover = state.content_mouse_pos.0 >= fx
+            && state.content_mouse_pos.0 <= fx + 45.0
+            && state.content_mouse_pos.1 >= fy + 25.0
+            && state.content_mouse_pos.1 <= fy + 70.0;
+
+        if fy_abs > min_y_vis && fy_abs < max_y_vis {
+            draw_text_dw_ex(
+                buffer,
+                w,
+                "Multimodal (Vision)",
+                fx_abs,
+                fy_abs,
+                sc(14.0),
+                COLOR_TEXT_SEC,
+                w,
+                sc(20.0) as u32,
+                0.0,
+            );
+            let is_multimodal = active_profile.is_multimodal;
+            let toggle_bg = if is_multimodal {
+                COLOR_PRIMARY
+            } else if state.pressed_btn == Some(101) {
+                COLOR_PRIMARY
+            } else if is_hover {
+                0x00444444
+            } else {
+                COLOR_TEXT_SEC
+            };
+
+            // Draw border
+            draw_rounded_rect(
+                buffer, w, fx_abs, toggle_y, toggle_dim, toggle_dim, 8, toggle_bg, w, h,
+            );
+            // Draw inner box for border effect
+            if !is_multimodal && state.pressed_btn != Some(101) && !is_hover {
+                draw_rounded_rect(
+                    buffer,
+                    w,
+                    fx_abs + 1,
+                    toggle_y + 1,
+                    toggle_dim - 2,
+                    toggle_dim - 2,
+                    7,
+                    COLOR_BG_CARD,
+                    w,
+                    h,
+                );
+            }
+            // Checkmark
+            if is_multimodal {
+                draw_text_dw_ex(
+                    buffer,
+                    w,
+                    "✓",
+                    fx_abs + sc(12.0) as i32,
+                    toggle_y + sc(10.0) as i32,
+                    sc(20.0),
+                    0x00FFFFFF,
+                    toggle_dim,
+                    toggle_dim,
+                    0.0,
+                );
+            }
+        }
+    }
+
+    // Interaction State Restoration for System Prompt
+    {
+        let fy = 1030.0;
         let fy_scaled_raw = card_y_raw + sc(fy) as i32;
         let _input_y_raw = fy_scaled_raw + sc(25.0) as i32;
         let _input_h = sc(250.0);
@@ -276,104 +536,128 @@ pub fn draw(
         *state.active_sys_prompt_content_height = full_content_h_px / scale;
     }
 
-    // EXTRA OVERLAYS (Cursor, focus indications that need to be dynamic)
-    let mut temp_num = String::new();
+    // EXTRA OVERLAYS (Cursor, focus indications)
     if let Some(i) = state.focused_field {
         temp_num.clear();
         let (_label, fx, fy, _fw, is_multiline) = match i {
-            0 => ("API Key", 230.0, 30.0, 500.0, false),
-            1 => ("Base URL", 230.0, 130.0, 500.0, false),
-            2 => ("Model", 230.0, 230.0, 500.0, false),
-            3 => ("ReAct Steps", 230.0, 330.0, 150.0, false),
-            4 => ("L1 Summary", 405.0, 330.0, 150.0, false),
-            5 => ("L2 Merge", 580.0, 330.0, 150.0, false),
-            6 => ("Interact Interval (min)", 230.0, 430.0, 150.0, false),
-            7 => ("Tavily Key", 230.0, 530.0, 500.0, false),
-            8 => ("Brave Key", 230.0, 630.0, 500.0, false),
-            9 => ("Firecrawl URL", 230.0, 730.0, 500.0, false),
-            10 => ("Firecrawl Key", 230.0, 830.0, 500.0, false),
-            11 => ("System Prompt", 230.0, 930.0, 500.0, true),
+            0 => ("Active Profile", 265.0, 30.0, 160.0, false),
+            2 => ("API Key", 230.0, 130.0, 500.0, false),
+            3 => ("Base URL", 230.0, 230.0, 500.0, false),
+            4 => ("Model", 230.0, 330.0, 500.0, false),
+            5 => ("ReAct Steps", 230.0, 430.0, 150.0, false),
+            6 => ("L1 Summary", 405.0, 430.0, 150.0, false),
+            7 => ("L2 Merge", 580.0, 430.0, 150.0, false),
+            8 => ("Interact Interval (min)", 230.0, 530.0, 150.0, false),
+            9 => ("Tavily Key", 230.0, 630.0, 500.0, false),
+            10 => ("Brave Key", 230.0, 730.0, 500.0, false),
+            11 => ("Firecrawl URL", 230.0, 830.0, 500.0, false),
+            12 => ("Firecrawl Key", 230.0, 930.0, 500.0, false),
+            13 => ("System Prompt", 230.0, 1030.0, 500.0, true),
             _ => ("", 0.0, 0.0, 0.0, false),
         };
 
-        let fy_scaled_raw = card_y_raw + sc(fy) as i32;
-        let input_y_raw = fy_scaled_raw + sc(25.0) as i32;
-        let input_h = if is_multiline {
-            sc(250.0) as u32
-        } else {
-            sc(45.0) as u32
-        };
-        let box_bottom_raw = input_y_raw + input_h as i32;
-
-        let val: &str = match i {
-            0 => &ai_config.api_key,
-            1 => &ai_config.base_url,
-            2 => &ai_config.model,
-            3 => {
-                temp_num = ai_config.react_limit.to_string();
-                &temp_num
-            }
-            4 => {
-                temp_num = ai_config.l1_summary_threshold.to_string();
-                &temp_num
-            }
-            5 => {
-                temp_num = ai_config.l2_merge_threshold.to_string();
-                &temp_num
-            }
-            6 => {
-                temp_num = ai_config.interaction_frequency.to_string();
-                &temp_num
-            }
-            7 => &ai_config.tavily_api_key,
-            8 => &ai_config.brave_api_key,
-            9 => &ai_config.firecrawl_url,
-            10 => &ai_config.firecrawl_api_key,
-            11 => &ai_config.system_prompt,
-            _ => "",
-        };
-
-        let val_chars: Vec<char> = val.chars().collect();
-        let is_masked =
-            (i == 0 || i == 7 || i == 8 || i == 10) && !val.is_empty() && !state.show_api_key;
-        let display_chars: Vec<char> = if is_masked {
-            let mask_char = '•';
-            std::iter::repeat(mask_char)
-                .take(val_chars.len().min(32))
-                .collect()
-        } else {
-            if val.is_empty() {
-                Vec::new()
+        if i != 1 {
+            let fy_scaled_raw = card_y_raw + sc(fy) as i32;
+            let input_y_raw = fy_scaled_raw + sc(25.0) as i32;
+            let input_h = if is_multiline {
+                sc(250.0) as u32
             } else {
-                val_chars
-            }
-        };
+                sc(45.0) as u32
+            };
+            let box_bottom_raw = input_y_raw + input_h as i32;
 
-        let text_start_x = s(fx as u32) as i32 + sc(15.0) as i32;
-        let text_start_y = input_y_raw + sc(12.0) as i32;
+            let val: &str = match i {
+                0 => &active_profile.name,
+                2 => &active_profile.api_key,
+                3 => &active_profile.base_url,
+                4 => &active_profile.model,
+                5 => {
+                    temp_num = ai_config.react_limit.to_string();
+                    &temp_num
+                }
+                6 => {
+                    temp_num = ai_config.l1_summary_threshold.to_string();
+                    &temp_num
+                }
+                7 => {
+                    temp_num = ai_config.l2_merge_threshold.to_string();
+                    &temp_num
+                }
+                8 => {
+                    temp_num = ai_config.interaction_frequency.to_string();
+                    &temp_num
+                }
+                9 => &ai_config.tavily_api_key,
+                10 => &ai_config.brave_api_key,
+                11 => &ai_config.firecrawl_url,
+                12 => &ai_config.firecrawl_api_key,
+                13 => &ai_config.system_prompt,
+                _ => "",
+            };
 
-        // SELECTION DRAWING
-        if let Some(sel_start_idx) = state.selection_start {
-            if i == 11 {
-                let rects = get_selection_rects(
-                    &ai_config.system_prompt,
-                    sc(14.0),
-                    sc(500.0 - 40.0) as u32,
-                    sel_start_idx,
-                    state.cursor_pos,
-                );
-                for (rx, ry, rw, rh) in rects {
-                    let draw_y_f =
-                        text_start_y as f32 + ry + (state.system_prompt_scroll_offset * scale);
-                    if draw_y_f >= (text_start_y as f32 - rh) && draw_y_f <= (box_bottom_raw as f32)
-                    {
+            let val_chars: Vec<char> = val.chars().collect();
+            let is_masked =
+                (i == 2 || i == 9 || i == 10 || i == 12) && !val.is_empty() && !state.show_api_key;
+            let display_chars: Vec<char> = if is_masked {
+                std::iter::repeat('•')
+                    .take(val_chars.len().min(32))
+                    .collect()
+            } else {
+                if val.is_empty() {
+                    Vec::new()
+                } else {
+                    val_chars
+                }
+            };
+
+            let text_start_x = s(fx as u32) as i32 + sc(15.0) as i32;
+            let text_start_y = input_y_raw + sc(12.0) as i32;
+
+            // Selection and Cursor logic remains similar but with new field indices
+            if let Some(sel_start_idx) = state.selection_start {
+                if i == 13 {
+                    let rects = get_selection_rects(
+                        &ai_config.system_prompt,
+                        sc(14.0),
+                        sc(500.0 - 40.0) as u32,
+                        sel_start_idx,
+                        state.cursor_pos,
+                    );
+                    for (rx, ry, rw, rh) in rects {
+                        let draw_y_f =
+                            text_start_y as f32 + ry + (state.system_prompt_scroll_offset * scale);
+                        if draw_y_f >= (text_start_y as f32 - rh)
+                            && draw_y_f <= (box_bottom_raw as f32)
+                        {
+                            draw_rect_alpha(
+                                buffer,
+                                w,
+                                text_start_x + rx as i32,
+                                draw_y_f as i32,
+                                rw as u32,
+                                rh as u32,
+                                0x00AADDFF,
+                                0.4,
+                                w,
+                                h,
+                            );
+                        }
+                    }
+                } else {
+                    let min_idx = sel_start_idx.min(state.cursor_pos).min(display_chars.len());
+                    let max_idx = sel_start_idx.max(state.cursor_pos).min(display_chars.len());
+                    if min_idx != max_idx {
+                        let left_s: String = display_chars[..min_idx].iter().collect();
+                        let mid_s: String = display_chars[min_idx..max_idx].iter().collect();
+                        let lx = text_width(&[], &left_s, Scale::uniform(sc(14.0)));
+                        let mx = text_width(&[], &mid_s, Scale::uniform(sc(14.0)));
                         draw_rect_alpha(
                             buffer,
                             w,
-                            text_start_x + rx as i32,
-                            draw_y_f as i32,
-                            rw as u32,
-                            rh as u32,
+                            text_start_x + lx as i32,
+                            text_start_y,
+                            mx,
+                            sc(22.0) as u32,
                             0x00AADDFF,
                             0.4,
                             w,
@@ -381,80 +665,60 @@ pub fn draw(
                         );
                     }
                 }
+            }
+
+            let (px, py) = if i == 13 {
+                get_xy_from_cursor_index(
+                    &ai_config.system_prompt,
+                    sc(14.0),
+                    sc(500.0 - 40.0) as u32,
+                    state.cursor_pos,
+                )
             } else {
-                let min_idx = sel_start_idx.min(state.cursor_pos).min(display_chars.len());
-                let max_idx = sel_start_idx.max(state.cursor_pos).min(display_chars.len());
-                if min_idx != max_idx {
-                    let left_s: String = display_chars[..min_idx].iter().collect();
-                    let mid_s: String = display_chars[min_idx..max_idx].iter().collect();
-                    let lx = text_width(&[], &left_s, Scale::uniform(sc(14.0)));
-                    let mx = text_width(&[], &mid_s, Scale::uniform(sc(14.0)));
-                    draw_rect_alpha(
+                let cur_idx = state.cursor_pos.min(display_chars.len());
+                let lx = text_width(
+                    &[],
+                    &display_chars[..cur_idx].iter().collect::<String>(),
+                    Scale::uniform(sc(14.0)),
+                );
+                (lx as f32, 0.0)
+            };
+
+            let cursor_x = text_start_x + px as i32;
+            let cursor_y = text_start_y as f32
+                + py
+                + (if i == 13 {
+                    state.system_prompt_scroll_offset * scale
+                } else {
+                    0.0
+                });
+            let cursor_visible =
+                (std::time::Instant::now() - state.last_cursor_action).as_millis() % 1000 < 500;
+            if cursor_y >= (input_y_raw as f32) && cursor_y <= (box_bottom_raw as f32 - sc(20.0)) {
+                if cursor_x >= 0 && cursor_y >= 0.0 {
+                    cursor_rect = Some((cursor_x, cursor_y as i32, 2, sc(22.0) as u32));
+                }
+                if state.draw_cursor && cursor_visible {
+                    draw_rect(
                         buffer,
                         w,
-                        text_start_x + lx as i32,
-                        text_start_y,
-                        mx,
+                        cursor_x,
+                        cursor_y as i32,
+                        2,
                         sc(22.0) as u32,
-                        0x00AADDFF,
-                        0.4,
+                        COLOR_PRIMARY,
                         w,
                         h,
                     );
                 }
             }
         }
-
-        let (px, py) = if i == 11 {
-            get_xy_from_cursor_index(
-                &ai_config.system_prompt,
-                sc(14.0),
-                sc(500.0 - 40.0) as u32,
-                state.cursor_pos,
-            )
-        } else {
-            let cur_idx = state.cursor_pos.min(display_chars.len());
-            let left_s: String = display_chars[..cur_idx].iter().collect();
-            let lx = text_width(&[], &left_s, Scale::uniform(sc(14.0)));
-            (lx as f32, 0.0)
-        };
-
-        let cursor_x = text_start_x + px as i32;
-        let cursor_y = text_start_y as f32
-            + py
-            + (if i == 11 {
-                state.system_prompt_scroll_offset * scale
-            } else {
-                0.0
-            });
-
-        let cursor_visible =
-            (std::time::Instant::now() - state.last_cursor_action).as_millis() % 1000 < 500;
-        if cursor_y >= (input_y_raw as f32) && cursor_y <= (box_bottom_raw as f32 - sc(20.0)) {
-            // Filter out clearly invalid coordinates before caching
-            if cursor_x >= 0 && cursor_y >= 0.0 {
-                cursor_rect = Some((cursor_x, cursor_y as i32, 2, sc(22.0) as u32));
-            }
-            if state.draw_cursor && cursor_visible {
-                draw_rect(
-                    buffer,
-                    w,
-                    cursor_x,
-                    cursor_y as i32,
-                    2,
-                    sc(22.0) as u32,
-                    COLOR_PRIMARY,
-                    w,
-                    h,
-                );
-            }
-        }
     }
 
-    // DYNAMIC CONTENT OVERLAY (Always render System Prompt)
+    // DYNAMIC CONTENT OVERLAY (System Prompt)
     {
         let fx = 230.0;
-        let fy = 930.0;
+        let fy = 1030.0;
         let fy_scaled_raw = card_y_raw + sc(fy) as i32;
         let input_y_raw = fy_scaled_raw + sc(25.0) as i32;
         let input_h = sc(250.0) as u32;
@@ -479,49 +743,193 @@ pub fn draw(
             state.system_prompt_scroll_offset * scale,
         );
 
-        // Draw System Prompt sub-scrollbar if content overflows
-        // Calculate content height directly (like history) to avoid unit mismatch issues
         let view_h = input_h.saturating_sub(sc(24.0) as u32) as f32;
         let (_, content_h_logical) =
             get_metrics_dw(&ai_config.system_prompt, sc(14.0), sc(500.0 - 40.0) as u32);
-        let full_content_h = content_h_logical + sc(24.0); // content + padding in pixels
+        let full_content_h = content_h_logical + sc(24.0);
 
-        if full_content_h > view_h && view_h > 0.0 && full_content_h.is_finite() {
+        if full_content_h > view_h && view_h > 0.0 {
             let sb_x = text_start_x + sc(500.0 - 40.0) as i32 + sc(4.0) as i32;
             let sb_y = text_start_y;
             let sb_w = sc(4.0) as u32;
             let track_h = view_h as u32;
-
-            // Draw track
-            draw_rect(
-                buffer, w, sb_x, sb_y, sb_w, track_h, 0x00333333, // dark track
-                w, h,
-            );
-
-            // Calculate and draw handle
+            draw_rect(buffer, w, sb_x, sb_y, sb_w, track_h, 0x00333333, w, h);
             let ratio = view_h / full_content_h;
             let handle_h = (view_h * ratio).max(sc(20.0)).min(view_h) as u32;
             let max_scroll = (full_content_h - view_h).max(0.0);
-            let current_scroll = (-state.system_prompt_scroll_offset * scale)
-                .max(0.0)
-                .min(max_scroll);
             let progress = if max_scroll > 0.0 {
-                current_scroll / max_scroll
+                (-state.system_prompt_scroll_offset * scale)
+                    .max(0.0)
+                    .min(max_scroll)
+                    / max_scroll
             } else {
                 0.0
             };
-            let handle_y_offset = ((view_h - handle_h as f32) * progress) as i32;
-            let handle_y = sb_y + handle_y_offset.max(0).min(track_h as i32 - handle_h as i32);
+            let handle_y = sb_y + ((view_h - handle_h as f32) * progress) as i32;
+            draw_rect(buffer, w, sb_x, handle_y, sb_w, handle_h, 0x007C4DFF, w, h);
+        }
+    }
 
-            draw_rect(
-                buffer, w, sb_x, handle_y, sb_w, handle_h, 0x007C4DFF, // accent color handle
-                w, h,
+    // 4. DIALOG OVERLAY (Deletion Confirmation)
+    if state.show_delete_dialog {
+        // Dim background
+        for p in buffer.iter_mut() {
+            let r = ((*p >> 16) & 0xFF) / 2;
+            let g = ((*p >> 8) & 0xFF) / 2;
+            let b = (*p & 0xFF) / 2;
+            *p = (r << 16) | (g << 8) | b;
+        }
+
+        let dialog_dx = (800.0 - 300.0) / 2.0;
+        let dialog_dy = (750.0 - 150.0) / 2.0;
+        let dialog_x_abs = s(dialog_dx as u32) as i32;
+        let dialog_y_abs = sy_val(dialog_dy as u32) as i32;
+        let dialog_w_abs = sc(300.0) as u32;
+        let dialog_h_abs = sc(150.0) as u32;
+
+        draw_rounded_rect(
+            buffer,
+            w,
+            dialog_x_abs,
+            dialog_y_abs,
+            dialog_w_abs,
+            dialog_h_abs,
+            12,
+            COLOR_BG_LIGHT,
+            w,
+            h,
+        );
+        draw_text_dw_ex(
+            buffer,
+            w,
+            "Delete Profile?",
+            dialog_x_abs + sc(60.0) as i32,
+            dialog_y_abs + sc(30.0) as i32,
+            sc(18.0),
+            COLOR_TEXT_MAIN,
+            dialog_w_abs,
+            dialog_h_abs,
+            0.0,
+        );
+
+        let btn_w_design = 80.0;
+        let btn_h_design = 35.0;
+        let btn_w_abs = sc(btn_w_design) as u32;
+        let btn_h_abs = sc(btn_h_design) as u32;
+        let btn_y_design = dialog_dy + 85.0;
+        let btn_y_abs = sy_val(btn_y_design as u32) as i32;
+
+        // NO button
+        let no_x_design = dialog_dx + 50.0;
+        let no_x_abs = s(no_x_design as u32) as i32;
+        let is_no_hover = state.mouse_pos.0 >= no_x_design
+            && state.mouse_pos.0 <= no_x_design + btn_w_design
+            && state.mouse_pos.1 >= btn_y_design
+            && state.mouse_pos.1 <= btn_y_design + btn_h_design;
+        draw_rounded_rect(
+            buffer,
+            w,
+            no_x_abs,
+            btn_y_abs,
+            btn_w_abs,
+            btn_h_abs,
+            8,
+            if is_no_hover {
+                COLOR_BORDER
+            } else {
+                COLOR_BG_SIDEBAR
+            },
+            w,
+            h,
+        );
+        draw_text_dw_ex(
+            buffer,
+            w,
+            "No",
+            no_x_abs + sc(30.0) as i32,
+            btn_y_abs + sc(8.0) as i32,
+            sc(14.0),
+            COLOR_TEXT_MAIN,
+            btn_w_abs,
+            btn_h_abs,
+            0.0,
+        );
+
+        // YES button
+        let yes_x_design = dialog_dx + 170.0;
+        let yes_x_abs = s(yes_x_design as u32) as i32;
+        let is_yes_hover = state.mouse_pos.0 >= yes_x_design
+            && state.mouse_pos.0 <= yes_x_design + btn_w_design
+            && state.mouse_pos.1 >= btn_y_design
+            && state.mouse_pos.1 <= btn_y_design + btn_h_design;
+
+        // Premium red Yes button: Solid red bg, White text. Brighter on hover.
+        draw_rounded_rect(
+            buffer,
+            w,
+            yes_x_abs,
+            btn_y_abs,
+            btn_w_abs,
+            btn_h_abs,
+            8,
+            if is_yes_hover { 0x00FF6666 } else { 0x00FF4444 },
+            w,
+            h,
+        );
+        draw_text_dw_ex(
+            buffer,
+            w,
+            "Yes",
+            yes_x_abs + sc(28.0) as i32,
+            btn_y_abs + sc(8.0) as i32,
+            sc(14.0),
+            0x00FFFFFF,
+            btn_w_abs,
+            btn_h_abs,
+            0.0,
+        );
+    }
+
+    // 5. TOAST NOTIFICATION
+    if let Some((msg, start_time)) = &state.notification {
+        let elapsed = start_time.elapsed().as_secs_f32();
+        if elapsed < 2.0 {
+            let toast_w = sc(150.0) as u32;
+            let toast_h = sc(40.0) as u32;
+            let toast_x = (w - toast_w) / 2;
+            let toast_y = (h as f32 * 0.8) as u32;
+
+            let alpha = if elapsed > 1.5 {
+                (2.0 - elapsed) / 0.5
+            } else {
+                1.0
+            };
+            draw_rect_alpha(
+                buffer,
+                w,
+                toast_x as i32,
+                toast_y as i32,
+                toast_w,
+                toast_h,
+                0x00444444,
+                0.8 * alpha,
+                w,
+                h,
+            );
+            draw_text_dw_ex(
+                buffer,
+                w,
+                msg,
+                (toast_x + sc(25.0) as u32) as i32,
+                (toast_y + sc(10.0) as u32) as i32,
+                sc(14.0),
+                COLOR_TEXT_MAIN,
+                toast_w,
+                toast_h,
+                0.0,
             );
         }
     }
 
-    // Content height tracking
-    let viewport_h = scrollable_h_logical;
-    let content_h = 1450.0;
-    (viewport_h, content_h, cursor_rect)
+    (scrollable_h_logical, 1650.0, cursor_rect)
 }

@@ -594,6 +594,13 @@ fn main() {
                                                     ai_config.save();
                                                     sw.request_redraw();
                                                 }
+                                                settings::SettingsAction::UpdateAiConfig(new_config) => {
+                                                    ai_config = new_config;
+                                                    ai_config.save();
+                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
+                                                    interaction_manager.update_config(ai_config.clone());
+                                                    sw.request_redraw();
+                                                }
                                                 settings::SettingsAction::SetMonitor(name) => {
                                                     let available = window.available_monitors();
                                                     if let Some(monitor) = available.into_iter().find(|m| m.name().as_ref() == Some(&name)) {

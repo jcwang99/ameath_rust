@@ -33,6 +33,10 @@ pub struct SettingsRenderInput {
     pub current_music_path: Option<std::path::PathBuf>,
     pub current_layer: crate::types::WindowLayer,
     pub ai_config: crate::types::AiConfig,
+    pub mouse_pos: (f32, f32),
+    pub pressed_btn: Option<usize>, // 0-4 for profile buttons, 100+ for fields
+    pub show_delete_dialog: bool,
+    pub notification: Option<(String, std::time::Instant)>,
 }
 
 pub struct RenderResult {
@@ -161,6 +165,10 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
             let mut sys_metrics = input.system_prompt_metrics_cache;
             let mut local_sys_rect = None;
             let mut local_sys_content_h = 0.0f32;
+            let lx = (input.mouse_pos.0 as f32 - off_x) / scale;
+            let ly = (input.mouse_pos.1 as f32 - off_y) / scale;
+            let dly = ly - 120.0 - input.scroll_offset;
+
             let mut ai_state = tabs::ai::AiTabState {
                 focused_field: input.focused_field,
                 show_api_key: input.show_api_key,
@@ -173,6 +181,11 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
                 system_prompt_metrics_cache: &mut sys_metrics,
                 system_prompt_hash: input.system_prompt_hash,
                 draw_cursor: false,
+                mouse_pos: (lx, ly),
+                content_mouse_pos: (lx, dly),
+                pressed_btn: input.pressed_btn,
+                show_delete_dialog: input.show_delete_dialog,
+                notification: input.notification,
             };
             let (v, c, rect) = tabs::ai::draw(
                 buffer,
@@ -246,6 +259,7 @@ pub enum SettingsAction {
     SetAiTavilyKey(String),
     SetAiSystemPrompt(String),
     SetAiInteractionFrequency(u64),
+    UpdateAiConfig(AiConfig),
     RequestHistory,
     SetMonitor(String),
     SelectMusicPath,
@@ -295,6 +309,10 @@ pub struct SettingsWindow {
     pub is_dirty: bool,
     pub last_state_hash: u64,
     pub last_config_hash: u64,
+    pub mouse_pos: (f32, f32),
+    pub pressed_btn: Option<usize>,
+    pub show_delete_dialog: bool,
+    pub notification: Option<(String, std::time::Instant)>,
 
     // Layered Rendering Caches (Removed for memory savings)
     pub cursor_cache: Option<(i32, i32, u32, u32)>,
@@ -403,6 +421,10 @@ impl SettingsWindow {
             is_dirty: true,
             last_state_hash: 0,
             last_config_hash: 0,
+            mouse_pos: (0.0, 0.0),
+            pressed_btn: None,
+            show_delete_dialog: false,
+            notification: None,
             cursor_cache: None,
             cursor_save_under: Vec::new(),
             last_base_state_hash: 0,
@@ -478,6 +500,10 @@ impl SettingsWindow {
             current_music_path: current_music_path.map(|p| p.to_path_buf()),
             current_layer,
             ai_config: ai_config.clone(),
+            mouse_pos: self.mouse_pos,
+            pressed_btn: self.pressed_btn,
+            show_delete_dialog: self.show_delete_dialog,
+            notification: self.notification.clone(),
         }
     }
 
@@ -519,9 +545,21 @@ impl SettingsWindow {
         // 0. Config Hashing (Main Thread)
         if self.config_dirty || self.last_config_hash == 0 {
             let mut config_hasher = DefaultHasher::new();
+            // Hash legacy fields for safety
             ai_config.api_key.hash(&mut config_hasher);
             ai_config.base_url.hash(&mut config_hasher);
             ai_config.model.hash(&mut config_hasher);
+
+            // Hash Profiles
+            ai_config.active_profile_index.hash(&mut config_hasher);
+            for profile in &ai_config.profiles {
+                profile.name.hash(&mut config_hasher);
+                profile.api_key.hash(&mut config_hasher);
+                profile.base_url.hash(&mut config_hasher);
+                profile.model.hash(&mut config_hasher);
+                profile.is_multimodal.hash(&mut config_hasher);
+            }
+
             if self.system_prompt_hash == 0 {
                 let mut s_hasher = DefaultHasher::new();
                 ai_config.system_prompt.hash(&mut s_hasher);
@@ -544,9 +582,11 @@ impl SettingsWindow {
         w.hash(&mut base_hasher);
         h.hash(&mut base_hasher);
         self.current_tab.hash(&mut base_hasher);
+        self.show_api_key.hash(&mut base_hasher);
         // scroll_offset excluded from hash for instant main-thread scrollbar feedback
         self.focused_field.hash(&mut base_hasher);
         self.cursor_pos.hash(&mut base_hasher);
+        self.selection_start.hash(&mut base_hasher);
         self.history.len().hash(&mut base_hasher);
         self.last_config_hash.hash(&mut base_hasher);
         current_scale.to_bits().hash(&mut base_hasher);
@@ -557,6 +597,14 @@ impl SettingsWindow {
             .to_bits()
             .hash(&mut base_hasher);
         self.scroll_offset.to_bits().hash(&mut base_hasher);
+        self.mouse_pos.0.to_bits().hash(&mut base_hasher);
+        self.mouse_pos.1.to_bits().hash(&mut base_hasher);
+        self.pressed_btn.hash(&mut base_hasher);
+        self.show_delete_dialog.hash(&mut base_hasher);
+        if let Some((text, time)) = &self.notification {
+            text.hash(&mut base_hasher);
+            time.hash(&mut base_hasher);
+        }
         for offset in &self.history_scroll_states {
             offset.to_bits().hash(&mut base_hasher);
         }
@@ -686,7 +734,9 @@ impl SettingsWindow {
                 {
                     let mut buffer = self.surface.buffer_mut().unwrap();
                     // Restore
-                    if !self.cursor_save_under.is_empty() {
+                    if !self.cursor_save_under.is_empty()
+                        && self.cursor_save_under.len() == (cw * ch) as usize
+                    {
                         let mut idx = 0;
                         for row in 0..ch {
                             let y_idx = (cy + row as i32) as usize * w as usize;
@@ -696,6 +746,8 @@ impl SettingsWindow {
                                 idx += 1;
                             }
                         }
+                    } else {
+                        self.cursor_save_under.clear();
                     }
                     // Draw
                     if is_cursor_on && self.focused_field.is_some() {
@@ -779,9 +831,59 @@ impl SettingsWindow {
         let off_x = (w - 800.0 * scale) / 2.0;
         let off_y = (h - 750.0 * scale) / 2.0;
 
-        self.is_dirty = true;
         let lx = (x - off_x) / scale;
         let ly = (y - off_y) / scale;
+
+        // DIALOG HANDLING
+        if self.show_delete_dialog && self.current_tab == 2 {
+            let dialog_w = 300.0;
+            let dialog_h = 150.0;
+            let dx = (800.0 - dialog_w) / 2.0;
+            let dy = (750.0 - dialog_h) / 2.0;
+
+            if lx >= dx && lx <= dx + dialog_w && ly >= dy && ly <= dy + dialog_h {
+                // Inside dialog - check buttons
+                let btn_y = dy + 85.0;
+                let btn_w = 80.0;
+                let btn_h = 35.0;
+
+                // NO button
+                let no_x = dx + 50.0;
+                if lx >= no_x && lx <= no_x + btn_w && ly >= btn_y && ly <= btn_y + btn_h {
+                    self.show_delete_dialog = false;
+                    self.window.request_redraw();
+                    return SettingsAction::None;
+                }
+
+                // YES button
+                let yes_x = dx + 170.0;
+                if lx >= yes_x && lx <= yes_x + btn_w && ly >= btn_y && ly <= btn_y + btn_h {
+                    println!("[AI Settings] Delete Profile confirmed via dialog");
+                    self.show_delete_dialog = false;
+                    let mut config = ai_config.clone();
+                    if config.profiles.len() > 1 {
+                        config.profiles.remove(config.active_profile_index);
+                        config.active_profile_index =
+                            config.active_profile_index.min(config.profiles.len() - 1);
+                        self.config_dirty = true;
+                        self.notification =
+                            Some(("Delete Success".to_string(), std::time::Instant::now()));
+                        self.window.request_redraw();
+                        return SettingsAction::UpdateAiConfig(config);
+                    }
+                    self.window.request_redraw();
+                    return SettingsAction::None;
+                }
+                return SettingsAction::None; // Clicks inside dialog but not on buttons
+            } else {
+                // Click outside dialog closes it
+                self.show_delete_dialog = false;
+                self.window.request_redraw();
+                return SettingsAction::None;
+            }
+        }
+
+        self.is_dirty = true;
         let dlx = lx;
         let dly = ly - self.scroll_offset as f64;
 
@@ -921,31 +1023,113 @@ impl SettingsWindow {
                 }
 
                 let fields = vec![
-                    (230.0, 30.0, 500.0),  // 0: Key
-                    (230.0, 130.0, 500.0), // 1: URL
-                    (230.0, 230.0, 500.0), // 2: Model
-                    (230.0, 330.0, 150.0), // 3: Steps
-                    (405.0, 330.0, 150.0), // 4: L1
-                    (580.0, 330.0, 150.0), // 5: L2
-                    (230.0, 430.0, 150.0), // 6: Interval
-                    (230.0, 530.0, 500.0), // 7: Tavily
-                    (230.0, 630.0, 500.0), // 8: Brave
-                    (230.0, 730.0, 500.0), // 9: FC URL
-                    (230.0, 830.0, 500.0), // 10: FC Key
-                    (230.0, 930.0, 500.0), // 11: System
+                    (265.0, 30.0, 160.0),   // 0: Profile Name (Redesigned row)
+                    (565.0, 30.0, 45.0),    // 1: Multimodal Toggle
+                    (230.0, 130.0, 500.0),  // 2: Key
+                    (230.0, 230.0, 500.0),  // 3: URL
+                    (230.0, 330.0, 500.0),  // 4: Model
+                    (230.0, 430.0, 150.0),  // 5: Steps
+                    (405.0, 430.0, 150.0),  // 6: L1
+                    (580.0, 430.0, 150.0),  // 7: L2
+                    (230.0, 530.0, 150.0),  // 8: Interval
+                    (230.0, 630.0, 500.0),  // 9: Tavily
+                    (230.0, 730.0, 500.0),  // 10: Brave
+                    (230.0, 830.0, 500.0),  // 11: FC URL
+                    (230.0, 930.0, 500.0),  // 12: FC Key
+                    (230.0, 1030.0, 500.0), // 13: System
                 ];
+
+                // Profile Management Buttons (Standardized Row)
+                let btn_y_start = design_card_y + 30.0 + 25.0;
+                let btn_y_end = btn_y_start + 45.0;
+
+                // [<] Prev Profile (at 230)
+                if dlx >= 230.0 && dlx <= 260.0 && dly >= btn_y_start && dly <= btn_y_end {
+                    println!("[AI Settings] Prev Profile clicked");
+                    self.pressed_btn = Some(0);
+                    let mut config = ai_config.clone();
+                    if config.active_profile_index > 0 {
+                        config.active_profile_index -= 1;
+                    } else if !config.profiles.is_empty() {
+                        config.active_profile_index = config.profiles.len() - 1;
+                    }
+                    self.config_dirty = true;
+                    self.window.request_redraw();
+                    return SettingsAction::UpdateAiConfig(config);
+                }
+
+                // [>] Next Profile (at 430)
+                if dlx >= 430.0 && dlx <= 460.0 && dly >= btn_y_start && dly <= btn_y_end {
+                    println!("[AI Settings] Next Profile clicked");
+                    self.pressed_btn = Some(1);
+                    let mut config = ai_config.clone();
+                    if !config.profiles.is_empty() {
+                        config.active_profile_index =
+                            (config.active_profile_index + 1) % config.profiles.len();
+                    }
+                    self.config_dirty = true;
+                    self.window.request_redraw();
+                    return SettingsAction::UpdateAiConfig(config);
+                }
+
+                // [+] Add Profile (at 480)
+                if dlx >= 480.0 && dlx <= 515.0 && dly >= btn_y_start && dly <= btn_y_end {
+                    println!("[AI Settings] Add Profile clicked");
+                    self.show_delete_dialog = false;
+                    self.pressed_btn = Some(2);
+                    let mut config = ai_config.clone();
+                    // Ensure unique name for the new profile
+                    let base_name = "New Profile".to_string();
+                    let mut final_name = base_name.clone();
+                    let mut counter = 2;
+                    while config.profiles.iter().any(|p| p.name == final_name) {
+                        final_name = format!("{} ({})", base_name, counter);
+                        counter += 1;
+                    }
+
+                    let mut new_profile = crate::types::AiProfile::default();
+                    new_profile.name = final_name;
+                    config.profiles.push(new_profile);
+                    config.active_profile_index = config.profiles.len() - 1;
+                    self.config_dirty = true;
+                    self.notification =
+                        Some(("Add Success".to_string(), std::time::Instant::now()));
+                    self.window.request_redraw();
+                    return SettingsAction::UpdateAiConfig(config);
+                }
+
+                // [-] Delete Profile (at 525)
+                if dlx >= 525.0 && dlx <= 560.0 && dly >= btn_y_start && dly <= btn_y_end {
+                    println!("[AI Settings] Delete Profile clicked (showing dialog)");
+                    self.show_delete_dialog = true;
+                    self.pressed_btn = Some(3);
+                    self.window.request_redraw();
+                    return SettingsAction::None;
+                }
 
                 for (i, (fx, fy, fw)) in fields.iter().enumerate() {
                     let input_y = design_card_y + fy + 25.0;
-                    let input_h = if i == 11 { 250.0 } else { 45.0 };
+                    let input_h = if i == 13 { 250.0 } else { 45.0 };
 
                     if dlx >= *fx && dlx <= *fx + *fw && dly >= input_y && dly <= input_y + input_h
                     {
+                        if i == 1 {
+                            println!("[AI Settings] Multimodal Toggle clicked");
+                            self.pressed_btn = Some(101); // Special code for multimodal
+                                                          // Toggle Multimodal
+                            let mut config = ai_config.clone();
+                            let profile = config.active_profile_mut();
+                            profile.is_multimodal = !profile.is_multimodal;
+                            self.config_dirty = true;
+                            self.window.request_redraw();
+                            return SettingsAction::UpdateAiConfig(config);
+                        }
+
                         self.focused_field = Some(i);
                         self.last_cursor_action = std::time::Instant::now();
                         let text = self.get_field_text(i, ai_config);
 
-                        if i == 11 {
+                        if i == 13 {
                             // System prompt multi-line
                             let text_x = lx - fx - 15.0;
                             let text_y =
@@ -959,7 +1143,8 @@ impl SettingsWindow {
                             }
                         } else {
                             if !_is_right_click {
-                                if lx >= *fx + *fw - 45.0 && (i == 0 || i == 7 || i == 8 || i == 10)
+                                if lx >= *fx + *fw - 45.0
+                                    && (i == 2 || i == 9 || i == 10 || i == 12)
                                 {
                                     self.show_api_key = !self.show_api_key;
                                     self.config_dirty = true;
@@ -1017,43 +1202,46 @@ impl SettingsWindow {
     }
 
     fn get_field_text(&self, idx: usize, ai_config: &AiConfig) -> String {
+        let active_profile = ai_config.active_profile();
         match idx {
-            0 => ai_config.api_key.clone(),
-            1 => ai_config.base_url.clone(),
-            2 => ai_config.model.clone(),
-            3 => {
+            0 => active_profile.name.clone(),
+            1 => String::new(), // Toggle handled via click
+            2 => active_profile.api_key.clone(),
+            3 => active_profile.base_url.clone(),
+            4 => active_profile.model.clone(),
+            5 => {
                 if ai_config.react_limit == 0 {
                     String::new()
                 } else {
                     ai_config.react_limit.to_string()
                 }
             }
-            4 => {
+            6 => {
                 if ai_config.l1_summary_threshold == 0 {
                     String::new()
                 } else {
                     ai_config.l1_summary_threshold.to_string()
                 }
             }
-            5 => {
+            7 => {
                 if ai_config.l2_merge_threshold == 0 {
                     String::new()
                 } else {
                     ai_config.l2_merge_threshold.to_string()
                 }
             }
-            6 => {
+            8 => {
                 if ai_config.interaction_frequency == 0 {
                     String::new()
                 } else {
                     ai_config.interaction_frequency.to_string()
                 }
             }
-            7 => ai_config.tavily_api_key.clone(),
-            8 => ai_config.brave_api_key.clone(),
-            9 => ai_config.firecrawl_url.clone(),
-            10 => ai_config.firecrawl_api_key.clone(),
-            11 => ai_config.system_prompt.clone(),
+            9 => ai_config.tavily_api_key.clone(),
+            10 => ai_config.brave_api_key.clone(),
+            11 => ai_config.firecrawl_url.clone(),
+            12 => ai_config.firecrawl_api_key.clone(),
+            13 => ai_config.system_prompt.clone(),
             _ => String::new(),
         }
     }
@@ -1061,26 +1249,47 @@ impl SettingsWindow {
     fn set_field_text(&mut self, idx: usize, ai_config: &mut AiConfig, text: String) {
         self.config_dirty = true;
         match idx {
-            0 => ai_config.api_key = text,
-            1 => ai_config.base_url = text,
-            2 => ai_config.model = text,
-            3 => {
-                ai_config.react_limit = text.parse().unwrap_or(0);
-            }
-            4 => {
-                ai_config.l1_summary_threshold = text.parse().unwrap_or(0);
+            0 | 2 | 3 | 4 => {
+                if idx == 0 {
+                    // Check for duplicate name BEFORE mutable borrow
+                    let is_duplicate = ai_config
+                        .profiles
+                        .iter()
+                        .enumerate()
+                        .any(|(i, p)| i != ai_config.active_profile_index && p.name == text);
+                    if is_duplicate {
+                        self.notification =
+                            Some(("Name already exists".to_string(), std::time::Instant::now()));
+                        return;
+                    }
+                }
+
+                let profile = ai_config.active_profile_mut();
+                match idx {
+                    0 => profile.name = text,
+                    2 => profile.api_key = text,
+                    3 => profile.base_url = text,
+                    4 => profile.model = text,
+                    _ => {}
+                }
             }
             5 => {
-                ai_config.l2_merge_threshold = text.parse().unwrap_or(0);
+                ai_config.react_limit = text.parse().unwrap_or(0);
             }
             6 => {
+                ai_config.l1_summary_threshold = text.parse().unwrap_or(0);
+            }
+            7 => {
+                ai_config.l2_merge_threshold = text.parse().unwrap_or(0);
+            }
+            8 => {
                 ai_config.interaction_frequency = text.parse().unwrap_or(0);
             }
-            7 => ai_config.tavily_api_key = text,
-            8 => ai_config.brave_api_key = text,
-            9 => ai_config.firecrawl_url = text,
-            10 => ai_config.firecrawl_api_key = text,
-            11 => {
+            9 => ai_config.tavily_api_key = text,
+            10 => ai_config.brave_api_key = text,
+            11 => ai_config.firecrawl_url = text,
+            12 => ai_config.firecrawl_api_key = text,
+            13 => {
                 use std::collections::hash_map::DefaultHasher;
                 use std::hash::{Hash, Hasher};
                 let mut hasher = DefaultHasher::new();
@@ -1104,7 +1313,7 @@ impl SettingsWindow {
 
     fn get_cursor_from_xy(&self, text: &str, lx: f64, ly: f64, scale: f32) -> usize {
         let field_idx = self.focused_field.unwrap_or(0);
-        let base_w = if field_idx == 11 { 460.0 } else { 500.0 };
+        let base_w = if field_idx == 13 { 460.0 } else { 500.0 };
         let max_width = base_w * scale;
         get_cursor_index_from_xy(
             text,
@@ -1117,7 +1326,7 @@ impl SettingsWindow {
 
     fn get_xy_from_cursor(&self, text: &str, cursor_pos: usize, scale: f32) -> (f64, f64) {
         let field_idx = self.focused_field.unwrap_or(0);
-        let base_w = if field_idx == 11 { 460.0 } else { 500.0 };
+        let base_w = if field_idx == 13 { 460.0 } else { 500.0 };
         let max_width = base_w * scale;
         let (px, py) = get_xy_from_cursor_index(text, 14.0 * scale, max_width as u32, cursor_pos);
         (px as f64 / scale as f64, py as f64 / scale as f64)
@@ -1159,7 +1368,7 @@ impl SettingsWindow {
         let has_shift = modifiers.shift_key();
 
         if let Key::Named(NamedKey::ArrowUp) = &event.logical_key {
-            if field_idx == 11 {
+            if field_idx == 13 {
                 let (lx, ly) = self.get_xy_from_cursor(&text, self.cursor_pos, scale);
                 let line_height = 20.0;
                 self.cursor_pos = self.get_cursor_from_xy(&text, lx, ly - line_height + 5.0, scale);
@@ -1171,7 +1380,7 @@ impl SettingsWindow {
             }
         }
         if let Key::Named(NamedKey::ArrowDown) = &event.logical_key {
-            if field_idx == 11 {
+            if field_idx == 13 {
                 let (lx, ly) = self.get_xy_from_cursor(&text, self.cursor_pos, scale);
                 let line_height = 20.0;
                 self.cursor_pos = self.get_cursor_from_xy(&text, lx, ly + line_height + 5.0, scale);
@@ -1283,7 +1492,7 @@ impl SettingsWindow {
                 return true;
             }
             Key::Named(NamedKey::Enter) => {
-                if field_idx == 11 {
+                if field_idx == 13 {
                     if let Some(start) = self.selection_start {
                         let min = start.min(self.cursor_pos);
                         let max = start.max(self.cursor_pos);
@@ -1350,7 +1559,7 @@ impl SettingsWindow {
 
                 if !c.chars().any(|ch| ch.is_control()) {
                     let input_chars: Vec<char> = c.chars().collect();
-                    if (field_idx == 3 || field_idx == 4 || field_idx == 5 || field_idx == 8)
+                    if (field_idx == 5 || field_idx == 6 || field_idx == 7 || field_idx == 8)
                         && !input_chars.iter().all(|ch| ch.is_ascii_digit())
                     {
                         return true;
@@ -1376,7 +1585,7 @@ impl SettingsWindow {
                 }
             }
             Key::Named(NamedKey::Tab) => {
-                self.focused_field = Some((field_idx + 1) % 9);
+                self.focused_field = Some((field_idx + 1) % 14);
                 self.cursor_pos = 0;
                 self.selection_start = None;
                 self.window.request_redraw();
@@ -1559,14 +1768,14 @@ impl SettingsWindow {
                 let ty = 60.0 + i as f64 * 80.0;
                 if ly >= ty - 15.0 && ly <= ty + 45.0 {
                     if self.current_tab != i {
-                        // We don't have a hover state for sidebar yet, but we could trigger redraw here
-                        // if we want hover effects.
+                        // For sidebar hover
                     }
                 }
             }
         }
-        let dlx = lx;
-        let dly = ly - self.scroll_offset as f64;
+        let dlx = lx as f32;
+        let dly = (ly - self.scroll_offset as f64) as f32;
+        self.mouse_pos = (x as f32, y as f32); // Store RAW coordinates for renderer
 
         if self.is_dragging_scrollbar {
             if self.content_height > self.viewport_height {
@@ -1594,7 +1803,7 @@ impl SettingsWindow {
                     let (_, ry_start, _, _) = self.history_item_rects[idx];
                     let track_y_start = ry_start + 35.0;
                     let track_h = view_h as f64;
-                    let progress = ((dly - track_y_start) / track_h).clamp(0.0, 1.0);
+                    let progress = ((dly as f64 - track_y_start) / track_h).clamp(0.0, 1.0);
                     let max_scroll = -(full_h_logical - view_h as f32).max(0.0);
                     self.history_scroll_states[idx] = progress as f32 * max_scroll;
                     self.window.request_redraw();
@@ -1606,7 +1815,7 @@ impl SettingsWindow {
         if self.dragging_sys_prompt {
             if let Some((_, ry_start, _, ry_end)) = self.active_sys_prompt_rect {
                 let track_h = (ry_end - ry_start).max(1.0);
-                let progress = ((dly - ry_start) / track_h).clamp(0.0, 1.0);
+                let progress = ((dly as f64 - ry_start) / track_h).clamp(0.0, 1.0);
                 let view_h = track_h as f32;
                 let content_h = self.active_sys_prompt_content_height;
                 let max_scroll = -(content_h - view_h).max(0.0);
@@ -1628,8 +1837,13 @@ impl SettingsWindow {
         }
 
         if !self.is_dragging_text {
+            // Trigger redraw for hover effects in AI tab content area
+            if self.current_tab == 2 && lx > 180.0 {
+                self.window.request_redraw();
+            }
             return;
         }
+
         self.last_cursor_action = std::time::Instant::now();
         let field_idx = match self.focused_field {
             Some(i) => i,
@@ -1641,36 +1855,39 @@ impl SettingsWindow {
 
         let val = self.get_field_text(field_idx, ai_config);
         let fields = vec![
-            (230.0, 30.0),  // 0: Key
-            (230.0, 130.0), // 1: URL
-            (230.0, 230.0), // 2: Model
-            (230.0, 330.0), // 3: Steps
-            (405.0, 330.0), // 4: L1
-            (580.0, 330.0), // 5: L2
-            (230.0, 430.0), // 6: Interval
-            (230.0, 530.0), // 7: Tavily
-            (230.0, 630.0), // 8: Brave
-            (230.0, 730.0), // 9: FC URL
-            (230.0, 830.0), // 10: FC Key
-            (230.0, 930.0), // 11: System
+            (270.0, 30.0),   // 0: Profile Name
+            (685.0, 30.0),   // 1: Multimodal
+            (230.0, 130.0),  // 2: Key
+            (230.0, 230.0),  // 3: URL
+            (230.0, 330.0),  // 4: Model
+            (230.0, 430.0),  // 5: Steps
+            (405.0, 430.0),  // 6: L1
+            (580.0, 430.0),  // 7: L2
+            (230.0, 530.0),  // 8: Interval
+            (230.0, 630.0),  // 9: Tavily
+            (230.0, 730.0),  // 10: Brave
+            (230.0, 830.0),  // 11: FC URL
+            (230.0, 930.0),  // 12: FC Key
+            (230.0, 1030.0), // 13: System
         ];
 
         let (fx, fy) = fields[field_idx];
         let design_card_y = 120.0;
         let input_y = design_card_y + fy + 25.0;
-        let text_x = dlx - fx - 15.0;
+        let text_x = dlx as f64 - fx - 15.0;
 
         if !text_x.is_finite() || !dly.is_finite() {
             return;
         }
 
-        if field_idx == 11 {
+        if field_idx == 13 {
             // Multi-line cursor drag for System Prompt
-            let text_y = dly - input_y - 12.0 - self.system_prompt_scroll_offset as f64;
+            let text_y = dly as f64 - input_y - 12.0 - self.system_prompt_scroll_offset as f64;
             if text_y.is_finite() {
                 self.cursor_pos = self.get_cursor_from_xy(&val, text_x, text_y, scale as f32);
             }
-        } else {
+        } else if field_idx != 1 {
+            // Skip multimodal toggle
             self.cursor_pos = self.get_cursor_from_x(&val, text_x, scale as f32);
         }
         self.window.request_redraw();
@@ -1690,6 +1907,7 @@ impl SettingsWindow {
         self.is_dragging_scrollbar = false;
         self.dragging_history_idx = None;
         self.dragging_sys_prompt = false;
+        self.pressed_btn = None;
         self.window.request_redraw();
     }
 }

@@ -183,7 +183,6 @@ pub struct RasterEntry {
     pub tw: i32,
     pub th: i32,
     pub pixel_count: usize,
-    pub last_used: std::time::Instant, // Track usage for memory management
 }
 
 pub struct CacheState<K, V> {
@@ -936,7 +935,6 @@ fn draw_text_dw_ex_internal(
                         tw,
                         th,
                         pixel_count,
-                        last_used: std::time::Instant::now(),
                     },
                 );
             }

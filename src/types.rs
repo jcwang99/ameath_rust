@@ -19,11 +19,43 @@ pub enum PetState {
     Clingy,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AiConfig {
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AiProfile {
+    pub name: String,
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    #[serde(default)]
+    pub is_multimodal: bool,
+}
+
+impl Default for AiProfile {
+    fn default() -> Self {
+        Self {
+            name: "Default".to_string(),
+            api_key: String::new(),
+            base_url: "https://api.deepseek.com/v1".to_string(),
+            model: "deepseek-chat".to_string(),
+            is_multimodal: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AiConfig {
+    #[serde(default)]
+    pub profiles: Vec<AiProfile>,
+    #[serde(default)]
+    pub active_profile_index: usize,
+
+    // Migration fields (to be deprecated)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub api_key: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub base_url: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
+
     #[serde(default = "default_react_limit")]
     pub react_limit: usize,
     #[serde(default = "default_l1_threshold")]
@@ -44,6 +76,54 @@ pub struct AiConfig {
     pub active_interaction_enabled: bool,
     #[serde(default = "default_interaction_frequency")]
     pub interaction_frequency: u64, // Minutes
+}
+
+impl AiConfig {
+    /// Returns the currently active profile
+    pub fn active_profile(&self) -> &AiProfile {
+        if self.profiles.is_empty() {
+            // This should technically not happen after migration/default
+            static FALLBACK: AiProfile = AiProfile {
+                name: String::new(),
+                api_key: String::new(),
+                base_url: String::new(),
+                model: String::new(),
+                is_multimodal: false,
+            };
+            &FALLBACK
+        } else {
+            let idx = self.active_profile_index.min(self.profiles.len() - 1);
+            &self.profiles[idx]
+        }
+    }
+
+    pub fn active_profile_mut(&mut self) -> &mut AiProfile {
+        if self.profiles.is_empty() {
+            self.profiles.push(AiProfile::default());
+        }
+        let idx = self.active_profile_index.min(self.profiles.len() - 1);
+        &mut self.profiles[idx]
+    }
+
+    /// Migrate old root-level keys to profiles if needed
+    pub fn migrate(&mut self) {
+        if self.profiles.is_empty() {
+            if !self.api_key.is_empty() || !self.base_url.is_empty() {
+                self.profiles.push(AiProfile {
+                    name: "Legacy".to_string(),
+                    api_key: self.api_key.clone(),
+                    base_url: self.base_url.clone(),
+                    model: self.model.clone(),
+                    is_multimodal: false,
+                });
+                self.api_key.clear();
+                self.base_url.clear();
+                self.model.clear();
+            } else {
+                self.profiles.push(AiProfile::default());
+            }
+        }
+    }
 }
 
 fn default_react_limit() -> usize {
@@ -116,9 +196,11 @@ fn default_system_prompt() -> String {
 impl Default for AiConfig {
     fn default() -> Self {
         Self {
+            profiles: vec![AiProfile::default()],
+            active_profile_index: 0,
             api_key: String::new(),
-            base_url: "https://api.deepseek.com/v1".to_string(),
-            model: "deepseek-chat".to_string(),
+            base_url: String::new(),
+            model: String::new(),
             react_limit: 20,
             l1_summary_threshold: 10,
             l2_merge_threshold: 10,
@@ -210,6 +292,25 @@ pub trait PersistentConfig: Serialize + DeserializeOwned + Default {
 impl PersistentConfig for AiConfig {
     fn filename() -> &'static str {
         "ai_config.json"
+    }
+
+    fn load() -> Self {
+        let path = Self::path();
+        let mut config = if path.exists() {
+            if let Ok(content) = fs::read_to_string(path) {
+                if let Ok(config) = serde_json::from_str::<Self>(&content) {
+                    config
+                } else {
+                    Self::default()
+                }
+            } else {
+                Self::default()
+            }
+        } else {
+            Self::default()
+        };
+        config.migrate();
+        config
     }
 }
 

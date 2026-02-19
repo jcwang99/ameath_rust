@@ -1,4 +1,4 @@
-use crate::ai::client::Message;
+use crate::ai::client::{Content, Message};
 use crate::types::AiConfig;
 use rusqlite::{params, Connection, Result};
 use std::sync::Mutex;
@@ -96,7 +96,7 @@ impl MemoryManager {
     }
 
     pub fn add_message(&self, msg: &Message) -> Result<()> {
-        self.add_conversation_item(&msg.role, &msg.content, 1)
+        self.add_conversation_item(&msg.role, msg.content.as_str(), 1)
     }
 
     pub fn add_conversation_item(&self, role: &str, content: &str, layer: i32) -> Result<()> {
@@ -113,7 +113,7 @@ impl MemoryManager {
         let content = if let Some(tc) = &msg.tool_calls {
             serde_json::to_string(tc).unwrap_or_default()
         } else {
-            msg.content.clone()
+            msg.content.as_str().to_string()
         };
 
         conn.execute(
@@ -151,7 +151,7 @@ impl MemoryManager {
                 .join("\n");
             context.push(Message {
                 role: "system".to_string(),
-                content: format!("Known Facts about User:\n{}", facts_str),
+                content: Content::Simple(format!("Known Facts about User:\n{}", facts_str)),
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -165,7 +165,7 @@ impl MemoryManager {
         if let Some(l3) = l3_opt {
             context.push(Message {
                 role: "system".to_string(),
-                content: format!("Long-term Summary:\n{}", l3),
+                content: Content::Simple(format!("Long-term Summary:\n{}", l3)),
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -186,7 +186,10 @@ impl MemoryManager {
             l2_summaries.reverse();
             context.push(Message {
                 role: "system".to_string(),
-                content: format!("Recent Context Summary:\n{}", l2_summaries.join("\n")),
+                content: Content::Simple(format!(
+                    "Recent Context Summary:\n{}",
+                    l2_summaries.join("\n")
+                )),
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -199,7 +202,7 @@ impl MemoryManager {
         let trace_rows = stmt.query_map([], |row| {
             Ok(Message {
                 role: row.get(0)?,
-                content: row.get(1)?,
+                content: Content::Simple(row.get(1)?),
                 tool_calls: None, // Simplified for now
                 tool_call_id: row.get(2)?,
             })
@@ -211,14 +214,14 @@ impl MemoryManager {
         if !traces.is_empty() {
             context.push(Message {
                 role: "system".to_string(),
-                content: "--- START OF CURRENT TOOL EXECUTION LOG ---".to_string(),
+                content: Content::Simple("--- START OF CURRENT TOOL EXECUTION LOG ---".to_string()),
                 tool_calls: None,
                 tool_call_id: None,
             });
             context.extend(traces);
             context.push(Message {
                 role: "system".to_string(),
-                content: "--- END OF TOOL EXECUTION LOG ---".to_string(),
+                content: Content::Simple("--- END OF TOOL EXECUTION LOG ---".to_string()),
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -231,7 +234,7 @@ impl MemoryManager {
         let rows = stmt.query_map(params![limit], |row| {
             Ok(Message {
                 role: row.get(0)?,
-                content: row.get(1)?,
+                content: Content::Simple(row.get(1)?),
                 tool_calls: None,
                 tool_call_id: None,
             })
