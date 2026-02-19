@@ -38,6 +38,8 @@ pub struct SettingsRenderInput {
     pub show_delete_dialog: bool,
     pub notification: Option<(String, std::time::Instant)>,
     pub field_scroll_offsets: [f32; 14],
+    pub available_monitors: Vec<(String, String)>,
+    pub current_monitor_name: Option<String>,
 }
 
 pub struct RenderResult {
@@ -155,8 +157,8 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
                 current_music_path: input.current_music_path.as_deref(),
                 current_layer: input.current_layer,
                 scroll_offset: input.scroll_offset,
-                available_monitors: &[],
-                current_monitor_name: None,
+                available_monitors: &input.available_monitors,
+                current_monitor_name: input.current_monitor_name.as_deref(),
             };
             let (v, c, _) = tabs::general::draw(buffer, w, h, scale, off_x, off_y, &mut gen_state);
             vh = v;
@@ -509,6 +511,8 @@ impl SettingsWindow {
             show_delete_dialog: self.show_delete_dialog,
             notification: self.notification.clone(),
             field_scroll_offsets: self.field_scroll_offsets,
+            available_monitors: self.available_monitors.clone(),
+            current_monitor_name: self.current_monitor_name.clone(),
         }
     }
 
