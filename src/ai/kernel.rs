@@ -1,4 +1,4 @@
-use crate::ai::client::{Content, Message, OpenAiClient};
+use crate::ai::client::{Content, ContentPart, ImageUrl, Message, OpenAiClient};
 use crate::ai::memory::MemoryManager;
 use crate::ai::skills::SkillManager;
 use crate::types::AiConfig;
@@ -40,7 +40,9 @@ impl ChatKernel {
             .map_err(|e| e.to_string())
     }
 
-    pub async fn handle(&self, input: String) -> String {
+    pub async fn handle(&self, input_data: crate::types::ChatInput) -> String {
+        let input = input_data.text;
+        let images = input_data.images;
         let client = match &self.client {
             Some(c) => c,
             None => return "Please configure your AI settings first!".to_string(),
@@ -56,9 +58,26 @@ impl ChatKernel {
             (input.clone(), input.clone())
         };
 
+        let mut parts = vec![ContentPart::Text { text: llm_content }];
+
+        for img in images {
+            let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &img.data);
+            parts.push(ContentPart::ImageUrl {
+                image_url: ImageUrl {
+                    url: format!("data:{};base64,{}", img.mime_type, b64),
+                },
+            });
+        }
+
+        let user_msg_content = if parts.len() > 1 {
+            Content::Multimodal(parts)
+        } else {
+            Content::Simple(db_content.clone())
+        };
+
         let user_msg = Message {
             role: "user".to_string(),
-            content: Content::Simple(db_content),
+            content: user_msg_content,
             tool_calls: None,
             tool_call_id: None,
         };
@@ -101,12 +120,7 @@ impl ChatKernel {
             }
 
             // INJECT CURRENT USER MESSAGE (Deferred Persistence Fix)
-            messages.push(Message {
-                role: "user".to_string(),
-                content: Content::Simple(llm_content.clone()),
-                tool_calls: None,
-                tool_call_id: None,
-            });
+            messages.push(user_msg.clone());
             println!(
                 "[Kernel] Context prepared. Message count: {}",
                 messages.len()
@@ -282,7 +296,11 @@ impl ChatKernel {
             Do not mention you are an AI or 'system event'. Act naturally as Aemeath.",
             event_context
         );
-        self.handle(prompt).await
+        let input = crate::types::ChatInput {
+            text: prompt,
+            images: Vec::new(),
+        };
+        self.handle(input).await
     }
 
     async fn orchestrate_summarization(&self) -> Result<(), String> {

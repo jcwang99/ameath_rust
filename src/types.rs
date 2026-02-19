@@ -1,6 +1,19 @@
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageData {
+    pub data: Vec<u8>,
+    pub mime_type: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatInput {
+    pub text: String,
+    pub images: Vec<ImageData>,
+}
 
 #[derive(Clone, Debug)]
 pub struct PreprocessedFrame {
@@ -254,7 +267,6 @@ impl Default for WindowConfig {
 }
 
 use serde::de::DeserializeOwned;
-use serde::Serialize;
 
 pub trait PersistentConfig: Serialize + DeserializeOwned + Default {
     fn filename() -> &'static str;

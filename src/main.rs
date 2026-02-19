@@ -312,15 +312,14 @@ fn main() {
                     if chat_window.id() == window_id {
                          match chat_window.handle_event(&event, modifier_state) {
                              ChatAction::Send(msg) => {
-                                 println!("User sent: {}", msg);
+                                 println!("User sent: {:?}", msg);
                                  is_thinking = true;
                                  thinking_start = Some(Instant::now());
                                  
                                  // Update kernel with current config if changed
-                                 chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
                                  let kernel = chat_kernel.clone();
                                  let tx = ai_tx.clone();
-                                 let input = msg.clone();
+                                 let input = msg;
                                  
                                  tokio::spawn(async move {
                                      let response = kernel.handle(input).await;
