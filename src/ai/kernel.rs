@@ -288,17 +288,17 @@ impl ChatKernel {
         }
     }
 
-    pub async fn handle_system_event(&self, event_context: String) -> String {
+    pub async fn handle_system_event(&self, input_data: crate::types::ChatInput) -> String {
         let prompt = format!(
             "{}\n\n[SYSTEM INSTRUCTION] This is an autonomous system event. You are proactive. \
             Based on the context and everything you know, decide if you should use tools (e.g. search weather, check news, update_fact_board) to help the user or record new insights, \
             or just provide emotional value. If the context implies a need or a new fact about the user, use the tools immediately. \
             Do not mention you are an AI or 'system event'. Act naturally as Aemeath.",
-            event_context
+            input_data.text
         );
         let input = crate::types::ChatInput {
             text: prompt,
-            images: Vec::new(),
+            images: input_data.images,
         };
         self.handle(input).await
     }

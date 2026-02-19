@@ -14,6 +14,7 @@ mod ai;
 mod interaction;
 mod theme;
 mod ui_primitives;
+mod screen_capture;
 
 
 use chat_window::{ChatWindow, ChatAction};
@@ -768,9 +769,9 @@ fn main() {
                         if let Some(system_event) = interaction_manager.check_for_trigger() {
                             let kernel = chat_kernel.clone();
                             let tx = ai_tx.clone();
-                            let input = system_event;
+                            let input_struct = system_event;
                             tokio::spawn(async move {
-                                let response = kernel.handle_system_event(input).await;
+                                let response = kernel.handle_system_event(input_struct).await;
                                 let _ = tx.send(response);
                             });
                             is_thinking = true;

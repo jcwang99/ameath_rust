@@ -24,7 +24,7 @@ pub struct AiTabState<'a> {
     pub pressed_btn: Option<usize>,
     pub show_delete_dialog: bool,
     pub notification: Option<(String, std::time::Instant)>,
-    pub field_scroll_offsets: [f32; 14],
+    pub field_scroll_offsets: [f32; 15],
 }
 
 pub fn draw(
@@ -47,7 +47,7 @@ pub fn draw(
     let card_w = (560.0 * scale) as u32;
     let card_h = (1650.0 * scale) as u32;
     let card_y_raw = (sy_val(120) as f32 + scroll_y * scale) as i32;
-    let fields_count = 14;
+    let fields_count = 15;
 
     // Viewport boundaries (for visibility check)
     let min_y_vis = sy_val(120) as i32;
@@ -99,11 +99,123 @@ pub fn draw(
             11 => ("Firecrawl URL", 230.0, 830.0, 500.0, false),
             12 => ("Firecrawl Key", 230.0, 930.0, 500.0, false),
             13 => ("System Prompt", 230.0, 1030.0, 500.0, true),
+            14 => (
+                "Allow Screen Capture (Routine Checks)",
+                405.0,
+                530.0,
+                20.0,
+                false,
+            ),
             _ => ("", 0.0, 0.0, 0.0, false),
         };
 
         if i == 1 {
             // Multimodal toggle is handled specially below
+            continue;
+        }
+
+        if i == 14 {
+            if !ai_config.active_profile().is_multimodal {
+                continue;
+            }
+            // Checkbox for Screen Capture
+            let is_checked = ai_config.active_interaction_screenshots_enabled;
+
+            let box_x = s(fx as u32) as i32;
+            // FIXED: Add sc(25.0) for field start + sc(12.5) for vertical centering (45-20)/2 = 37.5
+            let box_y = card_y_raw + sc(fy + 25.0 + 12.5) as i32;
+            let box_size = sc(20.0) as i32;
+
+            // Box Background
+            draw_rect(
+                buffer,
+                w,
+                box_x,
+                box_y,
+                box_size as u32,
+                box_size as u32,
+                COLOR_BG_LIGHT,
+                w,
+                h,
+            );
+
+            // Box Outline (Manual)
+            let border_color = COLOR_BORDER;
+            draw_rect(
+                buffer,
+                w,
+                box_x,
+                box_y,
+                box_size as u32,
+                1,
+                border_color,
+                w,
+                h,
+            ); // Top
+            draw_rect(
+                buffer,
+                w,
+                box_x,
+                box_y + box_size - 1,
+                box_size as u32,
+                1,
+                border_color,
+                w,
+                h,
+            ); // Bottom
+            draw_rect(
+                buffer,
+                w,
+                box_x,
+                box_y,
+                1,
+                box_size as u32,
+                border_color,
+                w,
+                h,
+            ); // Left
+            draw_rect(
+                buffer,
+                w,
+                box_x + box_size - 1,
+                box_y,
+                1,
+                box_size as u32,
+                border_color,
+                w,
+                h,
+            ); // Right
+
+            if is_checked {
+                let inner = sc(12.0) as i32;
+                let offset = (box_size - inner) / 2;
+                draw_rect(
+                    buffer,
+                    w,
+                    box_x + offset,
+                    box_y + offset,
+                    inner as u32,
+                    inner as u32,
+                    COLOR_PRIMARY,
+                    w,
+                    h,
+                );
+            }
+
+            draw_text_dw_ex(
+                buffer,
+                w,
+                label,
+                (box_x + box_size + 10) as i32,
+                box_y + sc(1.0) as i32, // Vertically center text with box
+                sc(14.0),               // Smaller font
+                COLOR_TEXT_MAIN,
+                (w as f32 - (box_x + box_size + 10) as f32) as u32,
+                sc(30.0) as u32,
+                0.0,
+                0.0,
+                1000000,
+            );
             continue;
         }
 

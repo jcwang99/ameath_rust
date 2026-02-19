@@ -37,7 +37,7 @@ pub struct SettingsRenderInput {
     pub pressed_btn: Option<usize>, // 0-4 for profile buttons, 100+ for fields
     pub show_delete_dialog: bool,
     pub notification: Option<(String, std::time::Instant)>,
-    pub field_scroll_offsets: [f32; 14],
+    pub field_scroll_offsets: [f32; 15],
     pub available_monitors: Vec<(String, String)>,
     pub current_monitor_name: Option<String>,
 }
@@ -317,7 +317,7 @@ pub struct SettingsWindow {
     pub pressed_btn: Option<usize>,
     pub show_delete_dialog: bool,
     pub notification: Option<(String, std::time::Instant)>,
-    pub field_scroll_offsets: [f32; 14],
+    pub field_scroll_offsets: [f32; 15],
 
     // Layered Rendering Caches (Removed for memory savings)
     pub cursor_cache: Option<(i32, i32, u32, u32)>,
@@ -436,7 +436,7 @@ impl SettingsWindow {
             last_sent_hash: 0,
             dragging_history_idx: None,
             dragging_sys_prompt: false,
-            field_scroll_offsets: [0.0; 14],
+            field_scroll_offsets: [0.0; 15],
             render_back_buffer,
             render_in_progress,
             idle_buffers,
@@ -1049,6 +1049,7 @@ impl SettingsWindow {
                     (230.0, 830.0, 500.0),  // 11: FC URL
                     (230.0, 930.0, 500.0),  // 12: FC Key
                     (230.0, 1030.0, 500.0), // 13: System
+                    (405.0, 542.5, 350.0),  // 14: Screen Capture (530 + 12.5 offset)
                 ];
 
                 // Profile Management Buttons (Standardized Row)
@@ -1135,6 +1136,19 @@ impl SettingsWindow {
                             self.config_dirty = true;
                             self.window.request_redraw();
                             return SettingsAction::UpdateAiConfig(config);
+                        }
+
+                        if i == 14 {
+                            if ai_config.active_profile().is_multimodal {
+                                println!("[AI Settings] Screen Capture Toggle clicked");
+                                self.pressed_btn = Some(102); // Special code for screen capture
+                                let mut config = ai_config.clone();
+                                config.active_interaction_screenshots_enabled =
+                                    !config.active_interaction_screenshots_enabled;
+                                self.config_dirty = true;
+                                self.window.request_redraw();
+                                return SettingsAction::UpdateAiConfig(config);
+                            }
                         }
 
                         self.focused_field = Some(i);
@@ -1229,6 +1243,7 @@ impl SettingsWindow {
             2 => active_profile.api_key.clone(),
             3 => active_profile.base_url.clone(),
             4 => active_profile.model.clone(),
+            14 => String::new(), // Toggle handled via click
             5 => {
                 if ai_config.react_limit == 0 {
                     String::new()

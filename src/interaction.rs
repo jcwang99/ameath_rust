@@ -445,7 +445,7 @@ impl InteractionManager {
         self.base_interval = Duration::from_secs(self.config.interaction_frequency.max(1) * 60);
     }
 
-    pub fn check_for_trigger(&mut self) -> Option<String> {
+    pub fn check_for_trigger(&mut self) -> Option<crate::types::ChatInput> {
         if !self.config.active_interaction_enabled {
             return None;
         }
@@ -453,9 +453,13 @@ impl InteractionManager {
         let now = Instant::now();
 
         // 0. Poll Scheduler FIRST (Explicit User/AI Requests take precedence)
+        // Scheduler items are text-only for now
         if let Some(memo) = self.scheduler.poll() {
             self.last_interaction = now; // Reset routine timer too
-            return Some(format!("[SYSTEM_EVENT] Scheduled Reminder: {}", memo));
+            return Some(crate::types::ChatInput {
+                text: format!("[SYSTEM_EVENT] Scheduled Reminder: {}", memo),
+                images: vec![],
+            });
         }
 
         let elapsed = now.duration_since(self.last_interaction);
@@ -470,15 +474,36 @@ impl InteractionManager {
             if elapsed > threshold {
                 self.last_interaction = now;
                 let context = self.senses.get_context_snapshot();
-                return Some(format!(
-                    "[SYSTEM_EVENT] Routine Check. Context: {}",
-                    context
-                ));
+
+                let mut images = Vec::new();
+                if self.config.active_interaction_screenshots_enabled {
+                    match crate::screen_capture::capture_primary_monitor() {
+                        Ok(img) => {
+                            let resized = crate::screen_capture::resize_screenshot(img, 1000);
+                            let mut buffer = Vec::new();
+                            let mut cursor = std::io::Cursor::new(&mut buffer);
+                            if resized
+                                .write_to(&mut cursor, image::ImageFormat::Png)
+                                .is_ok()
+                            {
+                                images.push(crate::types::ImageData {
+                                    data: buffer,
+                                    mime_type: "image/png".to_string(),
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            println!("[Interaction] Screenshot failed: {}", e);
+                        }
+                    }
+                }
+
+                return Some(crate::types::ChatInput {
+                    text: format!("[SYSTEM_EVENT] Routine Check. Context: {}", context),
+                    images,
+                });
             }
         }
-
-        // 2. High Priority Events (e.g. High CPU) - Check more frequently?
-        // For now, let's keep it simple. Future: Check status every 10s.
 
         None
     }
