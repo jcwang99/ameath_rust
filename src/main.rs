@@ -224,6 +224,7 @@ fn main() {
         "在努力工作吗？加油！💪",
     ];
 
+
     // Tray Icon Setup
     let tray_menu = Menu::new();
     let settings_item = MenuItem::new("Settings", true, None);
@@ -426,6 +427,7 @@ fn main() {
                                                                     } else {
                                                                         bubble_manager.show("Music Paused ⏸️", Duration::from_secs(2), pet.scale);
                                                                     }
+                                                                    window.request_redraw();
                                                                 }
                                                                 menu::MenuAction::Exit => elwt.exit(),
                                                             }
@@ -442,6 +444,7 @@ fn main() {
                                                             if pet.check_hit(monitor_mx, monitor_my) {
                                                                 if let Some(&quote) = rand::seq::SliceRandom::choose(&quotes[..], &mut rand::thread_rng()) {
                                                                     bubble_manager.show(quote, Duration::from_secs(4), pet.scale);
+                                                                    window.request_redraw();
                                                                 }
                                                             }
                                                         }

@@ -1073,7 +1073,6 @@ pub fn get_metrics_dw_ex(
 pub fn get_metrics_dw(text: &str, font_size: f32, max_w: u32) -> (f32, f32) {
     get_metrics_dw_ex(text, font_size, max_w, "Microsoft YaHei", false, false)
 }
-
 #[cfg(target_os = "windows")]
 #[allow(dead_code)]
 pub fn wrap_text(
@@ -1326,31 +1325,68 @@ pub fn blit_32bit_premultiplied(
         let dest_slice =
             &mut buffer[dest_row_base + start_x_u..dest_row_base + start_x_u + copy_len];
 
-        for i in 0..copy_len {
+        // Optimized blending:
+        // 1. Process leading non-opaque pixels
+        let mut i = 0;
+        while i < copy_len {
             let s = src_slice[i];
             let a = (s >> 24) & 0xFF;
-            if a == 0 {
-                continue;
+            if a == 255 {
+                break;
+            } // Found start of opaque run
+
+            if a > 0 {
+                let d = dest_slice[i];
+                let inv_a = 255 - a;
+                let rb_dest = d & 0x00FF00FF;
+                let g_dest = d & 0x0000FF00;
+                let rb_src = s & 0x00FF00FF;
+                let g_src = s & 0x0000FF00;
+                let rb_res = rb_src + ((rb_dest * inv_a) >> 8);
+                let g_res = g_src + ((g_dest * inv_a) >> 8);
+                dest_slice[i] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
             }
+            // If a == 0, skip
+            i += 1;
+        }
+
+        // 2. Find end of opaque run
+        let start_opaque = i;
+        while i < copy_len {
+            let s = src_slice[i];
+            let a = (s >> 24) & 0xFF;
+            if a != 255 {
+                break;
+            }
+            i += 1;
+        }
+        let end_opaque = i;
+
+        // 3. Memcpy opaque run
+        if end_opaque > start_opaque {
+            dest_slice[start_opaque..end_opaque]
+                .copy_from_slice(&src_slice[start_opaque..end_opaque]);
+        }
+
+        // 4. Process trailing pixels
+        while i < copy_len {
+            let s = src_slice[i];
+            let a = (s >> 24) & 0xFF;
+
             if a == 255 {
                 dest_slice[i] = s;
-                continue;
+            } else if a > 0 {
+                let d = dest_slice[i];
+                let inv_a = 255 - a;
+                let rb_dest = d & 0x00FF00FF;
+                let g_dest = d & 0x0000FF00;
+                let rb_src = s & 0x00FF00FF;
+                let g_src = s & 0x0000FF00;
+                let rb_res = rb_src + ((rb_dest * inv_a) >> 8);
+                let g_res = g_src + ((g_dest * inv_a) >> 8);
+                dest_slice[i] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
             }
-
-            let d = dest_slice[i];
-            let inv_a = 255 - a;
-
-            // Premultiplied: dest = src + dest * (255 - a) / 255
-            let rb_dest = d & 0x00FF00FF;
-            let g_dest = d & 0x0000FF00;
-
-            let rb_src = s & 0x00FF00FF;
-            let g_src = s & 0x0000FF00;
-
-            let rb_res = rb_src + ((rb_dest * inv_a) >> 8);
-            let g_res = g_src + ((g_dest * inv_a) >> 8);
-
-            dest_slice[i] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
+            i += 1;
         }
     }
 }

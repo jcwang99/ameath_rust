@@ -52,6 +52,7 @@ pub struct SpeechBubble {
     // Async Worker
     tx: Sender<BubbleRenderRequest>,
     rx: Receiver<BubbleRenderResult>,
+    tx_recycle: Sender<Vec<u8>>,
 
     // Display State
     last_rendered_hash: u64,
@@ -64,10 +65,11 @@ impl SpeechBubble {
     pub fn new() -> Self {
         let (tx, rx_worker) = channel::<BubbleRenderRequest>();
         let (tx_worker, rx) = channel::<BubbleRenderResult>();
+        let (tx_recycle, rx_recycle) = channel::<Vec<u8>>();
 
         // Spawn independent worker thread
         thread::spawn(move || {
-            worker_loop(rx_worker, tx_worker);
+            worker_loop(rx_worker, tx_worker, rx_recycle);
         });
 
         Self {
@@ -77,6 +79,7 @@ impl SpeechBubble {
             current_height: BASE_BUBBLE_HEIGHT,
             tx,
             rx,
+            tx_recycle,
             last_rendered_hash: 0,
             current_pixels: None,
             current_scale: 1.0,
@@ -166,6 +169,11 @@ impl SpeechBubble {
     pub fn render_to_buffer(&mut self, buffer_ptr: *mut u8, _scale: f32) {
         // 1. Check for new results from worker (zero-copy: just move the Box)
         while let Ok(res) = self.rx.try_recv() {
+            // Recycle the OLD buffer if we have one
+            if let Some(old_pixels) = self.current_pixels.take() {
+                let _ = self.tx_recycle.send(old_pixels);
+            }
+
             self.current_pixels = Some(*res.pixels); // Unbox the Vec
             self.current_width = res.width;
             self.current_height = res.height;
@@ -197,12 +205,19 @@ struct WorkerState {
     hdc_screen: HDC,
     #[cfg(target_os = "windows")]
     h_bitmap: windows::Win32::Graphics::Gdi::HBITMAP,
-    // Double buffering: one for rendering, one for sending
+    #[cfg(target_os = "windows")]
+    bitmap_capacity: (i32, i32), // Width, Height
+
+    // Recycling
     pixel_buffer: Vec<u8>,
-    spare_buffer: Vec<u8>,
+    rx_recycle: Receiver<Vec<u8>>,
 }
 
-fn worker_loop(rx: Receiver<BubbleRenderRequest>, tx: Sender<BubbleRenderResult>) {
+fn worker_loop(
+    rx: Receiver<BubbleRenderRequest>,
+    tx: Sender<BubbleRenderResult>,
+    rx_recycle: Receiver<Vec<u8>>,
+) {
     #[cfg(target_os = "windows")]
     let mut state = unsafe {
         let hdc_screen = GetDC(HWND(0));
@@ -213,8 +228,9 @@ fn worker_loop(rx: Receiver<BubbleRenderRequest>, tx: Sender<BubbleRenderResult>
             hdc_mem,
             hdc_screen,
             h_bitmap: windows::Win32::Graphics::Gdi::HBITMAP(0),
+            bitmap_capacity: (0, 0),
             pixel_buffer: Vec::new(),
-            spare_buffer: Vec::new(),
+            rx_recycle,
         }
     };
 
@@ -294,37 +310,78 @@ fn render_bubble_internal(
         let width = calc_w;
         let height = calc_h;
 
-        // Recreate Bitmap if size changed
-        if state.h_bitmap.0 != 0 {
-            let _ = DeleteObject(state.h_bitmap);
+        // GDI Bitmap Recycling
+        // Only recreate if current bitmap is too small or doesn't exist
+        if state.h_bitmap.0 == 0
+            || width > state.bitmap_capacity.0
+            || height > state.bitmap_capacity.1
+        {
+            if state.h_bitmap.0 != 0 {
+                let _ = DeleteObject(state.h_bitmap);
+            }
+
+            // Grow capacity with some buffer (e.g., align to 256px or just use current)
+            // Using exact size for now, but trailing growth is better.
+            // Let's alloc exactly what's needed to start, optimization step 2 could be exponential growth.
+            let new_cap_w = width;
+            let new_cap_h = height;
+
+            let bmi = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: new_cap_w,
+                    biHeight: 0 - new_cap_h,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+
+            let mut bits = std::ptr::null_mut();
+            let h_bitmap =
+                CreateDIBSection(state.hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, HANDLE(0), 0)
+                    .unwrap();
+
+            state.h_bitmap = h_bitmap;
+            state.bitmap_capacity = (new_cap_w, new_cap_h);
+
+            // Re-bind to DC
+            SelectObject(state.hdc_mem, h_bitmap);
         }
 
-        let bmi = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: width,
-                biHeight: 0 - height,
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        // We can't easily get the raw pointer again without keeping it,
+        // but SelectObject + GetDIBits or just knowing it's bound to hdc_mem is enough for D2D?
+        // Actually D2D BindDC writes to the DC's selected bitmap.
+        // But we need to Read from it later.
+        // CreateDIBSection gave us `bits`.
+        // To access `bits` again without storing it, we can use GetObject but storing is better.
+        // For now, let's just re-lock or rely on GDI GetDIBits?
+        // Wait, the original code used `bits` directly.
+        // If we reuse the bitmap, we need that pointer.
+        // `SelectObject` returns the old object.
+        // Issue: `CreateDIBSection` returns the pointer in `bits`. If we reuse `h_bitmap`, we lose `bits` unless we stored it.
+        // However, `BITMAP` struct from `GetObject` contains `bmBits`.
 
-        let mut bits = std::ptr::null_mut();
-        let h_bitmap =
-            CreateDIBSection(state.hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, HANDLE(0), 0).unwrap();
-        state.h_bitmap = h_bitmap;
+        let mut bitmap_info: windows::Win32::Graphics::Gdi::BITMAP = std::mem::zeroed();
+        windows::Win32::Graphics::Gdi::GetObjectW(
+            state.h_bitmap,
+            std::mem::size_of::<windows::Win32::Graphics::Gdi::BITMAP>() as i32,
+            Some(&mut bitmap_info as *mut _ as *mut std::ffi::c_void),
+        );
+        let pixel_ptr = bitmap_info.bmBits as *mut u8;
 
-        let old_bitmap = SelectObject(state.hdc_mem, h_bitmap);
-        let pixel_ptr = bits as *mut u8;
         let w_usize = width as usize;
         let h_usize = height as usize;
-        let total_bytes = w_usize * h_usize * 4;
+        // Stride usually aligned to 4 bytes, but with 32bpp (4 bytes) it is usually width * 4.
+        // Let's use bmWidthBytes if available, otherwise assume packed.
 
-        // Clear
-        std::ptr::write_bytes(pixel_ptr, 0, total_bytes);
+        // Clear used area
+        // Note: We only need to clear the area we will convert to our buffer.
+        // Since we copy row-by-row or whole block, clearing the whole capacity might be slow.
+        // But we are only drawing `width` * `height`.
+        // D2D Clear(0) applies to the render target.
 
         // D2D Rendering
         let d2d_factory = get_d2d_factory();
@@ -350,9 +407,13 @@ fn render_bubble_internal(
             right: width,
             bottom: height,
         };
+
+        // Must BindDC every time because we might have drawn elsewhere or size changed?
+        // BindDC documentation says it binds the RT to the DC. The DC has the Bitmap selected.
         if dc_rt.BindDC(state.hdc_mem, &rect_gdi).is_ok() {
             if let Ok(rt) = dc_rt.cast::<ID2D1DeviceContext>() {
                 rt.BeginDraw();
+                rt.Clear(None); // Clear the bound area to transparent
 
                 let bg_color = D2D1_COLOR_F {
                     r: 1.0,
@@ -472,25 +533,60 @@ fn render_bubble_internal(
 
         GdiFlush();
 
-        // Copy out - ensure spare_buffer has enough capacity
-        if state.spare_buffer.len() < total_bytes {
-            state.spare_buffer.resize(total_bytes, 0);
+        // 3. Buffer Recycling
+        // Try to get a recycled buffer
+        if let Ok(old_buf) = state.rx_recycle.try_recv() {
+            state.pixel_buffer = old_buf;
         }
-        std::ptr::copy_nonoverlapping(pixel_ptr, state.spare_buffer.as_mut_ptr(), total_bytes);
+
+        // Ensure buffer usage size
+        let total_bytes = w_usize * h_usize * 4;
+        if state.pixel_buffer.len() != total_bytes {
+            state.pixel_buffer.resize(total_bytes, 0);
+        }
+
+        // Copy from GDI Bitmap to Vec<u8>
+        // CRITICAL FIX: The GDI bitmap has a stride based on its CAPACITY, not the current render width.
+        // We must copy row-by-row if the width differs, or if using a sub-region.
+        if !pixel_ptr.is_null() {
+            let cap_w = if state.bitmap_capacity.0 > 0 {
+                state.bitmap_capacity.0 as usize
+            } else {
+                w_usize
+            };
+            let stride = cap_w * 4; // 32bpp = 4 bytes per pixel. GDI stride is always aligned to 4 bytes.
+            let row_bytes = w_usize * 4;
+
+            if stride == row_bytes {
+                // Determine if we can just copy linearly
+                // This happens if current width == capacity width
+                std::ptr::copy_nonoverlapping(
+                    pixel_ptr,
+                    state.pixel_buffer.as_mut_ptr(),
+                    total_bytes,
+                );
+            } else {
+                // Must copy row by row
+                let dest_ptr = state.pixel_buffer.as_mut_ptr();
+                for y in 0..h_usize {
+                    let src_offset = y * stride;
+                    let dest_offset = y * row_bytes;
+                    std::ptr::copy_nonoverlapping(
+                        pixel_ptr.add(src_offset),
+                        dest_ptr.add(dest_offset),
+                        row_bytes,
+                    );
+                }
+            }
+        }
 
         // Hashing
         let mut hasher = DefaultHasher::new();
         req.text.hash(&mut hasher);
         let text_hash = hasher.finish();
 
-        SelectObject(state.hdc_mem, old_bitmap);
-
-        // Double-buffer swap: move spare_buffer (now containing the rendered data) to the result
-        // and use the old pixel_buffer as the new spare_buffer for next render
-        std::mem::swap(&mut state.pixel_buffer, &mut state.spare_buffer);
-
         Some(BubbleRenderResult {
-            pixels: Box::new(std::mem::take(&mut state.pixel_buffer)), // Zero-copy: just move the Vec into Box
+            pixels: Box::new(std::mem::take(&mut state.pixel_buffer)),
             width,
             height,
             text_hash,
