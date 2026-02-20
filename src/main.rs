@@ -120,8 +120,9 @@ fn main() {
 
     // Extract Icon before animation_map is moved into Pet
     // Load Official Icon
-    let icon_path = "assets/gifs/ameath.ico";
-    let (winit_icon, tray_icon_handle) = if let Ok(img) = image::open(icon_path) {
+    // Embed Icon for consistent window icon
+    let icon_data = include_bytes!("../assets/gifs/ameath.ico");
+    let (winit_icon, tray_icon_handle) = if let Ok(img) = image::load_from_memory(icon_data) {
         let rgba = img.to_rgba8();
         let (width, height) = img.dimensions();
         let w_icon = winit::window::Icon::from_rgba(rgba.clone().into_raw(), width, height).ok();

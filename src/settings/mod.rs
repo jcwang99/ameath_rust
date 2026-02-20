@@ -350,6 +350,28 @@ impl SettingsWindow {
                 .build(event_loop)
                 .unwrap(),
         );
+
+        #[cfg(target_os = "windows")]
+        {
+            use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
+            use windows::Win32::Foundation::HWND;
+            use windows::Win32::Graphics::Dwm::{
+                DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE,
+            };
+
+            if let RawWindowHandle::Win32(handle) = window.raw_window_handle() {
+                let hwnd = HWND(handle.hwnd as isize);
+                let dark_mode = 1;
+                unsafe {
+                    let _ = DwmSetWindowAttribute(
+                        hwnd,
+                        DWMWA_USE_IMMERSIVE_DARK_MODE,
+                        &dark_mode as *const _ as *const _,
+                        std::mem::size_of::<i32>() as u32,
+                    );
+                }
+            }
+        }
         window.set_ime_allowed(true);
 
         let context = Context::new(window.clone()).unwrap();
