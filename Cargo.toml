@@ -32,7 +32,7 @@ rfd = "0.15"
 tray-icon = "0.19.2"
 global-hotkey = "0.5.0"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -45,6 +45,7 @@ lz4_flex = "0.11"
 rayon = "1.10"
 lru = "0.12"
 base64 = "0.22.1"
+futures-util = "0.3"
 
 [build-dependencies]
 winres = "0.1"

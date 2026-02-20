@@ -15,6 +15,7 @@ mod interaction;
 mod theme;
 mod ui_primitives;
 mod screen_capture;
+mod tts;
 
 
 use chat_window::{ChatWindow, ChatAction};
@@ -212,6 +213,12 @@ fn main() {
     }
     let mut interaction_manager = interaction::InteractionManager::new(ai_config.clone(), scheduler.clone());
     let (path_tx, path_rx) = std::sync::mpsc::channel::<Option<std::path::PathBuf>>();
+    let (tts_path_tx, tts_path_rx) = std::sync::mpsc::channel::<Option<std::path::PathBuf>>();
+    let (tts_controller, tts_rx) = if let Some((c, r)) = tts::TtsController::new() {
+        (Some(c), Some(r))
+    } else {
+        (None, None)
+    };
 
     let quotes = vec![
         "哎呀，被发现了！😆",
@@ -262,6 +269,8 @@ fn main() {
     let mut click_start_time: Option<Instant> = None;
     let mut click_start_pos: Option<(f64, f64)> = None;
     let mut settings_cursor_pos: Option<PhysicalPosition<f64>> = None;
+    let mut pending_responses: std::collections::VecDeque<(String, Instant)> =
+        std::collections::VecDeque::new();
 
     let mut settings_win: Option<SettingsWindow> = None;
     let mut menu_visible_timer: Option<Instant> = None;
@@ -316,6 +325,9 @@ fn main() {
                          match chat_window.handle_event(&event, modifier_state) {
                              ChatAction::Send(msg) => {
                                  println!("User sent: {:?}", msg);
+                                 if let Some(tts) = &tts_controller {
+                                     tts.stop();
+                                 }
                                  is_thinking = true;
                                  thinking_start = Some(Instant::now());
                                  
@@ -635,7 +647,16 @@ fn main() {
                                                         sw.request_redraw();
                                                     }
                                                 }
-                                                settings::SettingsAction::RequestGc => {
+                                                settings::SettingsAction::SelectTtsRefAudio => {
+                                            let tx = tts_path_tx.clone();
+                                            std::thread::spawn(move || {
+                                                let file = rfd::FileDialog::new()
+                                                    .add_filter("Audio", &["wav", "mp3", "flac"])
+                                                    .pick_file();
+                                                let _ = tx.send(file);
+                                            });
+                                        }
+                                        settings::SettingsAction::RequestGc => {
                                                     ui_primitives::harvest_memory();
                                                 }
                                                 _ => {}
@@ -702,8 +723,57 @@ fn main() {
                     if let Ok(response) = ai_rx.try_recv() {
                         is_thinking = false;
                         thinking_start = None;
-                        bubble_manager.show(&response, Duration::from_secs(6), pet.scale);
-                        needs_pet_redraw = true;
+                        if let Some(tts) = &tts_controller {
+                            if ai_config.tts_enabled {
+                                tts.speak(response.clone(), &ai_config);
+                                // Queue for synchronized display
+                                pending_responses.push_back((response, Instant::now()));
+                            } else {
+                                // Show immediately if TTS disabled
+                                bubble_manager.show(&response, Duration::from_secs(6), pet.scale);
+                                needs_pet_redraw = true;
+                            }
+                        } else {
+                            // No TTS controller at all
+                            bubble_manager.show(&response, Duration::from_secs(6), pet.scale);
+                            needs_pet_redraw = true;
+                        }
+                    }
+
+                    // Check for TTS audio readiness signals
+                    if let Some(rx) = &tts_rx {
+                        while let Ok(text) = rx.try_recv() {
+                            // Find matching response in queue
+                            let mut found = false;
+                            for i in 0..pending_responses.len() {
+                                if pending_responses[i].0 == text {
+                                    let (resp, _) = pending_responses.remove(i).unwrap();
+                                    bubble_manager.show(&resp, Duration::from_secs(6), pet.scale);
+                                    needs_pet_redraw = true;
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if !found {
+                                // Maybe it was a partial match or something went wrong?
+                                // If we can't find exact text, just take the oldest one.
+                                if let Some((resp, _)) = pending_responses.pop_front() {
+                                    bubble_manager.show(&resp, Duration::from_secs(6), pet.scale);
+                                    needs_pet_redraw = true;
+                                }
+                            }
+                        }
+                    }
+
+                    // Timeout check for pending responses: don't wait forever
+                    while let Some((_, start)) = pending_responses.front() {
+                        if start.elapsed() > Duration::from_secs(60) {
+                            let (resp, _) = pending_responses.pop_front().unwrap();
+                            bubble_manager.show(&resp, Duration::from_secs(6), pet.scale);
+                            needs_pet_redraw = true;
+                        } else {
+                            break;
+                        }
                     }
 
                     if let Ok(path_opt) = path_rx.try_recv() {
@@ -713,6 +783,20 @@ fn main() {
                             window_config.save();
                         }
                         if let Some(sw) = &mut settings_win {
+                            sw.config_dirty = true;
+                            sw.window().set_window_level(winit::window::WindowLevel::AlwaysOnTop);
+                            sw.request_redraw();
+                        }
+                    }
+
+                    if let Ok(path_opt) = tts_path_rx.try_recv() {
+                        if let Some(path) = path_opt {
+                            ai_config.tts_reference_audio = path;
+                            ai_config.save();
+                            interaction_manager.update_config(ai_config.clone());
+                        }
+                        if let Some(sw) = &mut settings_win {
+                            sw.config_dirty = true;
                             sw.window().set_window_level(winit::window::WindowLevel::AlwaysOnTop);
                             sw.request_redraw();
                         }

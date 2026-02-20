@@ -37,7 +37,7 @@ pub struct SettingsRenderInput {
     pub pressed_btn: Option<usize>, // 0-4 for profile buttons, 100+ for fields
     pub show_delete_dialog: bool,
     pub notification: Option<(String, std::time::Instant)>,
-    pub field_scroll_offsets: [f32; 15],
+    pub field_scroll_offsets: [f32; 18],
     pub available_monitors: Vec<(String, String)>,
     pub current_monitor_name: Option<String>,
 }
@@ -267,6 +267,7 @@ pub enum SettingsAction {
     RequestHistory,
     SetMonitor(String),
     SelectMusicPath,
+    SelectTtsRefAudio,
     RequestGc,
 }
 
@@ -317,7 +318,7 @@ pub struct SettingsWindow {
     pub pressed_btn: Option<usize>,
     pub show_delete_dialog: bool,
     pub notification: Option<(String, std::time::Instant)>,
-    pub field_scroll_offsets: [f32; 15],
+    pub field_scroll_offsets: [f32; 18],
 
     // Layered Rendering Caches (Removed for memory savings)
     pub cursor_cache: Option<(i32, i32, u32, u32)>,
@@ -458,7 +459,7 @@ impl SettingsWindow {
             last_sent_hash: 0,
             dragging_history_idx: None,
             dragging_sys_prompt: false,
-            field_scroll_offsets: [0.0; 15],
+            field_scroll_offsets: [0.0; 18],
             render_back_buffer,
             render_in_progress,
             idle_buffers,
@@ -605,6 +606,9 @@ impl SettingsWindow {
             ai_config.l1_summary_threshold.hash(&mut config_hasher);
             ai_config.l2_merge_threshold.hash(&mut config_hasher);
             ai_config.react_limit.hash(&mut config_hasher);
+            ai_config.tts_enabled.hash(&mut config_hasher);
+            ai_config.tts_reference_audio.hash(&mut config_hasher);
+            ai_config.tts_prompt_text.hash(&mut config_hasher);
             self.last_config_hash = config_hasher.finish();
             self.config_dirty = false;
         }
@@ -1072,6 +1076,9 @@ impl SettingsWindow {
                     (230.0, 930.0, 500.0),  // 12: FC Key
                     (230.0, 1030.0, 500.0), // 13: System
                     (405.0, 542.5, 350.0),  // 14: Screen Capture (530 + 12.5 offset)
+                    (230.0, 1330.0, 45.0),  // 15: TTS Toggle
+                    (230.0, 1430.0, 500.0), // 16: TTS Ref Path
+                    (230.0, 1530.0, 500.0), // 17: TTS Prompt Text
                 ];
 
                 // Profile Management Buttons (Standardized Row)
@@ -1163,7 +1170,6 @@ impl SettingsWindow {
                             self.window.request_redraw();
                             return SettingsAction::UpdateAiConfig(config);
                         }
-
                         if i == 14 {
                             if ai_config.active_profile().is_multimodal {
                                 println!("[AI Settings] Screen Capture Toggle clicked");
@@ -1175,6 +1181,15 @@ impl SettingsWindow {
                                 self.window.request_redraw();
                                 return SettingsAction::UpdateAiConfig(config);
                             }
+                        }
+                        if i == 15 {
+                            println!("[AI Settings] TTS Toggle clicked");
+                            self.pressed_btn = Some(103);
+                            let mut config = ai_config.clone();
+                            config.tts_enabled = !config.tts_enabled;
+                            self.config_dirty = true;
+                            self.window.request_redraw();
+                            return SettingsAction::UpdateAiConfig(config);
                         }
 
                         self.focused_field = Some(i);
@@ -1202,6 +1217,13 @@ impl SettingsWindow {
                                 {
                                     self.show_api_key = !self.show_api_key;
                                     self.config_dirty = true;
+                                } else if i == 15 {
+                                    let mut config = ai_config.clone();
+                                    config.tts_enabled = !config.tts_enabled;
+                                    self.config_dirty = true;
+                                    return SettingsAction::UpdateAiConfig(config);
+                                } else if i == 16 {
+                                    return SettingsAction::SelectTtsRefAudio;
                                 } else {
                                     let scale_f32 = scale as f32;
                                     let scroll_x = self.field_scroll_offsets[i];
@@ -1269,7 +1291,6 @@ impl SettingsWindow {
             2 => active_profile.api_key.clone(),
             3 => active_profile.base_url.clone(),
             4 => active_profile.model.clone(),
-            14 => String::new(), // Toggle handled via click
             5 => {
                 if ai_config.react_limit == 0 {
                     String::new()
@@ -1303,6 +1324,9 @@ impl SettingsWindow {
             11 => ai_config.firecrawl_url.clone(),
             12 => ai_config.firecrawl_api_key.clone(),
             13 => ai_config.system_prompt.clone(),
+            16 => ai_config.tts_reference_audio.to_string_lossy().into_owned(),
+            17 => ai_config.tts_prompt_text.clone(),
+            14 | 15 => String::new(), // Toggles handled via click
             _ => String::new(),
         }
     }
@@ -1354,12 +1378,22 @@ impl SettingsWindow {
                 self.system_prompt_hash = 0; // Force re-hash/re-render in ai.rs
                 ai_config.system_prompt = text;
             }
+            16 => {
+                ai_config.tts_reference_audio = std::path::PathBuf::from(text);
+            }
+            17 => {
+                ai_config.tts_prompt_text = text;
+            }
             _ => {}
         }
     }
 
     fn ensure_cursor_visible(&mut self, field_idx: usize, scale: f32, ai_config: &AiConfig) {
-        if field_idx >= 14 {
+        if field_idx >= 18 {
+            return;
+        }
+
+        if field_idx == 14 || field_idx == 15 || field_idx == 16 {
             return;
         }
 
@@ -1399,9 +1433,9 @@ impl SettingsWindow {
         }
 
         // Single-line fields
-        if field_idx >= 14 {
+        if field_idx == 14 || field_idx == 15 || field_idx == 16 {
             return;
-        } // Skip multiline or invalid
+        } // Skip toggles (14/15) or path picker (16)
 
         let fields = vec![
             (265.0, 30.0, 160.0),   // 0: Profile Name
@@ -1418,6 +1452,10 @@ impl SettingsWindow {
             (230.0, 830.0, 500.0),  // 11: FC URL
             (230.0, 930.0, 500.0),  // 12: FC Key
             (230.0, 1030.0, 500.0), // 13: System
+            (405.0, 530.0, 20.0),   // 14: Screen Capture (Toggles don't scroll but index exists)
+            (230.0, 1330.0, 20.0),  // 15: TTS Toggle
+            (230.0, 1430.0, 500.0), // 16: Ref Path
+            (230.0, 1530.0, 500.0), // 17: TTS Prompt Text
         ];
 
         if field_idx >= fields.len() {
@@ -1749,7 +1787,7 @@ impl SettingsWindow {
                 }
             }
             Key::Named(NamedKey::Tab) => {
-                self.focused_field = Some((field_idx + 1) % 14);
+                self.focused_field = Some((field_idx + 1) % 18);
                 self.cursor_pos = 0;
                 self.selection_start = None;
                 self.window.request_redraw();
@@ -2036,6 +2074,10 @@ impl SettingsWindow {
             (230.0, 830.0),  // 11: FC URL
             (230.0, 930.0),  // 12: FC Key
             (230.0, 1030.0), // 13: System
+            (405.0, 530.0),  // 14: Screen Capture
+            (230.0, 1330.0), // 15: TTS Toggle
+            (230.0, 1430.0), // 16: Ref Path
+            (230.0, 1530.0), // 17: TTS Prompt Text
         ];
 
         let (fx, fy) = fields[field_idx];

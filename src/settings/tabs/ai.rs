@@ -24,7 +24,7 @@ pub struct AiTabState<'a> {
     pub pressed_btn: Option<usize>,
     pub show_delete_dialog: bool,
     pub notification: Option<(String, std::time::Instant)>,
-    pub field_scroll_offsets: [f32; 15],
+    pub field_scroll_offsets: [f32; 18],
 }
 
 pub fn draw(
@@ -45,9 +45,9 @@ pub fn draw(
     let mut cursor_rect = None;
 
     let card_w = (560.0 * scale) as u32;
-    let card_h = (1650.0 * scale) as u32;
+    let card_h = (1950.0 * scale) as u32;
     let card_y_raw = (sy_val(120) as f32 + scroll_y * scale) as i32;
-    let fields_count = 15;
+    let fields_count = 18;
 
     // Viewport boundaries (for visibility check)
     let min_y_vis = sy_val(120) as i32;
@@ -106,6 +106,9 @@ pub fn draw(
                 20.0,
                 false,
             ),
+            15 => ("TTS Enabled (CosyVoice 3)", 230.0, 1330.0, 20.0, false),
+            16 => ("TTS Ref Audio Path", 230.0, 1430.0, 500.0, false),
+            17 => ("TTS Prompt Text", 230.0, 1530.0, 500.0, false),
             _ => ("", 0.0, 0.0, 0.0, false),
         };
 
@@ -114,12 +117,16 @@ pub fn draw(
             continue;
         }
 
-        if i == 14 {
-            if !ai_config.active_profile().is_multimodal {
+        if i == 14 || i == 15 {
+            if i == 14 && !ai_config.active_profile().is_multimodal {
                 continue;
             }
-            // Checkbox for Screen Capture
-            let is_checked = ai_config.active_interaction_screenshots_enabled;
+            // Checkbox for Screen Capture or TTS
+            let is_checked = if i == 14 {
+                ai_config.active_interaction_screenshots_enabled
+            } else {
+                ai_config.tts_enabled
+            };
 
             let box_x = s(fx as u32) as i32;
             // FIXED: Add sc(25.0) for field start + sc(12.5) for vertical centering (45-20)/2 = 37.5
@@ -234,6 +241,64 @@ pub fn draw(
             continue;
         }
 
+        if i == 16 {
+            // Button-style for Reference Audio Path
+            let is_hovered = state.content_mouse_pos.0 >= fx
+                && state.content_mouse_pos.0 <= fx + fw
+                && state.content_mouse_pos.1 >= fy + 25.0
+                && state.content_mouse_pos.1 <= fy + 25.0 + 45.0;
+
+            let border_col = if is_hovered {
+                COLOR_PRIMARY
+            } else {
+                COLOR_BORDER
+            };
+
+            draw_rounded_rect(
+                buffer,
+                w,
+                s(fx as u32) as i32,
+                card_y_raw + sc(fy + 25.0) as i32,
+                sc(fw) as u32,
+                sc(45.0) as u32,
+                8,
+                border_col,
+                w,
+                h,
+            );
+            draw_rounded_rect(
+                buffer,
+                w,
+                (s(fx as u32) as i32).saturating_add(1),
+                card_y_raw + sc(fy + 25.0) as i32 + 1,
+                (sc(fw) as u32).saturating_sub(2),
+                (sc(45.0) as u32).saturating_sub(2),
+                7,
+                COLOR_BG_CARD,
+                w,
+                h,
+            );
+
+            let ref_path = ai_config.tts_reference_audio.to_string_lossy();
+            let path_str = if ref_path.is_empty() {
+                "Select reference audio...".to_string()
+            } else {
+                ref_path.to_string()
+            };
+
+            draw_text(
+                buffer,
+                w,
+                &[],
+                &path_str,
+                fx_abs.saturating_add(sc(15.0) as i32),
+                input_y_abs.saturating_add(sc(12.0) as i32),
+                sc(14.0),
+                COLOR_TEXT_SEC,
+            );
+            continue;
+        }
+
         let is_focused = state.focused_field == Some(i);
         let border_col = if is_focused {
             COLOR_PRIMARY
@@ -313,6 +378,7 @@ pub fn draw(
             10 => &ai_config.brave_api_key,
             11 => &ai_config.firecrawl_url,
             12 => &ai_config.firecrawl_api_key,
+            17 => &ai_config.tts_prompt_text,
             _ => "",
         };
 
@@ -679,6 +745,7 @@ pub fn draw(
             11 => ("Firecrawl URL", 230.0, 830.0, 500.0, false),
             12 => ("Firecrawl Key", 230.0, 930.0, 500.0, false),
             13 => ("System Prompt", 230.0, 1030.0, 500.0, true),
+            17 => ("TTS Prompt Text", 230.0, 1530.0, 500.0, false),
             _ => ("", 0.0, 0.0, 0.0, false),
         };
 
@@ -718,6 +785,7 @@ pub fn draw(
                 11 => &ai_config.firecrawl_url,
                 12 => &ai_config.firecrawl_api_key,
                 13 => &ai_config.system_prompt,
+                17 => &ai_config.tts_prompt_text,
                 _ => "",
             };
 

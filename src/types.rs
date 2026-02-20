@@ -91,6 +91,12 @@ pub struct AiConfig {
     pub interaction_frequency: u64, // Minutes
     #[serde(default = "default_active_interaction_screenshots_enabled")]
     pub active_interaction_screenshots_enabled: bool,
+    #[serde(default)]
+    pub tts_enabled: bool,
+    #[serde(default = "default_tts_ref_path")]
+    pub tts_reference_audio: std::path::PathBuf,
+    #[serde(default = "default_tts_prompt_text")]
+    pub tts_prompt_text: String,
 }
 
 impl AiConfig {
@@ -289,8 +295,19 @@ impl Default for AiConfig {
             active_interaction_enabled: true,
             interaction_frequency: 20,
             active_interaction_screenshots_enabled: false,
+            tts_enabled: false,
+            tts_reference_audio: default_tts_ref_path(),
+            tts_prompt_text: default_tts_prompt_text(),
         }
     }
+}
+
+fn default_tts_ref_path() -> std::path::PathBuf {
+    std::path::PathBuf::from("asset/zero_shot_prompt.wav")
+}
+
+fn default_tts_prompt_text() -> String {
+    "希望你以后能够做的比我还好呦。".to_string()
 }
 
 fn default_active_interaction_enabled() -> bool {
