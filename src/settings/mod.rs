@@ -1133,6 +1133,10 @@ impl SettingsWindow {
                             let mut config = ai_config.clone();
                             let profile = config.active_profile_mut();
                             profile.is_multimodal = !profile.is_multimodal;
+                            // If Multimodal is disabled, enforce Screen Capture off
+                            if !profile.is_multimodal {
+                                config.active_interaction_screenshots_enabled = false;
+                            }
                             self.config_dirty = true;
                             self.window.request_redraw();
                             return SettingsAction::UpdateAiConfig(config);
