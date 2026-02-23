@@ -137,6 +137,13 @@ impl ChatKernel {
 
             let mut turns = 0;
             let max_turns = self.config.react_limit;
+            let profile = self.config.active_profile();
+            println!(
+                "[Kernel] Starting ReAct loop with Profile: {} | Context: {} msgs | Limit: {} turns",
+                profile.name,
+                messages.len(),
+                max_turns
+            );
 
             let mut final_response = None;
 
@@ -202,7 +209,10 @@ impl ChatKernel {
                                 messages.push(tool_response);
                             }
                         } else {
-                            println!("[Kernel] No tool calls. Final response received.");
+                            println!(
+                                "[Kernel] No tool calls. Final response received. ({} turns)",
+                                turns
+                            );
                             // Completion Phase: Store final response in Layer 1
                             self.memory.add_message(&user_msg).ok(); // Save initiated user message now
                             self.memory.add_message(&response_msg).ok(); // This is the final answer
