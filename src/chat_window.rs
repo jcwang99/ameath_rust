@@ -17,6 +17,27 @@ pub struct Thumbnail {
     pub height: u32,
 }
 
+pub enum ImageStatus {
+    Processing {
+        progress: f32,
+    },
+    Ready {
+        data: crate::types::ImageData,
+        thumb: Thumbnail,
+    },
+}
+
+pub struct ImageSlot {
+    pub id: u32,
+    pub status: ImageStatus,
+}
+
+pub enum ImageAsyncMsg {
+    RequestAddition(std::path::PathBuf),
+    Finished(u32, crate::types::ImageData, Thumbnail),
+    Failed(u32),
+}
+
 pub struct ChatWindow {
     window: Rc<Window>,
     #[allow(dead_code)]
@@ -27,14 +48,14 @@ pub struct ChatWindow {
     is_visible: bool,
     last_size: Option<(u32, u32)>,
     cursor_blink_start: std::time::Instant,
-    pub pending_images: Vec<crate::types::ImageData>,
-    pub thumbnails: Vec<Thumbnail>, // Fixed: Store explicit dimensions
+    pub slots: Vec<ImageSlot>,
+    next_slot_id: u32,
     plus_button_hovered: bool,
     hovered_thumb: Option<usize>,
     mouse_pos: (f64, f64),
     // Async channel for image results
-    image_rx: std::sync::mpsc::Receiver<(crate::types::ImageData, Thumbnail)>,
-    image_tx: std::sync::mpsc::Sender<(crate::types::ImageData, Thumbnail)>,
+    image_rx: std::sync::mpsc::Receiver<ImageAsyncMsg>,
+    image_tx: std::sync::mpsc::Sender<ImageAsyncMsg>,
     proxy: winit::event_loop::EventLoopProxy<()>,
 }
 
@@ -84,8 +105,8 @@ impl ChatWindow {
             is_visible: false,
             last_size: None,
             cursor_blink_start: std::time::Instant::now(),
-            pending_images: Vec::new(),
-            thumbnails: Vec::new(),
+            slots: Vec::new(),
+            next_slot_id: 0,
             plus_button_hovered: false,
             hovered_thumb: None,
             mouse_pos: (0.0, 0.0),
@@ -119,8 +140,7 @@ impl ChatWindow {
 
         self.is_visible = true;
         self.input_text.clear();
-        self.pending_images.clear();
-        self.thumbnails.clear();
+        self.slots.clear();
         self.cursor_blink_start = std::time::Instant::now();
         self.request_redraw();
     }
@@ -147,10 +167,28 @@ impl ChatWindow {
     ) -> ChatAction {
         // Poll for async image results
         let mut got_new_images = false;
-        while let Ok((img_data, thumb)) = self.image_rx.try_recv() {
-            self.pending_images.push(img_data);
-            self.thumbnails.push(thumb);
-            got_new_images = true;
+        while let Ok(msg) = self.image_rx.try_recv() {
+            match msg {
+                ImageAsyncMsg::RequestAddition(path) => {
+                    self.add_image_from_path(path);
+                    got_new_images = true;
+                }
+                ImageAsyncMsg::Finished(id, img_data, thumb) => {
+                    if let Some(slot) = self.slots.iter_mut().find(|s| s.id == id) {
+                        slot.status = ImageStatus::Ready {
+                            data: img_data,
+                            thumb,
+                        };
+                        got_new_images = true;
+                    }
+                }
+                ImageAsyncMsg::Failed(id) => {
+                    if let Some(pos) = self.slots.iter().position(|s| s.id == id) {
+                        self.slots.remove(pos);
+                        got_new_images = true;
+                    }
+                }
+            }
         }
         if got_new_images {
             self.request_redraw();
@@ -194,14 +232,20 @@ impl ChatWindow {
                 match logical_key {
                     Key::Named(NamedKey::Enter) => {
                         // Send message
-                        if !self.input_text.trim().is_empty() || !self.pending_images.is_empty() {
+                        let mut ready_images = Vec::new();
+                        for slot in &self.slots {
+                            if let ImageStatus::Ready { data, .. } = &slot.status {
+                                ready_images.push(data.clone());
+                            }
+                        }
+
+                        if !self.input_text.trim().is_empty() || !ready_images.is_empty() {
                             let msg = crate::types::ChatInput {
                                 text: self.input_text.clone(),
-                                images: self.pending_images.clone(),
+                                images: ready_images,
                             };
                             self.input_text.clear();
-                            self.pending_images.clear();
-                            self.thumbnails.clear();
+                            self.slots.clear();
                             self.request_redraw();
                             return ChatAction::Send(msg);
                         }
@@ -281,161 +325,135 @@ impl ChatWindow {
         {
             use arboard::Clipboard;
             if let Ok(mut clipboard) = Clipboard::new() {
-                println!("[Clipboard Debug] Attempting to paste...");
+                // 1. Try Image directly
+                if let Ok(image) = clipboard.get_image() {
+                    let slot_id = self.next_slot_id;
+                    self.next_slot_id += 1;
+                    self.slots.push(ImageSlot {
+                        id: slot_id,
+                        status: ImageStatus::Processing { progress: 0.0 },
+                    });
 
-                // 1. Try Image (arboard)
-                match clipboard.get_image() {
-                    Ok(img) => {
-                        println!(
-                            "[Clipboard Debug] arboard success: {}x{}",
-                            img.width, img.height
-                        );
-                        self.process_raw_image(
-                            img.width as u32,
-                            img.height as u32,
-                            img.bytes.to_vec(),
-                        );
-                        return;
+                    let rgba_data = image.bytes.to_vec();
+                    if let Some(img_buf) = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(
+                        image.width as u32,
+                        image.height as u32,
+                        rgba_data,
+                    ) {
+                        let mut buffer = Vec::new();
+                        let mut cursor = std::io::Cursor::new(&mut buffer);
+                        if img_buf
+                            .write_to(&mut cursor, image::ImageFormat::Png)
+                            .is_ok()
+                        {
+                            let img_data = crate::types::ImageData {
+                                data: buffer,
+                                mime_type: "image/png".to_string(),
+                            };
+                            Self::process_raw_image(
+                                img_data,
+                                slot_id,
+                                self.image_tx.clone(),
+                                self.proxy.clone(),
+                            );
+                        } else {
+                            self.slots.pop(); // Revert if failed to encode PNG
+                        }
+                    } else {
+                        self.slots.pop();
                     }
-                    Err(e) => println!("[Clipboard Debug] arboard image check failed: {:?}", e),
+                    self.request_redraw();
+                    return;
                 }
 
-                #[cfg(target_os = "windows")]
+                // 2. Try DIB
                 {
                     use clipboard_win::{formats, get_clipboard};
-                    // Try DIB (Device Independent Bitmap) which is what PixPin uses
                     if let Ok(dib_data) =
                         get_clipboard::<Vec<u8>, _>(formats::RawData(formats::CF_DIB))
                     {
-                        println!(
-                            "[Clipboard Debug] clipboard-win found DIB data, size={}",
-                            dib_data.len()
-                        );
-
-                        // DIB data starts with BITMAPINFOHEADER (usually 40 bytes)
-                        // We wrap it in a 14-byte BMP file header to make it a valid .bmp image
                         let mut bmp_file = Vec::with_capacity(14 + dib_data.len());
                         bmp_file.extend_from_slice(b"BM");
-                        // File size
                         bmp_file.extend_from_slice(&((14 + dib_data.len()) as u32).to_le_bytes());
-                        bmp_file.extend_from_slice(&0u16.to_le_bytes()); // Reserved
-                        bmp_file.extend_from_slice(&0u16.to_le_bytes()); // Reserved
-
-                        // Offset to pixel data
+                        bmp_file.extend_from_slice(&0u16.to_le_bytes());
+                        bmp_file.extend_from_slice(&0u16.to_le_bytes());
                         let header_size = if dib_data.len() >= 4 {
                             u32::from_le_bytes([dib_data[0], dib_data[1], dib_data[2], dib_data[3]])
                         } else {
                             40
                         };
-
-                        // For DIB, the color table (if any) follows the header.
-                        // For 24/32bpp, there's usually no color table.
                         bmp_file.extend_from_slice(&(14 + header_size).to_le_bytes());
                         bmp_file.extend_from_slice(&dib_data);
 
                         if let Ok(img) =
                             image::load_from_memory_with_format(&bmp_file, image::ImageFormat::Bmp)
                         {
-                            println!("[Clipboard Debug] Successfully decoded PixPin DIB");
                             let rgba = img.to_rgba8();
-                            self.process_raw_image(rgba.width(), rgba.height(), rgba.into_raw());
+                            let slot_id = self.next_slot_id;
+                            self.next_slot_id += 1;
+                            self.slots.push(ImageSlot {
+                                id: slot_id,
+                                status: ImageStatus::Processing { progress: 0.0 },
+                            });
+
+                            let mut buffer = Vec::new();
+                            let mut cursor = std::io::Cursor::new(&mut buffer);
+                            if rgba.write_to(&mut cursor, image::ImageFormat::Png).is_ok() {
+                                let img_data = crate::types::ImageData {
+                                    data: buffer,
+                                    mime_type: "image/png".to_string(),
+                                };
+                                Self::process_raw_image(
+                                    img_data,
+                                    slot_id,
+                                    self.image_tx.clone(),
+                                    self.proxy.clone(),
+                                );
+                            } else {
+                                self.slots.pop();
+                            }
+                            self.request_redraw();
                             return;
                         }
                     }
                 }
 
-                // 3. Try Text (Path or raw text)
-                match clipboard.get_text() {
-                    Ok(text) => {
-                        println!("[Clipboard Debug] Success: Found text (len={})", text.len());
-                        let trimmed = text.trim();
-
-                        // Path detection
-                        let path = std::path::Path::new(trimmed);
-                        if path.exists() && path.is_file() {
-                            let ok_exts = ["png", "jpg", "jpeg", "webp", "gif"];
-                            let ext = path
-                                .extension()
-                                .and_then(|e| e.to_str())
-                                .unwrap_or("")
-                                .to_lowercase();
-                            if ok_exts.contains(&ext.as_str()) {
-                                self.add_image_from_path(path.to_path_buf());
-                                return;
-                            }
+                // 3. Try Text
+                if let Ok(text) = clipboard.get_text() {
+                    let trimmed = text.trim();
+                    let path = std::path::Path::new(trimmed);
+                    if path.exists() && path.is_file() {
+                        let ok_exts = ["png", "jpg", "jpeg", "webp", "gif"];
+                        let ext = path
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+                        if ok_exts.contains(&ext.as_str()) {
+                            self.add_image_from_path(path.to_path_buf());
+                            return;
                         }
-
-                        self.input_text.push_str(trimmed);
-                        self.cursor_blink_start = std::time::Instant::now();
-                        self.request_redraw();
-                        return; // Return after text is processed
                     }
-                    Err(e) => println!("[Clipboard Debug] Text check failed: {:?}", e),
+                    self.input_text.push_str(trimmed);
+                    self.request_redraw();
                 }
-
-                println!("[Clipboard Debug] No supported format found after full check.");
             }
         }
     }
 
-    fn process_raw_image(&mut self, w: u32, h: u32, bytes: Vec<u8>) {
-        let tx = self.image_tx.clone();
-        let proxy = self.proxy.clone();
-
-        std::thread::spawn(move || {
-            let mut buffer = Vec::new();
-            if let Some(img_buf) = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(w, h, bytes) {
-                let mut cursor = std::io::Cursor::new(&mut buffer);
-                if img_buf
-                    .write_to(&mut cursor, image::ImageFormat::Png)
-                    .is_ok()
-                {
-                    let img_data = crate::types::ImageData {
-                        data: buffer,
-                        mime_type: "image/png".to_string(),
-                    };
-
-                    let thumb = image::imageops::thumbnail(&img_buf, 80, 80);
-                    let thumb_u32 = thumb
-                        .pixels()
-                        .map(|p| {
-                            ((p[3] as u32) << 24)
-                                | ((p[0] as u32) << 16)
-                                | ((p[1] as u32) << 8)
-                                | (p[2] as u32)
-                        })
-                        .collect();
-                    let thumb_obj = Thumbnail {
-                        pixels: thumb_u32,
-                        width: thumb.width(),
-                        height: thumb.height(),
-                    };
-
-                    let _ = tx.send((img_data, thumb_obj));
-                    let _ = proxy.send_event(());
-                }
-            }
-        });
-    }
-
     fn get_thumbnail_at_mouse(&self) -> Option<usize> {
-        if self.thumbnails.is_empty() {
+        if self.slots.is_empty() {
             return None;
         }
         let (mx, my) = self.mouse_pos;
         let start_y = 10.0;
-        let start_x = 10.0; // This is where the thumbnails usually start if they were on top
-                            // Actually, in the current layout, start_x for thumbnails is start_x += T_SIZE + 10;?
-                            // No, thumbnails are at top: start_y = 10, start_x = 10.
-
+        let start_x_base = 10.0;
         let spacing = 10.0;
+        let slot_w = 80.0;
 
-        for i in 0..self.thumbnails.len() {
-            let thumb = &self.thumbnails[i];
-            let t_w = thumb.width as f64;
-            let t_h = thumb.height as f64;
-            let tx = start_x + (i as f64 * (80.0 + spacing)); // Use 80.0 as fixed visual slot width
-            if mx >= tx && mx <= tx + t_w && my >= start_y && my <= start_y + t_h {
+        for i in 0..self.slots.len() {
+            let tx = start_x_base + (i as f64 * (slot_w + spacing));
+            if mx >= tx && mx <= tx + slot_w && my >= start_y && my <= start_y + 80.0 {
                 return Some(i);
             }
         }
@@ -443,9 +461,8 @@ impl ChatWindow {
     }
 
     fn remove_image(&mut self, index: usize) {
-        if index < self.pending_images.len() {
-            self.pending_images.remove(index);
-            self.thumbnails.remove(index);
+        if index < self.slots.len() {
+            self.slots.remove(index);
             self.request_redraw();
         }
     }
@@ -454,7 +471,6 @@ impl ChatWindow {
         let tx = self.image_tx.clone();
         let proxy = self.proxy.clone();
 
-        // Spawn FileDialog in a background thread because it's a blocking call on Windows
         std::thread::spawn(move || {
             let picked = rfd::FileDialog::new()
                 .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif"])
@@ -462,19 +478,28 @@ impl ChatWindow {
 
             if let Some(files) = picked {
                 for path in files {
-                    Self::process_image_async(path, tx.clone(), proxy.clone());
+                    let _ = tx.send(ImageAsyncMsg::RequestAddition(path));
+                    let _ = proxy.send_event(());
                 }
             }
         });
     }
 
     fn add_image_from_path(&mut self, path: std::path::PathBuf) {
-        Self::process_image_async(path, self.image_tx.clone(), self.proxy.clone());
+        let slot_id = self.next_slot_id;
+        self.next_slot_id += 1;
+        self.slots.push(ImageSlot {
+            id: slot_id,
+            status: ImageStatus::Processing { progress: 0.0 },
+        });
+        Self::process_image_async(path, slot_id, self.image_tx.clone(), self.proxy.clone());
+        self.request_redraw();
     }
 
     fn process_image_async(
         path: std::path::PathBuf,
-        tx: std::sync::mpsc::Sender<(crate::types::ImageData, Thumbnail)>,
+        slot_id: u32,
+        tx: std::sync::mpsc::Sender<ImageAsyncMsg>,
         proxy: winit::event_loop::EventLoopProxy<()>,
     ) {
         std::thread::spawn(move || {
@@ -486,39 +511,55 @@ impl ChatWindow {
                 .to_lowercase();
 
             if !ok_exts.contains(&ext.as_str()) {
+                let _ = tx.send(ImageAsyncMsg::Failed(slot_id));
+                let _ = proxy.send_event(());
                 return;
             }
 
             if let Ok(data) = std::fs::read(&path) {
                 let mime = format!("image/{}", ext);
                 let img_data = crate::types::ImageData {
-                    data: data.clone(),
+                    data,
                     mime_type: mime,
                 };
+                Self::process_raw_image(img_data, slot_id, tx, proxy);
+            } else {
+                let _ = tx.send(ImageAsyncMsg::Failed(slot_id));
+                let _ = proxy.send_event(());
+            }
+        });
+    }
 
-                // Create thumbnail from data
-                if let Ok(img) = image::load_from_memory(&data) {
-                    let thumb = img.thumbnail(80, 80);
-                    let thumb_rgba = thumb.to_rgba8();
-                    let thumb_u32 = thumb_rgba
-                        .pixels()
-                        .map(|p| {
-                            ((p[3] as u32) << 24)
-                                | ((p[0] as u32) << 16)
-                                | ((p[1] as u32) << 8)
-                                | (p[2] as u32)
-                        })
-                        .collect();
-                    let thumb_obj = Thumbnail {
-                        pixels: thumb_u32,
-                        width: thumb_rgba.width(),
-                        height: thumb_rgba.height(),
-                    };
+    fn process_raw_image(
+        img_data: crate::types::ImageData,
+        slot_id: u32,
+        tx: std::sync::mpsc::Sender<ImageAsyncMsg>,
+        proxy: winit::event_loop::EventLoopProxy<()>,
+    ) {
+        std::thread::spawn(move || {
+            if let Ok(img) = image::load_from_memory(&img_data.data) {
+                let thumb = img.thumbnail(80, 80);
+                let thumb_rgba = thumb.to_rgba8();
+                let thumb_u32 = thumb_rgba
+                    .pixels()
+                    .map(|p| {
+                        ((p[3] as u32) << 24)
+                            | ((p[0] as u32) << 16)
+                            | ((p[1] as u32) << 8)
+                            | (p[2] as u32)
+                    })
+                    .collect();
+                let thumb_obj = Thumbnail {
+                    pixels: thumb_u32,
+                    width: thumb_rgba.width(),
+                    height: thumb_rgba.height(),
+                };
 
-                    let _ = tx.send((img_data, thumb_obj));
-                    // Wake up the event loop to poll results
-                    let _ = proxy.send_event(());
-                }
+                let _ = tx.send(ImageAsyncMsg::Finished(slot_id, img_data, thumb_obj));
+                let _ = proxy.send_event(());
+            } else {
+                let _ = tx.send(ImageAsyncMsg::Failed(slot_id));
+                let _ = proxy.send_event(());
             }
         });
     }
@@ -553,7 +594,7 @@ impl ChatWindow {
 
         // Dynamic height calculation
         let text_h = (lines.len() as f32 * line_height).max(line_height) as u32;
-        let thumbnail_h = if self.thumbnails.is_empty() { 0 } else { 100 };
+        let thumbnail_h = if self.slots.is_empty() { 0 } else { 100 };
         let button_row_h = 40; // Explicit space for the plus button at the bottom
         let padding_total = (padding * 2.0) as u32;
 
@@ -643,90 +684,138 @@ impl ChatWindow {
             }
         }
 
-        // Draw thumbnails (at top if present)
+        // Draw thumbnails/placeholders (at top if present)
         let start_y = 10;
-        let mut start_x = 10;
+        let mut start_x_cursor = 10;
 
-        if !self.thumbnails.is_empty() {
-            for (i, thumb_obj) in self.thumbnails.iter().enumerate() {
-                let t_w = thumb_obj.width;
-                let t_h = thumb_obj.height;
+        for (i, slot) in self.slots.iter().enumerate() {
+            let is_hovered = self.hovered_thumb == Some(i);
+            let slot_x = start_x_cursor;
+            let slot_y = start_y;
+            let slot_w = 80;
+            let slot_h = 80;
 
-                // Draw thumbnail with rounding
-                let r: i32 = 8;
-                let r_sq = r * r;
-                let is_hovered = self.hovered_thumb == Some(i);
+            // Draw base slot (rounded rect)
+            let r: i32 = 8;
+            let r_sq = r * r;
+            let slot_bg = 0xFF3D3D3D;
 
-                for ty in 0..t_h {
-                    for tx in 0..t_w {
-                        let px = start_x + tx as usize;
-                        let py = start_y + ty as usize;
+            match &slot.status {
+                ImageStatus::Ready { thumb, .. } => {
+                    let t_w = thumb.width;
+                    let t_h = thumb.height;
+                    // Center thumbnail in 80x80 slot if smaller
+                    let off_x = (slot_w - t_w as usize) / 2;
+                    let off_y = (slot_h - t_h as usize) / 2;
 
-                        let mut draw = true;
-                        let dx = if tx < r as u32 {
-                            r as i32 - tx as i32
-                        } else if tx > (t_w - r as u32 - 1) {
-                            tx as i32 - (t_w as i32 - r as i32 - 1)
-                        } else {
-                            0
-                        };
-                        let dy = if ty < r as u32 {
-                            r as i32 - ty as i32
-                        } else if ty > (t_h - r as u32 - 1) {
-                            ty as i32 - (t_h as i32 - r as i32 - 1)
-                        } else {
-                            0
-                        };
+                    for ty in 0..t_h {
+                        for tx in 0..t_w {
+                            let px = slot_x + off_x + tx as usize;
+                            let py = slot_y + off_y + ty as usize;
 
-                        if dx > 0 && dy > 0 && dx * dx + dy * dy > r_sq {
-                            draw = false;
-                        }
-
-                        if draw && px < buf_w && py < buf_h {
-                            let mut color =
-                                thumb_obj.pixels[ty as usize * t_w as usize + tx as usize];
-
-                            // Visual feedback for deleting
-                            if is_hovered {
-                                let mut r_val = (color >> 16) & 0xFF;
-                                let mut g_val = (color >> 8) & 0xFF;
-                                let mut b_val = color & 0xFF;
-
-                                // Make it more red and translucent
-                                r_val = (r_val as f32 * 0.5 + 255.0 * 0.5) as u32;
-                                g_val = (g_val as f32 * 0.5) as u32;
-                                b_val = (b_val as f32 * 0.5) as u32;
-                                color = (0xFF << 24) | (r_val << 16) | (g_val << 8) | b_val;
-
-                                // Draw an "X" mark (centered in whatever the actual thumb size is)
-                                let is_x = (tx as i32 - ty as i32 + (t_h as i32 - t_w as i32) / 2)
-                                    .abs()
-                                    < 2
-                                    || (tx as i32 + ty as i32 - ((t_w + t_h) as i32 / 2 - 1)).abs()
-                                        < 2;
-
-                                if is_x
-                                    && tx > t_w / 4
-                                    && tx < 3 * t_w / 4
-                                    && ty > t_h / 4
-                                    && ty < 3 * t_h / 4
-                                {
-                                    color = 0xFFFFFFFF;
-                                }
+                            let mut draw = true;
+                            let dx = if tx < r as u32 {
+                                r as i32 - tx as i32
+                            } else if tx > (t_w - r as u32 - 1) {
+                                tx as i32 - (t_w as i32 - r as i32 - 1)
+                            } else {
+                                0
+                            };
+                            let dy = if ty < r as u32 {
+                                r as i32 - ty as i32
+                            } else if ty > (t_h - r as u32 - 1) {
+                                ty as i32 - (t_h as i32 - r as i32 - 1)
+                            } else {
+                                0
+                            };
+                            if dx > 0 && dy > 0 && dx * dx + dy * dy > r_sq {
+                                draw = false;
                             }
 
-                            let alpha = (color >> 24) & 0xFF;
-                            if alpha > 0 {
-                                buffer[py * buf_w + px] = color;
+                            if draw && px < buf_w && py < buf_h {
+                                let mut color =
+                                    thumb.pixels[ty as usize * t_w as usize + tx as usize];
+                                if is_hovered {
+                                    // Visual feedback for delete
+                                    let mut r_val = (color >> 16) & 0xFF;
+                                    let mut g_val = (color >> 8) & 0xFF;
+                                    let mut b_val = color & 0xFF;
+                                    r_val = (r_val as f32 * 0.5 + 255.0 * 0.5) as u32;
+                                    g_val = (g_val as f32 * 0.5) as u32;
+                                    b_val = (b_val as f32 * 0.5) as u32;
+                                    color = (0xFF << 24) | (r_val << 16) | (g_val << 8) | b_val;
+
+                                    // X mark
+                                    let is_x = (tx as i32 - ty as i32
+                                        + (t_h as i32 - t_w as i32) / 2)
+                                        .abs()
+                                        < 2
+                                        || (tx as i32 + ty as i32 - ((t_w + t_h) as i32 / 2 - 1))
+                                            .abs()
+                                            < 2;
+                                    if is_x
+                                        && tx > t_w / 4
+                                        && tx < 3 * t_w / 4
+                                        && ty > t_h / 4
+                                        && ty < 3 * t_h / 4
+                                    {
+                                        color = 0xFFFFFFFF;
+                                    }
+                                }
+                                let alpha = (color >> 24) & 0xFF;
+                                if alpha > 0 {
+                                    buffer[py * buf_w + px] = color;
+                                }
                             }
                         }
                     }
                 }
-                start_x += t_w as usize + 10;
-                if start_x + 80 > buf_w {
-                    // Use a safe estimate of 80 for wrap check
-                    break;
+                ImageStatus::Processing { progress } => {
+                    for ty in 0..slot_h {
+                        for tx in 0..slot_w {
+                            let px = slot_x + tx;
+                            let py = slot_y + ty;
+                            let mut draw = true;
+                            let dx = if tx < r as usize {
+                                r as i32 - tx as i32
+                            } else if tx > (slot_w - r as usize - 1) {
+                                tx as i32 - (slot_w as i32 - r as i32 - 1)
+                            } else {
+                                0
+                            };
+                            let dy = if ty < r as usize {
+                                r as i32 - ty as i32
+                            } else if ty > (slot_h - r as usize - 1) {
+                                ty as i32 - (slot_h as i32 - r as i32 - 1)
+                            } else {
+                                0
+                            };
+                            if dx > 0 && dy > 0 && dx * dx + dy * dy > r_sq {
+                                draw = false;
+                            }
+
+                            if draw && px < buf_w && py < buf_h {
+                                buffer[py * buf_w + px] = slot_bg;
+
+                                // Progress bar (at bottom of placeholder)
+                                if ty > 65 && ty < 72 && tx > 10 && tx < 70 {
+                                    let bar_w = (60.0 * progress) as usize;
+                                    if tx < 10 + bar_w {
+                                        buffer[py * buf_w + px] = 0xFF00FF00; // Green progress
+                                    } else {
+                                        buffer[py * buf_w + px] = 0xFF555555; // Background bar
+                                    }
+                                }
+
+                                // Spinner or "..." could be added here
+                            }
+                        }
+                    }
                 }
+            }
+            start_x_cursor += slot_w + 10;
+            if start_x_cursor + 80 > buf_w {
+                break;
             }
         }
 
@@ -770,11 +859,7 @@ impl ChatWindow {
         }
 
         // Draw text (no horizontal offset anymore, starts at padding)
-        let text_y_offset = if self.thumbnails.is_empty() {
-            0.0
-        } else {
-            100.0
-        };
+        let text_y_offset = if self.slots.is_empty() { 0.0 } else { 100.0 };
         let text_x_offset = 0.0;
         for (i, line) in lines.iter().enumerate() {
             let y_pos = padding + v_metrics.ascent + (i as f32 * line_height) + text_y_offset;
