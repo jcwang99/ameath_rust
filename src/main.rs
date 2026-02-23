@@ -139,7 +139,7 @@ fn main() {
     let mut ai_config = types::AiConfig::load();
     let mut window_config = types::WindowConfig::load(); // Load window config
     let mut modifier_state = winit::keyboard::ModifiersState::default();
-    let mut chat_window = ChatWindow::new(&event_loop, winit_icon.clone());
+    let mut chat_window = ChatWindow::new(&event_loop, event_loop.create_proxy(), winit_icon.clone());
     let mut is_thinking = false;
     let mut thinking_start: Option<Instant> = None;
     let mut monitor_offset = (0, 0); // Global offset of the current monitor

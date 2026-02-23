@@ -10,6 +10,13 @@ use winit::{
     window::{Window, WindowBuilder, WindowLevel},
 };
 
+#[derive(Clone)]
+pub struct Thumbnail {
+    pub pixels: Vec<u32>,
+    pub width: u32,
+    pub height: u32,
+}
+
 pub struct ChatWindow {
     window: Rc<Window>,
     #[allow(dead_code)]
@@ -21,10 +28,14 @@ pub struct ChatWindow {
     last_size: Option<(u32, u32)>,
     cursor_blink_start: std::time::Instant,
     pub pending_images: Vec<crate::types::ImageData>,
-    pub thumbnails: Vec<Vec<u32>>, // Cached thumbnails (RGBA)
+    pub thumbnails: Vec<Thumbnail>, // Fixed: Store explicit dimensions
     plus_button_hovered: bool,
     hovered_thumb: Option<usize>,
     mouse_pos: (f64, f64),
+    // Async channel for image results
+    image_rx: std::sync::mpsc::Receiver<(crate::types::ImageData, Thumbnail)>,
+    image_tx: std::sync::mpsc::Sender<(crate::types::ImageData, Thumbnail)>,
+    proxy: winit::event_loop::EventLoopProxy<()>,
 }
 
 pub enum ChatAction {
@@ -36,6 +47,7 @@ pub enum ChatAction {
 impl ChatWindow {
     pub fn new<T>(
         event_loop: &EventLoopWindowTarget<T>,
+        proxy: winit::event_loop::EventLoopProxy<()>,
         icon: Option<winit::window::Icon>,
     ) -> Self {
         let window = WindowBuilder::new()
@@ -61,6 +73,8 @@ impl ChatWindow {
             std::fs::read("C:\\Windows\\Fonts\\msyh.ttc").expect("Failed to load msyh.ttc");
         let font = Font::try_from_vec(font_data).expect("Error constructing Font");
 
+        let (image_tx, image_rx) = std::sync::mpsc::channel();
+
         Self {
             window,
             context,
@@ -75,6 +89,9 @@ impl ChatWindow {
             plus_button_hovered: false,
             hovered_thumb: None,
             mouse_pos: (0.0, 0.0),
+            image_tx,
+            image_rx,
+            proxy,
         }
     }
 
@@ -128,6 +145,17 @@ impl ChatWindow {
         event: &WindowEvent,
         modifiers: winit::keyboard::ModifiersState,
     ) -> ChatAction {
+        // Poll for async image results
+        let mut got_new_images = false;
+        while let Ok((img_data, thumb)) = self.image_rx.try_recv() {
+            self.pending_images.push(img_data);
+            self.thumbnails.push(thumb);
+            got_new_images = true;
+        }
+        if got_new_images {
+            self.request_redraw();
+        }
+
         match event {
             WindowEvent::Ime(ime) => match ime {
                 winit::event::Ime::Commit(text) => {
@@ -215,6 +243,13 @@ impl ChatWindow {
                     }
                     _ => {}
                 }
+            }
+            WindowEvent::HoveredFile(_) => {
+                // Potential visual feedback for drop target could go here
+                self.request_redraw();
+            }
+            WindowEvent::DroppedFile(path) => {
+                self.add_image_from_path(path.clone());
             }
             WindowEvent::RedrawRequested => {
                 self.redraw();
@@ -325,32 +360,8 @@ impl ChatWindow {
                                 .unwrap_or("")
                                 .to_lowercase();
                             if ok_exts.contains(&ext.as_str()) {
-                                if let Ok(data) = std::fs::read(path) {
-                                    println!(
-                                        "[Clipboard Debug] Path detected and loaded: {}",
-                                        trimmed
-                                    );
-                                    self.pending_images.push(crate::types::ImageData {
-                                        data: data.clone(),
-                                        mime_type: format!("image/{}", ext),
-                                    });
-                                    if let Ok(img) = image::load_from_memory(&data) {
-                                        let thumb = img.thumbnail(80, 80);
-                                        let thumb_rgba = thumb.to_rgba8();
-                                        let thumb_u32 = thumb_rgba
-                                            .pixels()
-                                            .map(|p| {
-                                                ((p[3] as u32) << 24)
-                                                    | ((p[0] as u32) << 16)
-                                                    | ((p[1] as u32) << 8)
-                                                    | (p[2] as u32)
-                                            })
-                                            .collect();
-                                        self.thumbnails.push(thumb_u32);
-                                    }
-                                    self.request_redraw();
-                                    return;
-                                }
+                                self.add_image_from_path(path.to_path_buf());
+                                return;
                             }
                         }
 
@@ -368,26 +379,43 @@ impl ChatWindow {
     }
 
     fn process_raw_image(&mut self, w: u32, h: u32, bytes: Vec<u8>) {
-        let mut buffer = Vec::new();
-        let img_buf: image::ImageBuffer<image::Rgba<u8>, _> =
-            image::ImageBuffer::from_raw(w, h, bytes).unwrap();
-        let mut cursor = std::io::Cursor::new(&mut buffer);
-        img_buf.write_to(&mut cursor, image::ImageFormat::Png).ok();
+        let tx = self.image_tx.clone();
+        let proxy = self.proxy.clone();
 
-        self.pending_images.push(crate::types::ImageData {
-            data: buffer,
-            mime_type: "image/png".to_string(),
+        std::thread::spawn(move || {
+            let mut buffer = Vec::new();
+            if let Some(img_buf) = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(w, h, bytes) {
+                let mut cursor = std::io::Cursor::new(&mut buffer);
+                if img_buf
+                    .write_to(&mut cursor, image::ImageFormat::Png)
+                    .is_ok()
+                {
+                    let img_data = crate::types::ImageData {
+                        data: buffer,
+                        mime_type: "image/png".to_string(),
+                    };
+
+                    let thumb = image::imageops::thumbnail(&img_buf, 80, 80);
+                    let thumb_u32 = thumb
+                        .pixels()
+                        .map(|p| {
+                            ((p[3] as u32) << 24)
+                                | ((p[0] as u32) << 16)
+                                | ((p[1] as u32) << 8)
+                                | (p[2] as u32)
+                        })
+                        .collect();
+                    let thumb_obj = Thumbnail {
+                        pixels: thumb_u32,
+                        width: thumb.width(),
+                        height: thumb.height(),
+                    };
+
+                    let _ = tx.send((img_data, thumb_obj));
+                    let _ = proxy.send_event(());
+                }
+            }
         });
-
-        let thumb = image::imageops::thumbnail(&img_buf, 80, 80);
-        let thumb_u32 = thumb
-            .pixels()
-            .map(|p| {
-                ((p[3] as u32) << 24) | ((p[0] as u32) << 16) | ((p[1] as u32) << 8) | (p[2] as u32)
-            })
-            .collect();
-        self.thumbnails.push(thumb_u32);
-        self.request_redraw();
     }
 
     fn get_thumbnail_at_mouse(&self) -> Option<usize> {
@@ -400,12 +428,14 @@ impl ChatWindow {
                             // Actually, in the current layout, start_x for thumbnails is start_x += T_SIZE + 10;?
                             // No, thumbnails are at top: start_y = 10, start_x = 10.
 
-        let t_size = 80.0;
         let spacing = 10.0;
 
         for i in 0..self.thumbnails.len() {
-            let tx = start_x + (i as f64 * (t_size + spacing));
-            if mx >= tx && mx <= tx + t_size && my >= start_y && my <= start_y + t_size {
+            let thumb = &self.thumbnails[i];
+            let t_w = thumb.width as f64;
+            let t_h = thumb.height as f64;
+            let tx = start_x + (i as f64 * (80.0 + spacing)); // Use 80.0 as fixed visual slot width
+            if mx >= tx && mx <= tx + t_w && my >= start_y && my <= start_y + t_h {
                 return Some(i);
             }
         }
@@ -421,38 +451,76 @@ impl ChatWindow {
     }
 
     fn trigger_upload(&mut self) {
-        let picked = rfd::FileDialog::new()
-            .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif"])
-            .pick_files();
-        if let Some(files) = picked {
-            for path in files {
-                if let Ok(data) = std::fs::read(&path) {
-                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("png");
-                    let mime = format!("image/{}", ext);
-                    self.pending_images.push(crate::types::ImageData {
-                        data: data.clone(),
-                        mime_type: mime,
-                    });
+        let tx = self.image_tx.clone();
+        let proxy = self.proxy.clone();
 
-                    // Create thumbnail from data
-                    if let Ok(img) = image::load_from_memory(&data) {
-                        let thumb = img.thumbnail(80, 80);
-                        let thumb_rgba = thumb.to_rgba8();
-                        let thumb_u32 = thumb_rgba
-                            .pixels()
-                            .map(|p| {
-                                ((p[3] as u32) << 24)
-                                    | ((p[0] as u32) << 16)
-                                    | ((p[1] as u32) << 8)
-                                    | (p[2] as u32)
-                            })
-                            .collect();
-                        self.thumbnails.push(thumb_u32);
-                    }
+        // Spawn FileDialog in a background thread because it's a blocking call on Windows
+        std::thread::spawn(move || {
+            let picked = rfd::FileDialog::new()
+                .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif"])
+                .pick_files();
+
+            if let Some(files) = picked {
+                for path in files {
+                    Self::process_image_async(path, tx.clone(), proxy.clone());
                 }
             }
-            self.request_redraw();
-        }
+        });
+    }
+
+    fn add_image_from_path(&mut self, path: std::path::PathBuf) {
+        Self::process_image_async(path, self.image_tx.clone(), self.proxy.clone());
+    }
+
+    fn process_image_async(
+        path: std::path::PathBuf,
+        tx: std::sync::mpsc::Sender<(crate::types::ImageData, Thumbnail)>,
+        proxy: winit::event_loop::EventLoopProxy<()>,
+    ) {
+        std::thread::spawn(move || {
+            let ok_exts = ["png", "jpg", "jpeg", "webp", "gif"];
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+
+            if !ok_exts.contains(&ext.as_str()) {
+                return;
+            }
+
+            if let Ok(data) = std::fs::read(&path) {
+                let mime = format!("image/{}", ext);
+                let img_data = crate::types::ImageData {
+                    data: data.clone(),
+                    mime_type: mime,
+                };
+
+                // Create thumbnail from data
+                if let Ok(img) = image::load_from_memory(&data) {
+                    let thumb = img.thumbnail(80, 80);
+                    let thumb_rgba = thumb.to_rgba8();
+                    let thumb_u32 = thumb_rgba
+                        .pixels()
+                        .map(|p| {
+                            ((p[3] as u32) << 24)
+                                | ((p[0] as u32) << 16)
+                                | ((p[1] as u32) << 8)
+                                | (p[2] as u32)
+                        })
+                        .collect();
+                    let thumb_obj = Thumbnail {
+                        pixels: thumb_u32,
+                        width: thumb_rgba.width(),
+                        height: thumb_rgba.height(),
+                    };
+
+                    let _ = tx.send((img_data, thumb_obj));
+                    // Wake up the event loop to poll results
+                    let _ = proxy.send_event(());
+                }
+            }
+        });
     }
 
     fn redraw(&mut self) {
@@ -580,9 +648,9 @@ impl ChatWindow {
         let mut start_x = 10;
 
         if !self.thumbnails.is_empty() {
-            for (i, thumb) in self.thumbnails.iter().enumerate() {
-                let t_w = 80;
-                let t_h = 80;
+            for (i, thumb_obj) in self.thumbnails.iter().enumerate() {
+                let t_w = thumb_obj.width;
+                let t_h = thumb_obj.height;
 
                 // Draw thumbnail with rounding
                 let r: i32 = 8;
@@ -591,21 +659,21 @@ impl ChatWindow {
 
                 for ty in 0..t_h {
                     for tx in 0..t_w {
-                        let px = start_x + tx;
-                        let py = start_y + ty;
+                        let px = start_x + tx as usize;
+                        let py = start_y + ty as usize;
 
                         let mut draw = true;
-                        let dx = if tx < r as usize {
-                            (r as usize - tx) as i32
-                        } else if tx > (t_w - r as usize - 1) {
-                            (tx - (t_w - r as usize - 1)) as i32
+                        let dx = if tx < r as u32 {
+                            r as i32 - tx as i32
+                        } else if tx > (t_w - r as u32 - 1) {
+                            tx as i32 - (t_w as i32 - r as i32 - 1)
                         } else {
                             0
                         };
-                        let dy = if ty < r as usize {
-                            (r as usize - ty) as i32
-                        } else if ty > (t_h - r as usize - 1) {
-                            (ty - (t_h - r as usize - 1)) as i32
+                        let dy = if ty < r as u32 {
+                            r as i32 - ty as i32
+                        } else if ty > (t_h - r as u32 - 1) {
+                            ty as i32 - (t_h as i32 - r as i32 - 1)
                         } else {
                             0
                         };
@@ -615,25 +683,34 @@ impl ChatWindow {
                         }
 
                         if draw && px < buf_w && py < buf_h {
-                            let mut color = thumb[ty * t_w + tx];
+                            let mut color =
+                                thumb_obj.pixels[ty as usize * t_w as usize + tx as usize];
 
                             // Visual feedback for deleting
                             if is_hovered {
-                                // Draw red overlay or "X"
-                                let mut r = (color >> 16) & 0xFF;
-                                let mut g = (color >> 8) & 0xFF;
-                                let mut b = color & 0xFF;
+                                let mut r_val = (color >> 16) & 0xFF;
+                                let mut g_val = (color >> 8) & 0xFF;
+                                let mut b_val = color & 0xFF;
 
                                 // Make it more red and translucent
-                                r = (r as f32 * 0.5 + 255.0 * 0.5) as u32;
-                                g = (g as f32 * 0.5) as u32;
-                                b = (b as f32 * 0.5) as u32;
-                                color = (0xFF << 24) | (r << 16) | (g << 8) | b;
+                                r_val = (r_val as f32 * 0.5 + 255.0 * 0.5) as u32;
+                                g_val = (g_val as f32 * 0.5) as u32;
+                                b_val = (b_val as f32 * 0.5) as u32;
+                                color = (0xFF << 24) | (r_val << 16) | (g_val << 8) | b_val;
 
-                                // Draw an "X" mark
-                                let is_x = (tx as i32 - ty as i32).abs() < 2
-                                    || (tx as i32 + ty as i32 - 79).abs() < 2;
-                                if is_x && tx > 20 && tx < 60 && ty > 20 && ty < 60 {
+                                // Draw an "X" mark (centered in whatever the actual thumb size is)
+                                let is_x = (tx as i32 - ty as i32 + (t_h as i32 - t_w as i32) / 2)
+                                    .abs()
+                                    < 2
+                                    || (tx as i32 + ty as i32 - ((t_w + t_h) as i32 / 2 - 1)).abs()
+                                        < 2;
+
+                                if is_x
+                                    && tx > t_w / 4
+                                    && tx < 3 * t_w / 4
+                                    && ty > t_h / 4
+                                    && ty < 3 * t_h / 4
+                                {
                                     color = 0xFFFFFFFF;
                                 }
                             }
@@ -645,8 +722,9 @@ impl ChatWindow {
                         }
                     }
                 }
-                start_x += t_w + 10;
-                if start_x + t_w > buf_w {
+                start_x += t_w as usize + 10;
+                if start_x + 80 > buf_w {
+                    // Use a safe estimate of 80 for wrap check
                     break;
                 }
             }
