@@ -15,6 +15,20 @@ pub struct ChatInput {
     pub images: Vec<ImageData>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ThinkingState {
+    None,
+    Standard,
+    Network,
+    Tools,
+}
+
+#[derive(Debug, Clone)]
+pub enum AiResponseEvent {
+    Status(ThinkingState),
+    Response(String),
+}
+
 #[derive(Clone, Debug)]
 pub struct PreprocessedFrame {
     pub width: i32,

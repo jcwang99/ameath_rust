@@ -1,7 +1,8 @@
 use crate::ai::client::{Content, ContentPart, ImageUrl, Message, OpenAiClient};
 use crate::ai::memory::MemoryManager;
 use crate::ai::skills::SkillManager;
-use crate::types::AiConfig;
+use crate::types::{AiConfig, AiResponseEvent, ThinkingState};
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 pub struct ChatKernel {
@@ -40,12 +41,17 @@ impl ChatKernel {
             .map_err(|e| e.to_string())
     }
 
-    pub async fn handle(&self, input_data: crate::types::ChatInput) -> String {
+    pub async fn handle(&self, input_data: crate::types::ChatInput, tx: Sender<AiResponseEvent>) {
         let input = input_data.text;
         let images = input_data.images;
         let client = match &self.client {
             Some(c) => c,
-            None => return "Please configure your AI settings first!".to_string(),
+            None => {
+                let _ = tx.send(AiResponseEvent::Response(
+                    "Please configure your AI settings first!".to_string(),
+                ));
+                return;
+            }
         };
 
         // 1. Initial User Message
@@ -148,7 +154,11 @@ impl ChatKernel {
                 turns += 1;
                 tracing::info!("Turn {}/{}", turns, max_turns);
 
-                match client.chat(messages.clone(), tools_opt.clone()).await {
+                let _ = tx.send(AiResponseEvent::Status(ThinkingState::Network));
+                let response_result = client.chat(messages.clone(), tools_opt.clone()).await;
+                let _ = tx.send(AiResponseEvent::Status(ThinkingState::Standard));
+
+                match response_result {
                     Ok(response_msg) => {
                         tracing::debug!("LLM Response Role: {}", response_msg.role);
                         if let Some(calls) = &response_msg.tool_calls {
@@ -167,6 +177,7 @@ impl ChatKernel {
                                     skill_name,
                                     args_str
                                 );
+                                let _ = tx.send(AiResponseEvent::Status(ThinkingState::Tools));
 
                                 let args_result: Result<serde_json::Value, _> =
                                     serde_json::from_str(args_str);
@@ -206,6 +217,7 @@ impl ChatKernel {
 
                                 messages.push(tool_response);
                             }
+                            let _ = tx.send(AiResponseEvent::Status(ThinkingState::Standard));
                         } else {
                             tracing::info!(
                                 "No tool calls. Final response received. ({} turns)",
@@ -220,7 +232,8 @@ impl ChatKernel {
                     }
                     Err(e) => {
                         tracing::error!("AI Client Error: {}", e);
-                        return format!("AI Error: {}", e);
+                        let _ = tx.send(AiResponseEvent::Response(format!("AI Error: {}", e)));
+                        return;
                     }
                 }
             }
@@ -236,14 +249,16 @@ impl ChatKernel {
                 tokio::spawn(async move {
                     kernel_clone.orchestrate_summarization().await.ok();
                 });
-                return content.as_str().to_string();
+                let _ = tx.send(AiResponseEvent::Response(content.as_str().to_string()));
+                return;
             }
 
             // If we are here, we hit max_turns without a final response.
             // Cognitive Handover
             total_handovers += 1;
             if total_handovers >= MAX_HANDOVERS {
-                return "Cognitive Limit Reached (Max Handovers). Terminating to prevent infinite loop.".to_string();
+                let _ = tx.send(AiResponseEvent::Response("Cognitive Limit Reached (Max Handovers). Terminating to prevent infinite loop.".to_string()));
+                return;
             }
 
             // Capture recent tool traces (last 5) from current messages BEFORE generating summary prompt
@@ -291,12 +306,19 @@ impl ChatKernel {
 
                 // Loop continues -> `handover_context` will be injected into `messages` in next iteration.
             } else {
-                return "Error generating handover summary.".to_string();
+                let _ = tx.send(AiResponseEvent::Response(
+                    "Error generating handover summary.".to_string(),
+                ));
+                return;
             }
         }
     }
 
-    pub async fn handle_system_event(&self, input_data: crate::types::ChatInput) -> String {
+    pub async fn handle_system_event(
+        &self,
+        input_data: crate::types::ChatInput,
+        tx: Sender<AiResponseEvent>,
+    ) {
         let prompt = format!(
             "{}\n\n[SYSTEM INSTRUCTION] This is an autonomous system event. You are proactive. \
             Based on the context and everything you know, decide if you should use tools (e.g. search weather, check news, update_fact_board) to help the user or record new insights, \
@@ -308,7 +330,7 @@ impl ChatKernel {
             text: prompt,
             images: input_data.images,
         };
-        self.handle(input).await
+        self.handle(input, tx).await
     }
 
     async fn orchestrate_summarization(&self) -> Result<(), String> {

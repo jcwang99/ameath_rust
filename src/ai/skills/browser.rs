@@ -222,7 +222,7 @@ impl Skill for WebScrapeSkill {
         }
 
         let client = Client::new();
-        let api_url = format!("{}/v2/crawl", self.url.trim_end_matches('/'));
+        let api_url = format!("{}/v2/scrape", self.url.trim_end_matches('/'));
 
         let mut builder = client.post(&api_url).json(&json!({
             "url": target_url,

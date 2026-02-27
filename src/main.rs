@@ -36,7 +36,7 @@ use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem},
     TrayIconBuilder,
 };
-use types::{BehaviorMode, PetState, PreprocessedFrame, PersistentConfig};
+use types::{AiResponseEvent, BehaviorMode, PersistentConfig, PetState, PreprocessedFrame, ThinkingState};
 use winit::{
     dpi::PhysicalPosition,
     event::{ElementState, Event, MouseButton, WindowEvent},
@@ -82,15 +82,20 @@ fn main() {
     let move_frames_right = vec![anim::load_gif_from_memory(include_bytes!("../assets/gifs/move.gif"))];
     let drag_frames_right = vec![anim::load_gif_from_memory(include_bytes!("../assets/gifs/drag.gif"))];
 
-    // Load Loading GIF and pre-decompress all frames
-    let loading_frames = anim::load_gif_from_memory(include_bytes!("../assets/icons/loading.gif"));
-    let loading_frames_decompressed: Vec<(i32, i32, Vec<u8>)> = loading_frames
-        .iter()
-        .map(|f| {
-            let data = lz4_flex::decompress_size_prepended(&f.lz4_data).unwrap_or_default();
-            (f.width, f.height, data)
-        })
-        .collect();
+    // Load Loading GIFs and pre-decompress all frames
+    let load_gif_and_decompress = |bytes: &[u8]| -> Vec<(i32, i32, Vec<u8>)> {
+        anim::load_gif_from_memory(bytes)
+            .iter()
+            .map(|f| {
+                let data = lz4_flex::decompress_size_prepended(&f.lz4_data).unwrap_or_default();
+                (f.width, f.height, data)
+            })
+            .collect()
+    };
+
+    let loading_frames_standard = load_gif_and_decompress(include_bytes!("../assets/icons/loading.gif"));
+    let loading_frames_network = load_gif_and_decompress(include_bytes!("../assets/icons/network-loading.gif"));
+    let loading_frames_tools = load_gif_and_decompress(include_bytes!("../assets/icons/tool-loading.gif"));
 
     // Generate Left-facing assets (DELETED mirroring - will flip on-the-fly)
 
@@ -152,7 +157,7 @@ fn main() {
 
     let mut modifier_state = winit::keyboard::ModifiersState::default();
     let mut chat_window = ChatWindow::new(&event_loop, event_loop.create_proxy(), winit_icon.clone());
-    let mut is_thinking = false;
+    let mut thinking_state = ThinkingState::None;
     let mut thinking_start: Option<Instant> = None;
     let mut monitor_offset = (0, 0); // Global offset of the current monitor
 
@@ -217,7 +222,7 @@ fn main() {
 
     // AI Kernel & Channel
     let scheduler = interaction::ActionScheduler::new();
-    let (ai_tx, ai_rx) = std::sync::mpsc::channel::<String>();
+    let (ai_tx, ai_rx) = std::sync::mpsc::channel::<AiResponseEvent>();
     let mut chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
     let music_dir = window_config.music_path.clone().unwrap_or_else(|| std::path::PathBuf::from("assets/music"));
     if music_dir.exists() {
@@ -340,18 +345,17 @@ fn main() {
                                  if let Some(tts) = &tts_controller {
                                      tts.stop();
                                  }
-                                 is_thinking = true;
-                                 thinking_start = Some(Instant::now());
-                                 
-                                 // Update kernel with current config if changed
-                                 let kernel = chat_kernel.clone();
-                                 let tx = ai_tx.clone();
-                                 let input = msg;
-                                 
-                                 tokio::spawn(async move {
-                                     let response = kernel.handle(input).await;
-                                     let _ = tx.send(response);
-                                 });
+                                  thinking_state = ThinkingState::Standard;
+                                  thinking_start = Some(Instant::now());
+                                  
+                                  // Update kernel with current config if changed
+                                  let kernel = chat_kernel.clone();
+                                  let tx = ai_tx.clone();
+                                  let input = msg;
+                                  
+                                  tokio::spawn(async move {
+                                      kernel.handle(input, tx).await;
+                                  });
 
                                  window.request_redraw();
                              }
@@ -747,25 +751,34 @@ fn main() {
                         target_frame_duration = Duration::from_nanos((1_000_000_000.0 / refresh_rate.max(30.0)) as u64);
                     }
 
-                    if let Ok(response) = ai_rx.try_recv() {
-                        if let Some(tts) = &tts_controller {
-                            if ai_config.tts_enabled {
-                                tts.speak(response.clone(), &ai_config);
-                                // Queue for synchronized display
-                                pending_responses.push_back((response, Instant::now()));
-                            } else {
-                                // Show immediately if TTS disabled
-                                bubble_manager.show(&response, Duration::from_secs(6), pet.scale);
+                    while let Ok(event) = ai_rx.try_recv() {
+                        match event {
+                            AiResponseEvent::Status(state) => {
+                                thinking_state = state;
                                 needs_pet_redraw = true;
-                                is_thinking = false;
-                                thinking_start = None;
                             }
-                        } else {
-                            // No TTS controller at all
-                            bubble_manager.show(&response, Duration::from_secs(6), pet.scale);
-                            needs_pet_redraw = true;
-                            is_thinking = false;
-                            thinking_start = None;
+                            AiResponseEvent::Response(response) => {
+                                // Don't reset state here; keep it until audio/bubble is ready
+                                if let Some(tts) = &tts_controller {
+                                    if ai_config.tts_enabled {
+                                        tts.speak(response.clone(), &ai_config);
+                                        // Queue for synchronized display
+                                        pending_responses.push_back((response, Instant::now()));
+                                    } else {
+                                        // Show immediately if TTS disabled - reset state here
+                                        bubble_manager.show(&response, Duration::from_secs(6), pet.scale);
+                                        thinking_state = ThinkingState::None;
+                                        thinking_start = None;
+                                        needs_pet_redraw = true;
+                                    }
+                                } else {
+                                    // No TTS controller at all - reset state here
+                                    bubble_manager.show(&response, Duration::from_secs(6), pet.scale);
+                                    thinking_state = ThinkingState::None;
+                                    thinking_start = None;
+                                    needs_pet_redraw = true;
+                                }
+                            }
                         }
                     }
 
@@ -779,7 +792,7 @@ fn main() {
                                     let (resp, _) = pending_responses.remove(i).unwrap();
                                     bubble_manager.show(&resp, Duration::from_secs(6), pet.scale);
                                     needs_pet_redraw = true;
-                                    is_thinking = false;
+                                    thinking_state = ThinkingState::None;
                                     thinking_start = None;
                                     found = true;
                                     break;
@@ -791,7 +804,7 @@ fn main() {
                                 if let Some((resp, _)) = pending_responses.pop_front() {
                                     bubble_manager.show(&resp, Duration::from_secs(6), pet.scale);
                                     needs_pet_redraw = true;
-                                    is_thinking = false;
+                                    thinking_state = ThinkingState::None;
                                     thinking_start = None;
                                 }
                             }
@@ -804,7 +817,7 @@ fn main() {
                             let (resp, _) = pending_responses.pop_front().unwrap();
                             bubble_manager.show(&resp, Duration::from_secs(6), pet.scale);
                             needs_pet_redraw = true;
-                            is_thinking = false;
+                            thinking_state = ThinkingState::None;
                             thinking_start = None;
                         } else {
                             break;
@@ -886,16 +899,16 @@ fn main() {
                     if let Some(msg) = music_player.update() {
                         bubble_manager.show(&msg, Duration::from_secs(4), pet.scale);
                     }
+                    let is_thinking = thinking_state != ThinkingState::None;
                     if !is_thinking {
                         if let Some(system_event) = interaction_manager.check_for_trigger() {
                             let kernel = chat_kernel.clone();
                             let tx = ai_tx.clone();
                             let input_struct = system_event;
                             tokio::spawn(async move {
-                                let response = kernel.handle_system_event(input_struct).await;
-                                let _ = tx.send(response);
+                                kernel.handle_system_event(input_struct, tx).await;
                             });
-                            is_thinking = true;
+                            thinking_state = ThinkingState::Standard;
                             thinking_start = Some(Instant::now());
                         }
                     }
@@ -904,9 +917,16 @@ fn main() {
                     let draw_scale = pet.scale.max(0.5);
                     let (cur_pw, cur_ph) = pet.get_scaled_size();
                     
+                    let curr_loading_frames = match thinking_state {
+                        ThinkingState::Standard => &loading_frames_standard,
+                        ThinkingState::Network => &loading_frames_network,
+                        ThinkingState::Tools => &loading_frames_tools,
+                        ThinkingState::None => &loading_frames_standard, // dummy
+                    };
+
                     let mut loading_w_f = 0.0;
                     let mut loading_h_f = 0.0;
-                    if is_thinking && !loading_frames_decompressed.is_empty() {
+                    if is_thinking && !curr_loading_frames.is_empty() {
                         loading_w_f = 32.0 * draw_scale as f64;
                         loading_h_f = 32.0 * draw_scale as f64;
                     }
@@ -1028,8 +1048,8 @@ fn main() {
                     
                     let layout_changed = (pet_off_x - last_render_pet_off.0).abs() > 0.1 || (pet_off_y - last_render_pet_off.1).abs() > 0.1 || pos_changed;
                     
-                    let loading_frame_idx = if is_thinking && !loading_frames_decompressed.is_empty() {
-                        (Instant::now().duration_since(thinking_start.unwrap_or(Instant::now())).as_millis() / 100) as usize % loading_frames_decompressed.len()
+                    let loading_frame_idx = if is_thinking && !curr_loading_frames.is_empty() {
+                        (Instant::now().duration_since(thinking_start.unwrap_or(Instant::now())).as_millis() / 100) as usize % curr_loading_frames.len()
                     } else { 0 };
                     let loading_frame_changed = is_thinking && loading_frame_idx != last_loading_frame_idx;
 
@@ -1160,9 +1180,9 @@ fn main() {
                         }
 
                         // 1.5 Loading (uses pre-decompressed frames)
-                        if is_thinking && !loading_frames_decompressed.is_empty() {
-                             let f_idx = loading_frame_idx % loading_frames_decompressed.len();
-                             let (f_width, f_height, loading_data) = &loading_frames_decompressed[f_idx];
+                        if is_thinking && !curr_loading_frames.is_empty() {
+                             let f_idx = loading_frame_idx % curr_loading_frames.len();
+                             let (f_width, f_height, loading_data) = &curr_loading_frames[f_idx];
                              
                              let ly = loading_y_f as i32;
                              let lw = loading_w_f as i32;
