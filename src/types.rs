@@ -340,6 +340,8 @@ pub enum WindowLayer {
 pub struct WindowConfig {
     pub monitor_name: Option<String>,
     pub music_path: Option<PathBuf>,
+    #[serde(default)]
+    pub run_on_startup: bool,
 }
 
 impl Default for WindowConfig {
@@ -347,6 +349,7 @@ impl Default for WindowConfig {
         Self {
             monitor_name: None,
             music_path: None,
+            run_on_startup: false,
         }
     }
 }

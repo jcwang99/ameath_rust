@@ -354,7 +354,7 @@ impl SettingsWindow {
             .and_then(|data| Font::try_from_vec(data));
 
         if font.is_none() {
-            eprintln!("Failed to load font from {}", font_path);
+            tracing::error!("Failed to load font from {}", font_path);
         }
 
         Self {

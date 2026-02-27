@@ -26,7 +26,7 @@ impl TtsController {
         let (_stream, stream_handle) = match OutputStream::try_default() {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("Failed to initialize audio output: {}", e);
+                tracing::error!("Failed to initialize audio output: {}", e);
                 return None;
             }
         };
@@ -135,7 +135,10 @@ impl TtsController {
                                                     }
                                                 }
                                                 Err(e) => {
-                                                    eprintln!("Error receiving TTS chunk: {}", e)
+                                                    tracing::error!(
+                                                        "Error receiving TTS chunk: {}",
+                                                        e
+                                                    );
                                                 }
                                             }
                                         }
@@ -156,10 +159,10 @@ impl TtsController {
                                             .await;
                                         }
                                     } else {
-                                        eprintln!("TTS Server Error: {}", resp.status());
+                                        tracing::error!("TTS Server Error: {}", resp.status());
                                     }
                                 }
-                                Err(e) => eprintln!("TTS Request Failed: {}", e),
+                                Err(e) => tracing::error!("TTS Request Failed: {}", e),
                             }
                         }
                     });

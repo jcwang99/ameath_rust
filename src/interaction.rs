@@ -493,7 +493,7 @@ impl InteractionManager {
                             }
                         }
                         Err(e) => {
-                            println!("[Interaction] Screenshot failed: {}", e);
+                            tracing::error!("Screenshot failed: {}", e);
                         }
                     }
                 }

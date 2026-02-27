@@ -16,7 +16,8 @@ mod theme;
 mod ui_primitives;
 mod screen_capture;
 mod tts;
-
+mod logging;
+mod autostart;
 
 use chat_window::{ChatWindow, ChatAction};
 use settings::SettingsWindow;
@@ -55,6 +56,8 @@ use windows::Win32::Foundation::{HWND, POINT};
 use image::GenericImageView;
 
 fn main() {
+    logging::init_logging();
+    
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
 
@@ -65,7 +68,7 @@ fn main() {
     let hotkey_manager = GlobalHotKeyManager::new().unwrap();
     let hotkey = HotKey::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyM);
     if let Err(e) = hotkey_manager.register(hotkey) {
-        eprintln!("Warning: Failed to register global hotkey (Alt+Shift+M): {:?}. Another process might be using it.", e);
+        tracing::warn!("Failed to register global hotkey (Alt+Shift+M): {:?}. Another process might be using it.", e);
     }
     let hotkey_channel = GlobalHotKeyEvent::receiver();
 
@@ -138,6 +141,15 @@ fn main() {
 
     let mut ai_config = types::AiConfig::load();
     let mut window_config = types::WindowConfig::load(); // Load window config
+    
+    // Sync run_on_startup with actual registry state
+    let actual_autostart = autostart::is_autostart_enabled();
+    if window_config.run_on_startup != actual_autostart {
+        tracing::info!("Syncing run_on_startup config to registry state: {}", actual_autostart);
+        window_config.run_on_startup = actual_autostart;
+        window_config.save();
+    }
+
     let mut modifier_state = winit::keyboard::ModifiersState::default();
     let mut chat_window = ChatWindow::new(&event_loop, event_loop.create_proxy(), winit_icon.clone());
     let mut is_thinking = false;
@@ -660,8 +672,17 @@ fn main() {
                                                 let _ = tx.send(file);
                                             });
                                         }
-                                        settings::SettingsAction::RequestGc => {
+                                                settings::SettingsAction::RequestGc => {
                                                     ui_primitives::harvest_memory();
+                                                }
+                                                settings::SettingsAction::ToggleAutoStart => {
+                                                    let new_state = !window_config.run_on_startup;
+                                                    autostart::set_autostart(new_state);
+                                                    
+                                                    // Synchronize with reality just to be safe
+                                                    window_config.run_on_startup = autostart::is_autostart_enabled();
+                                                    window_config.save();
+                                                    sw.request_redraw();
                                                 }
                                                 _ => {}
                                             }
@@ -702,7 +723,7 @@ fn main() {
                                         BehaviorMode::Active => "Active",
                                         BehaviorMode::Clingy => "Clingy",
                                     };
-                                    sw.redraw(pet.scale, mode_str, music_player.music_path.as_deref(), current_layer, &ai_config);
+                                    sw.redraw(pet.scale, mode_str, music_player.music_path.as_deref(), current_layer, window_config.run_on_startup, &ai_config);
                                 }
                                 _ => {}
                             }
@@ -727,8 +748,6 @@ fn main() {
                     }
 
                     if let Ok(response) = ai_rx.try_recv() {
-                        is_thinking = false;
-                        thinking_start = None;
                         if let Some(tts) = &tts_controller {
                             if ai_config.tts_enabled {
                                 tts.speak(response.clone(), &ai_config);
@@ -738,11 +757,15 @@ fn main() {
                                 // Show immediately if TTS disabled
                                 bubble_manager.show(&response, Duration::from_secs(6), pet.scale);
                                 needs_pet_redraw = true;
+                                is_thinking = false;
+                                thinking_start = None;
                             }
                         } else {
                             // No TTS controller at all
                             bubble_manager.show(&response, Duration::from_secs(6), pet.scale);
                             needs_pet_redraw = true;
+                            is_thinking = false;
+                            thinking_start = None;
                         }
                     }
 
@@ -756,6 +779,8 @@ fn main() {
                                     let (resp, _) = pending_responses.remove(i).unwrap();
                                     bubble_manager.show(&resp, Duration::from_secs(6), pet.scale);
                                     needs_pet_redraw = true;
+                                    is_thinking = false;
+                                    thinking_start = None;
                                     found = true;
                                     break;
                                 }
@@ -766,6 +791,8 @@ fn main() {
                                 if let Some((resp, _)) = pending_responses.pop_front() {
                                     bubble_manager.show(&resp, Duration::from_secs(6), pet.scale);
                                     needs_pet_redraw = true;
+                                    is_thinking = false;
+                                    thinking_start = None;
                                 }
                             }
                         }
@@ -777,6 +804,8 @@ fn main() {
                             let (resp, _) = pending_responses.pop_front().unwrap();
                             bubble_manager.show(&resp, Duration::from_secs(6), pet.scale);
                             needs_pet_redraw = true;
+                            is_thinking = false;
+                            thinking_start = None;
                         } else {
                             break;
                         }

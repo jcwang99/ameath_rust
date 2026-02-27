@@ -109,8 +109,8 @@ impl OpenAiClient {
         tools: Option<Vec<Value>>,
     ) -> Result<Message, String> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        println!("[AI Client] Requesting URL: {}", url);
-        println!("[AI Client] Using Model: {}", self.model);
+        tracing::info!("Requesting URL: {}", url);
+        tracing::info!("Using Model: {}", self.model);
 
         let request = ChatRequest {
             model: self.model.clone(),
@@ -126,11 +126,11 @@ impl OpenAiClient {
             .send()
             .await
             .map_err(|e| {
-                println!("[AI Client] Request failed: {}", e);
+                tracing::error!("Request failed: {}", e);
                 format!("Request failed: {}", e)
             })?;
 
-        println!("[AI Client] Response Status: {}", response.status());
+        tracing::info!("Response Status: {}", response.status());
 
         if !response.status().is_success() {
             let status_code = response.status();

@@ -64,7 +64,7 @@ impl QuickMenu {
             let base_icon = match image::load_from_memory(bytes) {
                 Ok(img) => img.to_rgba8(),
                 Err(e) => {
-                    eprintln!("Failed to load embedded icon {:?}: {}", id, e);
+                    tracing::error!("Failed to load embedded icon {:?}: {}", id, e);
                     RgbaImage::from_fn(64, 64, |_, _| image::Rgba([255, 0, 255, 255]))
                 }
             };

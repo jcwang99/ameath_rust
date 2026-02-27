@@ -32,6 +32,7 @@ pub struct SettingsRenderInput {
     pub current_mode: String,
     pub current_music_path: Option<std::path::PathBuf>,
     pub current_layer: crate::types::WindowLayer,
+    pub run_on_startup: bool,
     pub ai_config: crate::types::AiConfig,
     pub mouse_pos: (f32, f32),
     pub pressed_btn: Option<usize>, // 0-4 for profile buttons, 100+ for fields
@@ -156,6 +157,7 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
                 current_mode: &input.current_mode,
                 current_music_path: input.current_music_path.as_deref(),
                 current_layer: input.current_layer,
+                run_on_startup: input.run_on_startup,
                 scroll_offset: input.scroll_offset,
                 available_monitors: &input.available_monitors,
                 current_monitor_name: input.current_monitor_name.as_deref(),
@@ -269,6 +271,7 @@ pub enum SettingsAction {
     SelectMusicPath,
     SelectTtsRefAudio,
     RequestGc,
+    ToggleAutoStart,
 }
 
 pub struct SettingsWindow {
@@ -506,6 +509,7 @@ impl SettingsWindow {
         current_mode: &str,
         current_music_path: Option<&std::path::Path>,
         current_layer: crate::types::WindowLayer,
+        run_on_startup: bool,
         ai_config: &crate::types::AiConfig,
     ) -> SettingsRenderInput {
         let size = self.window.inner_size();
@@ -528,6 +532,7 @@ impl SettingsWindow {
             current_mode: current_mode.to_string(),
             current_music_path: current_music_path.map(|p| p.to_path_buf()),
             current_layer,
+            run_on_startup,
             ai_config: ai_config.clone(),
             mouse_pos: self.mouse_pos,
             pressed_btn: self.pressed_btn,
@@ -545,6 +550,7 @@ impl SettingsWindow {
         current_mode: &str,
         current_music_path: Option<&std::path::Path>,
         current_layer: crate::types::WindowLayer,
+        run_on_startup: bool,
         ai_config: &crate::types::AiConfig,
     ) {
         let size = self.window.inner_size();
@@ -628,6 +634,7 @@ impl SettingsWindow {
         current_mode.hash(&mut base_hasher);
         current_music_path.hash(&mut base_hasher);
         current_layer.hash(&mut base_hasher);
+        run_on_startup.hash(&mut base_hasher);
         self.system_prompt_scroll_offset
             .to_bits()
             .hash(&mut base_hasher);
@@ -729,6 +736,7 @@ impl SettingsWindow {
                 current_mode,
                 current_music_path,
                 current_layer,
+                run_on_startup,
                 ai_config,
             );
 
@@ -896,7 +904,7 @@ impl SettingsWindow {
                 // YES button
                 let yes_x = dx + 170.0;
                 if lx >= yes_x && lx <= yes_x + btn_w && ly >= btn_y && ly <= btn_y + btn_h {
-                    println!("[AI Settings] Delete Profile confirmed via dialog");
+                    tracing::info!("Delete Profile confirmed via dialog");
                     self.show_delete_dialog = false;
                     let mut config = ai_config.clone();
                     if config.profiles.len() > 1 {
@@ -1018,9 +1026,23 @@ impl SettingsWindow {
                     }
                 }
 
+                // Calculate rows for monitor section since Auto-Start depends on its height
+                let rows = (self.available_monitors.len() + 2) / 3;
+
+                // Auto-Start
+                let card6_y = 825.0 + scroll_y + 60.0 + (rows as f64 * 65.0) + 20.0;
+                let toggle_x = 210.0 + card_w - 80.0;
+                let toggle_y = card6_y + 25.0;
+                if lx >= toggle_x
+                    && lx <= toggle_x + 44.0
+                    && ly >= toggle_y
+                    && ly <= toggle_y + 24.0
+                {
+                    return SettingsAction::ToggleAutoStart;
+                }
+
                 // Monitor selection
                 let card5_y = 825.0 + scroll_y;
-                let rows = (self.available_monitors.len() + 2) / 3;
                 let card5_h = 60.0 + (rows as f64 * 65.0);
                 if dlx >= 210.0
                     && dlx <= 210.0 + card_w
@@ -1087,7 +1109,7 @@ impl SettingsWindow {
 
                 // [<] Prev Profile (at 230)
                 if dlx >= 230.0 && dlx <= 260.0 && dly >= btn_y_start && dly <= btn_y_end {
-                    println!("[AI Settings] Prev Profile clicked");
+                    tracing::debug!("Prev Profile clicked");
                     self.pressed_btn = Some(0);
                     let mut config = ai_config.clone();
                     if config.active_profile_index > 0 {
@@ -1102,7 +1124,7 @@ impl SettingsWindow {
 
                 // [>] Next Profile (at 430)
                 if dlx >= 430.0 && dlx <= 460.0 && dly >= btn_y_start && dly <= btn_y_end {
-                    println!("[AI Settings] Next Profile clicked");
+                    tracing::debug!("Next Profile clicked");
                     self.pressed_btn = Some(1);
                     let mut config = ai_config.clone();
                     if !config.profiles.is_empty() {
@@ -1116,7 +1138,7 @@ impl SettingsWindow {
 
                 // [+] Add Profile (at 480)
                 if dlx >= 480.0 && dlx <= 515.0 && dly >= btn_y_start && dly <= btn_y_end {
-                    println!("[AI Settings] Add Profile clicked");
+                    tracing::info!("Add Profile clicked");
                     self.show_delete_dialog = false;
                     self.pressed_btn = Some(2);
                     let mut config = ai_config.clone();
@@ -1142,7 +1164,7 @@ impl SettingsWindow {
 
                 // [-] Delete Profile (at 525)
                 if dlx >= 525.0 && dlx <= 560.0 && dly >= btn_y_start && dly <= btn_y_end {
-                    println!("[AI Settings] Delete Profile clicked (showing dialog)");
+                    tracing::info!("Delete Profile clicked (showing dialog)");
                     self.show_delete_dialog = true;
                     self.pressed_btn = Some(3);
                     self.window.request_redraw();
@@ -1156,7 +1178,7 @@ impl SettingsWindow {
                     if dlx >= *fx && dlx <= *fx + *fw && dly >= input_y && dly <= input_y + input_h
                     {
                         if i == 1 {
-                            println!("[AI Settings] Multimodal Toggle clicked");
+                            tracing::info!("Multimodal Toggle clicked");
                             self.pressed_btn = Some(101); // Special code for multimodal
                                                           // Toggle Multimodal
                             let mut config = ai_config.clone();
@@ -1172,7 +1194,7 @@ impl SettingsWindow {
                         }
                         if i == 14 {
                             if ai_config.active_profile().is_multimodal {
-                                println!("[AI Settings] Screen Capture Toggle clicked");
+                                tracing::info!("Screen Capture Toggle clicked");
                                 self.pressed_btn = Some(102); // Special code for screen capture
                                 let mut config = ai_config.clone();
                                 config.active_interaction_screenshots_enabled =
@@ -1183,7 +1205,7 @@ impl SettingsWindow {
                             }
                         }
                         if i == 15 {
-                            println!("[AI Settings] TTS Toggle clicked");
+                            tracing::info!("TTS Toggle clicked");
                             self.pressed_btn = Some(103);
                             let mut config = ai_config.clone();
                             config.tts_enabled = !config.tts_enabled;

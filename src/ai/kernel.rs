@@ -121,25 +121,22 @@ impl ChatKernel {
 
             // INJECT CURRENT USER MESSAGE (Deferred Persistence Fix)
             messages.push(user_msg.clone());
-            println!(
-                "[Kernel] Context prepared. Message count: {}",
-                messages.len()
-            );
+            tracing::debug!("Context prepared. Message count: {}", messages.len());
 
             let tools = self.skills.get_tools_for_llm();
             let tools_opt = if tools.is_empty() {
-                println!("[Kernel] No tools available.");
+                tracing::info!("No tools available.");
                 None
             } else {
-                println!("[Kernel] Tools available: {}", tools.len());
+                tracing::info!("Tools available: {}", tools.len());
                 Some(tools)
             };
 
             let mut turns = 0;
             let max_turns = self.config.react_limit;
             let profile = self.config.active_profile();
-            println!(
-                "[Kernel] Starting ReAct loop with Profile: {} | Context: {} msgs | Limit: {} turns",
+            tracing::info!(
+                "Starting ReAct loop with Profile: {} | Context: {} msgs | Limit: {} turns",
                 profile.name,
                 messages.len(),
                 max_turns
@@ -149,13 +146,13 @@ impl ChatKernel {
 
             while turns < max_turns {
                 turns += 1;
-                println!("[Kernel] Turn {}/{}", turns, max_turns);
+                tracing::info!("Turn {}/{}", turns, max_turns);
 
                 match client.chat(messages.clone(), tools_opt.clone()).await {
                     Ok(response_msg) => {
-                        println!("[Kernel] LLM Response Role: {}", response_msg.role);
+                        tracing::debug!("LLM Response Role: {}", response_msg.role);
                         if let Some(calls) = &response_msg.tool_calls {
-                            println!("[Kernel] Tool Calls detected: {}", calls.len());
+                            tracing::info!("Tool Calls detected: {}", calls.len());
                         }
 
                         messages.push(response_msg.clone());
@@ -165,33 +162,34 @@ impl ChatKernel {
                             for tool_call in tool_calls {
                                 let skill_name = &tool_call.function.name;
                                 let args_str = &tool_call.function.arguments;
-                                println!(
-                                    "[Kernel] Executing Tool: {} with args: {}",
-                                    skill_name, args_str
+                                tracing::info!(
+                                    "Executing Tool: {} with args: {}",
+                                    skill_name,
+                                    args_str
                                 );
 
                                 let args_result: Result<serde_json::Value, _> =
                                     serde_json::from_str(args_str);
                                 let args = args_result.unwrap_or_else(|e| {
-                                    println!("[Kernel] JSON Parse Error: {}", e);
+                                    tracing::error!("JSON Parse Error: {}", e);
                                     serde_json::json!({})
                                 });
 
                                 let result = if let Some(skill) = self.skills.get(skill_name) {
                                     match skill.execute(args).await {
                                         Ok(out) => {
-                                            println!("[Kernel] Tool Output: {:.100}...", out); // Truncate log
+                                            tracing::debug!("Tool Output: {:.100}...", out);
                                             out
                                         }
                                         Err(err) => {
                                             let e = format!("Error: {}", err);
-                                            println!("[Kernel] Tool Execution Failed: {}", e);
+                                            tracing::error!("Tool Execution Failed: {}", e);
                                             e
                                         }
                                     }
                                 } else {
                                     let e = format!("Unknown tool: {}", skill_name);
-                                    println!("[Kernel] {}", e);
+                                    tracing::error!("{}", e);
                                     e
                                 };
 
@@ -209,8 +207,8 @@ impl ChatKernel {
                                 messages.push(tool_response);
                             }
                         } else {
-                            println!(
-                                "[Kernel] No tool calls. Final response received. ({} turns)",
+                            tracing::info!(
+                                "No tool calls. Final response received. ({} turns)",
                                 turns
                             );
                             // Completion Phase: Store final response in Layer 1
@@ -221,7 +219,7 @@ impl ChatKernel {
                         }
                     }
                     Err(e) => {
-                        println!("[Kernel] AI Client Error: {}", e);
+                        tracing::error!("AI Client Error: {}", e);
                         return format!("AI Error: {}", e);
                     }
                 }

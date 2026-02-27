@@ -7,6 +7,7 @@ pub struct GeneralTabState<'a> {
     pub current_mode: &'a str,
     pub current_music_path: Option<&'a std::path::Path>,
     pub current_layer: crate::types::WindowLayer,
+    pub run_on_startup: bool,
     pub scroll_offset: f32,
     pub available_monitors: &'a [(String, String)],
     pub current_monitor_name: Option<&'a str>,
@@ -394,9 +395,73 @@ pub fn draw(
         );
     }
 
+    // 6. Auto-Start
+    let card6_y = (sy_val(825 + 60 + monitors_h as u32 + 20) as f32 + scroll_y * scale) as i32;
+    draw_rounded_rect(
+        buffer,
+        w,
+        s(210) as i32,
+        card6_y,
+        card_w,
+        (80.0 * scale) as u32,
+        12,
+        COLOR_BG_CARD,
+        w,
+        h,
+    );
+    draw_text(
+        buffer,
+        w,
+        &[],
+        "Run on Startup",
+        s(230) as i32,
+        card6_y + sc(28.0) as i32,
+        sc(16.0),
+        COLOR_TEXT_MAIN,
+    );
+    draw_text(
+        buffer,
+        w,
+        &[],
+        "Automatically start Ameath when Windows boots",
+        s(230) as i32,
+        card6_y + sc(50.0) as i32,
+        sc(12.0),
+        COLOR_TEXT_SEC,
+    );
+
+    // Toggle Switch logic
+    let toggle_x = s(210) as i32 + card_w as i32 - sc(80.0) as i32;
+    let toggle_y = card6_y + sc(25.0) as i32;
+    let toggle_w = sc(44.0) as u32;
+    let toggle_h = sc(24.0) as u32;
+    let (bg_color, knob_x) = if state.run_on_startup {
+        (COLOR_PRIMARY, toggle_x + sc(22.0) as i32)
+    } else {
+        (COLOR_BORDER, toggle_x + sc(2.0) as i32)
+    };
+
+    // Background
+    draw_rounded_rect(
+        buffer, w, toggle_x, toggle_y, toggle_w, toggle_h, 12, bg_color, w, h,
+    );
+    // Knob
+    draw_rounded_rect(
+        buffer,
+        w,
+        knob_x,
+        toggle_y + sc(2.0) as i32,
+        sc(20.0) as u32,
+        sc(20.0) as u32,
+        10,
+        0x00FFFFFF,
+        w,
+        h,
+    );
+
     // Content height tracking
     let viewport_height = 600.0;
-    let content_height = 825.0 + 60.0 + monitors_h + 40.0;
+    let content_height = 825.0 + 60.0 + monitors_h + 40.0 + 100.0; // Added height for card 6
 
     (viewport_height, content_height, None)
 }
