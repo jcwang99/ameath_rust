@@ -204,19 +204,19 @@ impl SettingsWindow {
                 }
             }
 
-            // Monitor Selection (Visual: card5_y=760, buttons at 820)
+            // Monitor Selection (Visual: card5_y=825, buttons at 885)
             // Dynamic height based on rows
             let rows = (self.available_monitors.len() + 2) / 3;
             let monitors_h = if rows > 0 { rows as f64 * 65.0 } else { 65.0 };
 
-            if sly >= 820.0 && sly <= 820.0 + monitors_h {
+            if sly >= 885.0 && sly <= 885.0 + monitors_h {
                 for (i, (name, _)) in self.available_monitors.iter().enumerate() {
                     let row = i / 3;
                     let col = i % 3;
                     // mx = 230 + col * 110
-                    // my = 820 + row * 65
+                    // my = 885 + row * 65
                     let btn_x = 230.0 + col as f64 * 110.0;
-                    let btn_y = 820.0 + row as f64 * 65.0;
+                    let btn_y = 885.0 + row as f64 * 65.0;
                     let btn_w = 100.0;
 
                     if lx >= btn_x && lx <= btn_x + btn_w && sly >= btn_y && sly <= btn_y + 55.0 {

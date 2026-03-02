@@ -653,6 +653,8 @@ fn main() {
                                                         monitor_offset = (pos.x, pos.y);
                                                         pet.position.0 = (size.width as f64 - pet.window_size.0) / 2.0;
                                                         pet.position.1 = (size.height as f64 - pet.window_size.1) / 2.0;
+                                                        sw.request_redraw();
+                                                        window.request_redraw();
                                                     }
                                                 }
                                                 settings::SettingsAction::SetAiSystemPrompt(prompt) => {

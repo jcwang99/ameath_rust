@@ -563,18 +563,26 @@ impl SettingsWindow {
         self.current_monitor_name = self.window.current_monitor().and_then(|m| m.name());
 
         if self.last_size != (w, h) || (current_scale - self.last_render_scale).abs() > 0.01 {
-            self.surface
-                .resize(
-                    std::num::NonZeroU32::new(w).unwrap(),
-                    std::num::NonZeroU32::new(h).unwrap(),
-                )
-                .unwrap();
-            self.last_size = (w, h);
-            self.last_render_scale = current_scale;
-            self.history_hashes.clear();
-            self.history_metrics_cache.clear();
-            self.system_prompt_metrics_cache = 0.0;
-            self.is_dirty = true;
+            if let (Some(nz_w), Some(nz_h)) =
+                (std::num::NonZeroU32::new(w), std::num::NonZeroU32::new(h))
+            {
+                if let Err(e) = self.surface.resize(nz_w, nz_h) {
+                    tracing::error!("Failed to resize Softbuffer surface: {:?}", e);
+                } else {
+                    self.last_size = (w, h);
+                    self.last_render_scale = current_scale;
+                    self.history_hashes.clear();
+                    self.history_metrics_cache.clear();
+                    self.system_prompt_metrics_cache = 0.0;
+                    self.is_dirty = true;
+                }
+            } else {
+                tracing::warn!(
+                    "Invalid resize dimensions for SettingsWindow: w={}, h={}",
+                    w,
+                    h
+                );
+            }
         }
 
         use std::collections::hash_map::DefaultHasher;
@@ -630,6 +638,7 @@ impl SettingsWindow {
         self.selection_start.hash(&mut base_hasher);
         self.history.len().hash(&mut base_hasher);
         self.last_config_hash.hash(&mut base_hasher);
+        self.current_monitor_name.hash(&mut base_hasher);
         current_scale.to_bits().hash(&mut base_hasher);
         current_mode.hash(&mut base_hasher);
         current_music_path.hash(&mut base_hasher);
@@ -1044,17 +1053,18 @@ impl SettingsWindow {
                 // Monitor selection
                 let card5_y = 825.0 + scroll_y;
                 let card5_h = 60.0 + (rows as f64 * 65.0);
-                if dlx >= 210.0
-                    && dlx <= 210.0 + card_w
-                    && dly >= card5_y + 60.0
-                    && dly <= card5_y + card5_h
+                if lx >= 210.0
+                    && lx <= 210.0 + card_w
+                    && ly >= card5_y + 60.0
+                    && ly <= card5_y + card5_h
                 {
                     for (i, (name, _)) in self.available_monitors.iter().enumerate() {
                         let row = i / 3;
                         let col = i % 3;
                         let mx = 230.0 + col as f64 * 110.0;
                         let my = card5_y + 60.0 + row as f64 * 65.0;
-                        if dlx >= mx && dlx <= mx + 100.0 && dly >= my && dly <= my + 55.0 {
+                        if lx >= mx && lx <= mx + 100.0 && ly >= my && ly <= my + 55.0 {
+                            tracing::info!("Monitor {} clicked", name);
                             return SettingsAction::SetMonitor(name.clone());
                         }
                     }

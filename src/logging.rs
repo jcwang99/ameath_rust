@@ -37,6 +37,28 @@ pub fn init_logging() {
         .with(file_layer)
         .init();
 
+    // 4. Setup Panic Hook to ensure panics are stored in log files
+    std::panic::set_hook(Box::new(|panic_info| {
+        let msg = match panic_info.payload().downcast_ref::<&'static str>() {
+            Some(s) => *s,
+            None => match panic_info.payload().downcast_ref::<String>() {
+                Some(s) => &s[..],
+                None => "Box<dyn Any>",
+            },
+        };
+
+        if let Some(location) = panic_info.location() {
+            tracing::error!(
+                "PANIC occurred at {}:{} - {}",
+                location.file(),
+                location.line(),
+                msg
+            );
+        } else {
+            tracing::error!("PANIC occurred - {}", msg);
+        }
+    }));
+
     tracing::info!("Logging initialized. Logs are stored in {}", log_dir);
 }
 
