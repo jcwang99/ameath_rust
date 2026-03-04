@@ -539,10 +539,8 @@ fn main() {
                                     settings_win = None;
                                     ui_primitives::harvest_memory();
                                 }
-                                WindowEvent::ScaleFactorChanged { scale_factor, mut inner_size_writer } => {
-                                    let logical = winit::dpi::LogicalSize::new(800.0, 750.0);
-                                    let new_physical = logical.to_physical::<u32>(scale_factor);
-                                    let _ = inner_size_writer.request_inner_size(new_physical);
+                                WindowEvent::ScaleFactorChanged { .. } => {
+                                    // Doing nothing maintains the current physical size, eliminating winit's WM_DPICHANGED ping-pong bug during cross-monitor drags
                                 }
                                 WindowEvent::Focused(true) => {
                                     ui_primitives::harvest_memory();
