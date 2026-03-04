@@ -302,6 +302,9 @@ fn main() {
     let mut current_layer = types::WindowLayer::Top;
     let mut bubble_rect: Option<(i32, i32, i32, i32)>;
     bubble_rect = None;
+    let mut last_bubble_click_time: Option<Instant> = None;
+    let mut original_bubble_text: Option<String> = None;
+    let mut bubble_restore_time: Option<Instant> = None;
 
     let mut composite_data: Vec<u8> = Vec::new();
     let mut decompressed_frame_buffer: Vec<u8> = Vec::new();
@@ -479,7 +482,45 @@ fn main() {
                                                         if let Ok(win_pos) = window.outer_position() {
                                                             let monitor_mx = win_pos.x as f64 + pos.x - monitor_offset.0 as f64;
                                                             let monitor_my = win_pos.y as f64 + pos.y - monitor_offset.1 as f64;
-                                                            if pet.check_hit(monitor_mx, monitor_my) {
+                                                            
+                                                            let mut bubble_hit = false;
+                                                            if let Some((bx, by, bw, bh)) = bubble_rect {
+                                                                let target_x = pet.position.0 - pet_off_x;
+                                                                let target_y = pet.position.1 - pet_off_y;
+                                                                let b_screen_x = target_x + bx as f64;
+                                                                let b_screen_y = target_y + by as f64;
+                                                                if monitor_mx >= b_screen_x && monitor_mx <= b_screen_x + bw as f64 &&
+                                                                   monitor_my >= b_screen_y && monitor_my <= b_screen_y + bh as f64 {
+                                                                    bubble_hit = true;
+                                                                }
+                                                            }
+
+                                                            if bubble_hit {
+                                                                let now = Instant::now();
+                                                                if let Some(last_time) = last_bubble_click_time {
+                                                                    if now.duration_since(last_time) < Duration::from_millis(500) {
+                                                                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                                                                            // Set text to clipboard from current text (or original if already showing feedback)
+                                                                            let text_to_copy = original_bubble_text.as_ref().unwrap_or(&bubble_manager.text).clone();
+                                                                            let _ = clipboard.set_text(text_to_copy.clone());
+                                                                            
+                                                                            // Store original if not already stored
+                                                                            if original_bubble_text.is_none() {
+                                                                                original_bubble_text = Some(bubble_manager.text.clone());
+                                                                            }
+                                                                            bubble_restore_time = Some(now + Duration::from_secs(2));
+
+                                                                            bubble_manager.show("已复制到剪贴板! 📋", Duration::from_secs(2), pet.scale);
+                                                                            window.request_redraw();
+                                                                        }
+                                                                        last_bubble_click_time = None;
+                                                                    } else {
+                                                                        last_bubble_click_time = Some(now);
+                                                                    }
+                                                                } else {
+                                                                    last_bubble_click_time = Some(now);
+                                                                }
+                                                            } else if pet.check_hit(monitor_mx, monitor_my) {
                                                                 if let Some(&quote) = rand::seq::SliceRandom::choose(&quotes[..], &mut rand::thread_rng()) {
                                                                     bubble_manager.show(quote, Duration::from_secs(4), pet.scale);
                                                                     window.request_redraw();
@@ -791,6 +832,10 @@ fn main() {
                                         pending_responses.push_back((response, Instant::now()));
                                     } else {
                                         // Show immediately if TTS disabled - reset state here
+                                        // If there's restoring logic pending, clear it because a new message arrived
+                                        original_bubble_text = None;
+                                        bubble_restore_time = None;
+                                        
                                         bubble_manager.show(&response, Duration::from_secs(6), pet.scale);
                                         thinking_state = ThinkingState::None;
                                         thinking_start = None;
@@ -1011,7 +1056,7 @@ fn main() {
 
                     // 5. UPDATE CACHED RECTS & HIT DETECTION
                     if bubble_manager.is_visible() {
-                        // bubble_rect not needed here
+                        bubble_rect = Some((bx_f as i32, bubble_y_f as i32, current_bubble_w_f as i32, current_bubble_h_f as i32));
                     } else {
                         bubble_rect = None;
                     }
@@ -1245,6 +1290,18 @@ fn main() {
 
                         // 2. Bubble
                         if bubble_manager.is_visible() {
+                            // Restore original bubble text if needed
+                            if let Some(restore_time) = bubble_restore_time {
+                                if Instant::now() >= restore_time {
+                                    if let Some(orig_text) = original_bubble_text.take() {
+                                        // Don't change duration much, keep it alive natively 
+                                        bubble_manager.show(&orig_text, Duration::from_secs(4), pet.scale);
+                                        window.request_redraw();
+                                    }
+                                    bubble_restore_time = None;
+                                }
+                            }
+                            
                             bubble_manager.render_to_buffer(std::ptr::null_mut(), pet.scale);
                             let by = bubble_y_f as i32;
                             let bx = bx_f as i32;

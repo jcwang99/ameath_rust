@@ -1,5 +1,16 @@
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use tracing_subscriber::fmt::format::Writer;
+use tracing_subscriber::fmt::time::FormatTime;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+struct LocalTimer;
+
+impl FormatTime for LocalTimer {
+    fn format_time(&self, w: &mut Writer<'_>) -> std::fmt::Result {
+        let now = chrono::Local::now();
+        write!(w, "{}", now.format("%Y-%m-%dT%H:%M:%S%.3f%:z"))
+    }
+}
 
 pub fn init_logging() {
     let log_dir = "logs";
@@ -23,12 +34,16 @@ pub fn init_logging() {
 
     // 2. Formatters
     let file_layer = fmt::layer()
+        .with_timer(LocalTimer)
         .with_writer(non_blocking)
         .with_ansi(false) // Disable ANSI colors in file
         .with_target(true)
         .with_thread_ids(true);
 
-    let console_layer = fmt::layer().with_target(false).pretty();
+    let console_layer = fmt::layer()
+        .with_timer(LocalTimer)
+        .with_target(false)
+        .pretty();
 
     // 3. Register global subscriber
     tracing_subscriber::registry()
