@@ -563,8 +563,6 @@ impl SettingsWindow {
             return;
         }
 
-        self.current_monitor_name = self.window.current_monitor().and_then(|m| m.name());
-
         if self.last_size != (w, h) || (current_scale - self.last_render_scale).abs() > 0.01 {
             if let (Some(nz_w), Some(nz_h)) =
                 (std::num::NonZeroU32::new(w), std::num::NonZeroU32::new(h))
