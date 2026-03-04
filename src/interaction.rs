@@ -477,19 +477,21 @@ impl InteractionManager {
 
                 let mut images = Vec::new();
                 if self.config.active_interaction_screenshots_enabled {
-                    match crate::screen_capture::capture_primary_monitor() {
-                        Ok(img) => {
-                            let resized = crate::screen_capture::resize_screenshot(img, 1000);
-                            let mut buffer = Vec::new();
-                            let mut cursor = std::io::Cursor::new(&mut buffer);
-                            if resized
-                                .write_to(&mut cursor, image::ImageFormat::Png)
-                                .is_ok()
-                            {
-                                images.push(crate::types::ImageData {
-                                    data: buffer,
-                                    mime_type: "image/png".to_string(),
-                                });
+                    match crate::screen_capture::capture_all_monitors() {
+                        Ok(imgs) => {
+                            for img in imgs {
+                                let resized = crate::screen_capture::resize_screenshot(img, 1000);
+                                let mut buffer = Vec::new();
+                                let mut cursor = std::io::Cursor::new(&mut buffer);
+                                if resized
+                                    .write_to(&mut cursor, image::ImageFormat::Png)
+                                    .is_ok()
+                                {
+                                    images.push(crate::types::ImageData {
+                                        data: buffer,
+                                        mime_type: "image/png".to_string(),
+                                    });
+                                }
                             }
                         }
                         Err(e) => {
