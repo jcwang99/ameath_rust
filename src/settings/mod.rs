@@ -272,6 +272,7 @@ pub enum SettingsAction {
     SelectTtsRefAudio,
     RequestGc,
     ToggleAutoStart,
+    SaveWindowConfig,
 }
 
 pub struct SettingsWindow {
@@ -313,6 +314,7 @@ pub struct SettingsWindow {
     pub last_render_scale: f32,
     pub available_monitors: Vec<(String, String)>,
     pub current_monitor_name: Option<String>,
+    pub is_dragging_pet_scale: bool,
 
     pub is_dirty: bool,
     pub last_state_hash: u64,
@@ -447,6 +449,7 @@ impl SettingsWindow {
             is_dragging_scrollbar: false,
             available_monitors,
             current_monitor_name: None,
+            is_dragging_pet_scale: false,
             last_size: (800, 750),
             last_render_scale: 1.0,
             is_dirty: true,
@@ -988,12 +991,11 @@ impl SettingsWindow {
                 if lx >= 210.0 && lx <= 210.0 + card_w {
                     // Pet Scale
                     if ly >= card1_y + 60.0 && ly <= card1_y + 105.0 {
-                        let scales = vec![0.5, 0.75, 1.0, 1.25, 1.5];
-                        for (i, &val) in scales.iter().enumerate() {
-                            let mx = 220.0 + i as f64 * 85.0;
-                            if lx >= mx && lx <= mx + 75.0 {
-                                return SettingsAction::SetScale(val);
-                            }
+                        if lx >= 220.0 && lx <= 540.0 {
+                            self.is_dragging_pet_scale = true;
+                            let progress = ((lx - 230.0) / 300.0).clamp(0.0, 1.0);
+                            let scale = 0.1 + progress * 2.9;
+                            return SettingsAction::SetScale(scale as f32);
                         }
                     }
                     // Behavior
@@ -1988,7 +1990,12 @@ impl SettingsWindow {
         self.window.request_redraw();
     }
 
-    pub fn handle_mouse_move(&mut self, x: f64, y: f64, ai_config: &crate::types::AiConfig) {
+    pub fn handle_mouse_move(
+        &mut self,
+        x: f64,
+        y: f64,
+        ai_config: &crate::types::AiConfig,
+    ) -> Option<SettingsAction> {
         let size = self.window.inner_size();
         let w = size.width as f64;
         let h = size.height as f64;
@@ -2023,8 +2030,16 @@ impl SettingsWindow {
                 let max_scroll = -(self.content_height - self.viewport_height);
                 self.scroll_offset = progress as f32 * max_scroll;
                 self.window.request_redraw();
+                self.window.request_redraw();
             }
-            return;
+            return None;
+        }
+
+        if self.is_dragging_pet_scale {
+            let progress = ((lx - 230.0) / 300.0).clamp(0.0, 1.0);
+            let scale_val = 0.1 + progress * 2.9;
+            self.window.request_redraw();
+            return Some(SettingsAction::SetScale(scale_val as f32));
         }
 
         if let Some(idx) = self.dragging_history_idx {
@@ -2046,7 +2061,7 @@ impl SettingsWindow {
                     self.window.request_redraw();
                 }
             }
-            return;
+            return None;
         }
 
         if self.dragging_sys_prompt {
@@ -2058,7 +2073,7 @@ impl SettingsWindow {
                 let max_scroll = -(content_h - view_h).max(0.0);
                 self.system_prompt_scroll_offset = progress as f32 * max_scroll;
                 self.window.request_redraw();
-                return;
+                return None;
             } else {
                 // Fallback to hardcoded if rect not set yet
                 let track_h = 250.0;
@@ -2069,7 +2084,7 @@ impl SettingsWindow {
                 let max_scroll = -(content_h - view_h).max(0.0);
                 self.system_prompt_scroll_offset = progress as f32 * max_scroll;
                 self.window.request_redraw();
-                return;
+                return None;
             }
         }
 
@@ -2078,7 +2093,7 @@ impl SettingsWindow {
             if self.current_tab == 2 && lx > 180.0 {
                 self.window.request_redraw();
             }
-            return;
+            return None;
         }
 
         self.last_cursor_action = std::time::Instant::now();
@@ -2086,7 +2101,7 @@ impl SettingsWindow {
             Some(i) => i,
             None => {
                 self.is_dragging_text = false;
-                return;
+                return None;
             }
         };
 
@@ -2118,7 +2133,7 @@ impl SettingsWindow {
         let text_x = dlx as f64 - fx - 15.0;
 
         if !text_x.is_finite() || !dly.is_finite() {
-            return;
+            return None;
         }
 
         if field_idx == 13 {
@@ -2142,9 +2157,10 @@ impl SettingsWindow {
         self.window.request_redraw();
         self.last_cursor_action = std::time::Instant::now();
         self.is_dirty = true;
+        None
     }
 
-    pub fn handle_mouse_up(&mut self) {
+    pub fn handle_mouse_up(&mut self) -> Option<SettingsAction> {
         if self.is_dragging_text {
             if let Some(start) = self.selection_start {
                 if start == self.cursor_pos {
@@ -2156,8 +2172,15 @@ impl SettingsWindow {
         self.is_dragging_scrollbar = false;
         self.dragging_history_idx = None;
         self.dragging_sys_prompt = false;
+        if self.is_dragging_pet_scale {
+            self.is_dragging_pet_scale = false;
+            self.pressed_btn = None;
+            self.window.request_redraw();
+            return Some(SettingsAction::SaveWindowConfig);
+        }
         self.pressed_btn = None;
         self.window.request_redraw();
+        None
     }
 }
 

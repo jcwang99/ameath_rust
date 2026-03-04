@@ -56,6 +56,13 @@ use windows::Win32::Foundation::{HWND, POINT};
 use image::GenericImageView;
 
 fn main() {
+    // 【修复开机自启动】强制将工作目录设置为可执行文件所在目录，
+    // 防止 Windows 注册表启动时工作目录在 System32 导致无权限写日志或找不到相对路径的 assets。
+    if let Ok(mut exe_path) = std::env::current_exe() {
+        exe_path.pop(); // 获取所在文件夹路径
+        let _ = std::env::set_current_dir(&exe_path);
+    }
+
     logging::init_logging();
     
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -146,6 +153,7 @@ fn main() {
 
     let mut ai_config = types::AiConfig::load();
     let mut window_config = types::WindowConfig::load(); // Load window config
+    pet.scale = window_config.scale;
     
     // Sync run_on_startup with actual registry state
     let actual_autostart = autostart::is_autostart_enabled();
@@ -531,6 +539,11 @@ fn main() {
                                     settings_win = None;
                                     ui_primitives::harvest_memory();
                                 }
+                                WindowEvent::ScaleFactorChanged { scale_factor, mut inner_size_writer } => {
+                                    let logical = winit::dpi::LogicalSize::new(800.0, 750.0);
+                                    let new_physical = logical.to_physical::<u32>(scale_factor);
+                                    let _ = inner_size_writer.request_inner_size(new_physical);
+                                }
                                 WindowEvent::Focused(true) => {
                                     ui_primitives::harvest_memory();
                                 }
@@ -694,7 +707,13 @@ fn main() {
                                             }
                                         }
                                     } else {
-                                        sw.handle_mouse_up();
+                                        if let Some(action) = sw.handle_mouse_up() {
+                                            if matches!(action, settings::SettingsAction::SaveWindowConfig) {
+                                                window_config.scale = pet.scale;
+                                                window_config.save();
+                                                sw.request_redraw();
+                                            }
+                                        }
                                     }
                                 }
                                 WindowEvent::MouseWheel { delta, .. } => {
@@ -720,7 +739,13 @@ fn main() {
                                 }
                                 WindowEvent::CursorMoved { position, .. } => {
                                     settings_cursor_pos = Some(position);
-                                    sw.handle_mouse_move(position.x, position.y, &ai_config);
+                                    if let Some(action) = sw.handle_mouse_move(position.x, position.y, &ai_config) {
+                                        if let settings::SettingsAction::SetScale(s) = action {
+                                            pet.scale = s;
+                                            sw.request_redraw();
+                                            window.request_redraw();
+                                        }
+                                    }
                                 }
                                 WindowEvent::RedrawRequested => {
                                     let mode_str = match pet.behavior_mode {
@@ -916,7 +941,7 @@ fn main() {
                     }
 
                     // 4. GLOBAL LAYOUT CALCULATION (Runs every frame to ensure perfect sync)
-                    let draw_scale = pet.scale.max(0.5);
+                    let draw_scale = pet.scale.max(0.05);
                     let (cur_pw, cur_ph) = pet.get_scaled_size();
                     
                     let curr_loading_frames = match thinking_state {

@@ -60,45 +60,71 @@ pub fn draw(
         COLOR_TEXT_MAIN,
     );
 
-    let scales = vec![0.5, 0.75, 1.0, 1.25, 1.5];
-    let labels = vec!["0.5x", "0.75x", "1.0x", "1.25x", "1.5x"];
-    for (i, &val) in scales.iter().enumerate() {
-        let mx = s(220 + i as u32 * 85) as i32;
-        let my = card1_y + sc(60.0) as i32;
-        let is_active = (current_scale - val).abs() < 0.01;
-        let bg_col = if is_active {
-            COLOR_PRIMARY
-        } else {
-            COLOR_BG_LIGHT
-        };
-        let text_col = if is_active {
-            0x00FFFFFF
-        } else {
-            COLOR_TEXT_MAIN
-        };
-        draw_rounded_rect(
-            buffer,
-            w,
-            mx,
-            my,
-            sc(75.0) as u32,
-            sc(45.0) as u32,
-            8,
-            bg_col,
-            w,
-            h,
-        );
-        draw_text(
-            buffer,
-            w,
-            &[],
-            labels[i],
-            mx + sc(12.0) as i32,
-            my + sc(12.0) as i32,
-            sc(14.0),
-            text_col,
-        );
-    }
+    // Slider logic: range 0.1 to 3.0
+    let progress = ((current_scale - 0.1) / 2.9).clamp(0.0, 1.0);
+    let track_x = s(230) as i32;
+    let track_y = card1_y + sc(75.0) as i32;
+    let track_w = sc(300.0) as u32;
+    let track_h = sc(6.0) as u32;
+
+    // Background track
+    draw_rounded_rect(
+        buffer,
+        w,
+        track_x,
+        track_y,
+        track_w,
+        track_h,
+        (3.0 * scale) as u32,
+        COLOR_BG_LIGHT,
+        w,
+        h,
+    );
+
+    // Filled track
+    let fill_w = (sc(300.0) * progress).max(sc(6.0)) as u32;
+    draw_rounded_rect(
+        buffer,
+        w,
+        track_x,
+        track_y,
+        fill_w,
+        track_h,
+        (3.0 * scale) as u32,
+        COLOR_PRIMARY,
+        w,
+        h,
+    );
+
+    // Knob
+    let knob_size = sc(18.0) as u32;
+    let knob_x = track_x + fill_w as i32 - (knob_size as i32 / 2);
+    let knob_y = track_y + (track_h as i32 / 2) - (knob_size as i32 / 2);
+    draw_rounded_rect(
+        buffer,
+        w,
+        knob_x,
+        knob_y,
+        knob_size,
+        knob_size,
+        (9.0 * scale) as u32,
+        0x00FFFFFF,
+        w,
+        h,
+    );
+
+    // Value text
+    let val_text = format!("{:.2}x", current_scale);
+    draw_text(
+        buffer,
+        w,
+        &[],
+        &val_text,
+        track_x + track_w as i32 + sc(20.0) as i32,
+        track_y - sc(6.0) as i32,
+        sc(16.0),
+        COLOR_TEXT_MAIN,
+    );
 
     // 2. Behavior Mode
     let card2_y = (sy_val(280) as f32 + scroll_y * scale) as i32;

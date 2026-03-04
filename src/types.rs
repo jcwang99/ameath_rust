@@ -356,6 +356,12 @@ pub struct WindowConfig {
     pub music_path: Option<PathBuf>,
     #[serde(default)]
     pub run_on_startup: bool,
+    #[serde(default = "default_pet_scale")]
+    pub scale: f32,
+}
+
+fn default_pet_scale() -> f32 {
+    1.0
 }
 
 impl Default for WindowConfig {
@@ -364,6 +370,7 @@ impl Default for WindowConfig {
             monitor_name: None,
             music_path: None,
             run_on_startup: false,
+            scale: 1.0,
         }
     }
 }
