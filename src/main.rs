@@ -1,42 +1,44 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ai;
 mod anim;
+mod autostart;
 mod bubble;
 mod chat_window;
+mod interaction;
+mod logging;
 mod menu;
 mod music_player;
 mod pet;
 mod pomodoro;
 mod render;
-mod settings;
-mod types;
-mod ai;
-mod interaction;
-mod theme;
-mod ui_primitives;
 mod screen_capture;
+mod settings;
+mod theme;
 mod tts;
-mod logging;
-mod autostart;
+mod types;
+mod ui_primitives;
 
-use chat_window::{ChatWindow, ChatAction};
-use settings::SettingsWindow;
+use chat_window::{ChatAction, ChatWindow};
 use rayon::prelude::*;
+use settings::SettingsWindow;
 
-use pet::Pet;
-use std::collections::HashMap;
-use std::rc::Rc;
-use rand::Rng;
-use std::time::{Duration, Instant};
 use global_hotkey::{
     hotkey::{Code, HotKey, Modifiers},
     GlobalHotKeyEvent, GlobalHotKeyManager,
 };
+use pet::Pet;
+use rand::Rng;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem},
     TrayIconBuilder,
 };
-use types::{AiResponseEvent, BehaviorMode, PersistentConfig, PetState, PreprocessedFrame, ThinkingState};
+use types::{
+    AiResponseEvent, BehaviorMode, PersistentConfig, PetState, PreprocessedFrame, ThinkingState,
+};
 use winit::{
     dpi::PhysicalPosition,
     event::{ElementState, Event, MouseButton, WindowEvent},
@@ -64,7 +66,7 @@ fn main() {
     }
 
     logging::init_logging();
-    
+
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
 
@@ -86,8 +88,12 @@ fn main() {
         anim::load_gif_from_memory(include_bytes!("../assets/gifs/idle3.gif")),
         anim::load_gif_from_memory(include_bytes!("../assets/gifs/idle4.gif")),
     ];
-    let move_frames_right = vec![anim::load_gif_from_memory(include_bytes!("../assets/gifs/move.gif"))];
-    let drag_frames_right = vec![anim::load_gif_from_memory(include_bytes!("../assets/gifs/drag.gif"))];
+    let move_frames_right = vec![anim::load_gif_from_memory(include_bytes!(
+        "../assets/gifs/move.gif"
+    ))];
+    let drag_frames_right = vec![anim::load_gif_from_memory(include_bytes!(
+        "../assets/gifs/drag.gif"
+    ))];
 
     // Load Loading GIFs and pre-decompress all frames
     let load_gif_and_decompress = |bytes: &[u8]| -> Vec<(i32, i32, Vec<u8>)> {
@@ -100,21 +106,18 @@ fn main() {
             .collect()
     };
 
-    let loading_frames_standard = load_gif_and_decompress(include_bytes!("../assets/icons/loading.gif"));
-    let loading_frames_network = load_gif_and_decompress(include_bytes!("../assets/icons/network-loading.gif"));
-    let loading_frames_tools = load_gif_and_decompress(include_bytes!("../assets/icons/tool-loading.gif"));
+    let loading_frames_standard =
+        load_gif_and_decompress(include_bytes!("../assets/icons/loading.gif"));
+    let loading_frames_network =
+        load_gif_and_decompress(include_bytes!("../assets/icons/network-loading.gif"));
+    let loading_frames_tools =
+        load_gif_and_decompress(include_bytes!("../assets/icons/tool-loading.gif"));
 
     // Generate Left-facing assets (DELETED mirroring - will flip on-the-fly)
 
     // Store variants
-    let mut animation_map: HashMap<
-        PetState,
-        Vec<Vec<PreprocessedFrame>>,
-    > = HashMap::new();
-    animation_map.insert(
-        PetState::Clingy,
-        move_frames_right.clone(),
-    );
+    let mut animation_map: HashMap<PetState, Vec<Vec<PreprocessedFrame>>> = HashMap::new();
+    animation_map.insert(PetState::Clingy, move_frames_right.clone());
     animation_map.insert(PetState::Idle, idle_frames_right);
     animation_map.insert(PetState::Move, move_frames_right);
     animation_map.insert(PetState::Drag, drag_frames_right);
@@ -154,17 +157,21 @@ fn main() {
     let mut ai_config = types::AiConfig::load();
     let mut window_config = types::WindowConfig::load(); // Load window config
     pet.scale = window_config.scale;
-    
+
     // Sync run_on_startup with actual registry state
     let actual_autostart = autostart::is_autostart_enabled();
     if window_config.run_on_startup != actual_autostart {
-        tracing::info!("Syncing run_on_startup config to registry state: {}", actual_autostart);
+        tracing::info!(
+            "Syncing run_on_startup config to registry state: {}",
+            actual_autostart
+        );
         window_config.run_on_startup = actual_autostart;
         window_config.save();
     }
 
     let mut modifier_state = winit::keyboard::ModifiersState::default();
-    let mut chat_window = ChatWindow::new(&event_loop, event_loop.create_proxy(), winit_icon.clone());
+    let mut chat_window =
+        ChatWindow::new(&event_loop, event_loop.create_proxy(), winit_icon.clone());
     let mut thinking_state = ThinkingState::None;
     let mut thinking_start: Option<Instant> = None;
     let mut monitor_offset = (0, 0); // Global offset of the current monitor
@@ -185,13 +192,16 @@ fn main() {
     // Initial positioning based on config
     if let Some(ref monitor_name) = window_config.monitor_name {
         let available = window.available_monitors();
-        if let Some(monitor) = available.into_iter().find(|m| m.name().as_ref() == Some(monitor_name)) {
-             let pos = monitor.position();
-             let size = monitor.size();
-             let center_x = pos.x + (size.width as i32 / 2) - (win_w as i32 / 2);
-             let center_y = pos.y + (size.height as i32 / 2) - (win_h as i32 / 2);
-             monitor_offset = (pos.x, pos.y);
-             window.set_outer_position(winit::dpi::PhysicalPosition::new(center_x, center_y));
+        if let Some(monitor) = available
+            .into_iter()
+            .find(|m| m.name().as_ref() == Some(monitor_name))
+        {
+            let pos = monitor.position();
+            let size = monitor.size();
+            let center_x = pos.x + (size.width as i32 / 2) - (win_w as i32 / 2);
+            let center_y = pos.y + (size.height as i32 / 2) - (win_h as i32 / 2);
+            monitor_offset = (pos.x, pos.y);
+            window.set_outer_position(winit::dpi::PhysicalPosition::new(center_x, center_y));
         }
     }
     window.set_visible(true);
@@ -202,7 +212,10 @@ fn main() {
         if let Some(refresh) = monitor.refresh_rate_millihertz() {
             // millihertz to duration: 1_000_000_000_000 / mHz = nanos
             target_frame_duration = Duration::from_nanos(1_000_000_000_000 / refresh as u64);
-            println!("Detected monitor refresh rate: {} Hz", refresh as f32 / 1000.0);
+            println!(
+                "Detected monitor refresh rate: {} Hz",
+                refresh as f32 / 1000.0
+            );
         }
     }
 
@@ -231,12 +244,17 @@ fn main() {
     // AI Kernel & Channel
     let scheduler = interaction::ActionScheduler::new();
     let (ai_tx, ai_rx) = std::sync::mpsc::channel::<AiResponseEvent>();
-    let mut chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
-    let music_dir = window_config.music_path.clone().unwrap_or_else(|| std::path::PathBuf::from("assets/music"));
+    let mut chat_kernel =
+        std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
+    let music_dir = window_config
+        .music_path
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from("assets/music"));
     if music_dir.exists() {
         music_player.set_path(music_dir);
     }
-    let mut interaction_manager = interaction::InteractionManager::new(ai_config.clone(), scheduler.clone());
+    let mut interaction_manager =
+        interaction::InteractionManager::new(ai_config.clone(), scheduler.clone());
     let (path_tx, path_rx) = std::sync::mpsc::channel::<Option<std::path::PathBuf>>();
     let (tts_path_tx, tts_path_rx) = std::sync::mpsc::channel::<Option<std::path::PathBuf>>();
     let (tts_controller, tts_rx) = if let Some((c, r)) = tts::TtsController::new() {
@@ -257,7 +275,6 @@ fn main() {
         "肚子有点饿了……🍬",
         "在努力工作吗？加油！💪",
     ];
-
 
     // Tray Icon Setup
     let tray_menu = Menu::new();
@@ -309,10 +326,11 @@ fn main() {
     let mut composite_data: Vec<u8> = Vec::new();
     let mut decompressed_frame_buffer: Vec<u8> = Vec::new();
     let mut pomodoro_data: Vec<u8> = Vec::new();
-    
+
     // Frame cache: key = (PetState, variant, frame_idx), value = decompressed pixels
     // Reduced from 32 to 16 frames to save memory (max ~4MB instead of 8MB)
-    let mut frame_cache: lru::LruCache<(PetState, usize, usize), Vec<u8>> = lru::LruCache::new(std::num::NonZeroUsize::new(16).unwrap());
+    let mut frame_cache: lru::LruCache<(PetState, usize, usize), Vec<u8>> =
+        lru::LruCache::new(std::num::NonZeroUsize::new(16).unwrap());
     let mut is_hovered = false;
 
     event_loop

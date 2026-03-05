@@ -67,6 +67,33 @@ impl MemoryManager {
         )
         .expect("Failed to create facts table");
 
+        // Entity Graph: Relational Memory
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS entity_graph (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                relation TEXT NOT NULL,
+                target TEXT NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(source, relation, target)
+            )",
+            [],
+        )
+        .expect("Failed to create entity_graph table");
+
+        // Create index for fast Graph queries
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_entity_graph_source ON entity_graph(source)",
+            [],
+        )
+        .expect("Failed to create index on entity_graph(source)");
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_entity_graph_target ON entity_graph(target)",
+            [],
+        )
+        .expect("Failed to create index on entity_graph(target)");
+
         Self {
             conn: Mutex::new(conn),
         }
@@ -159,9 +186,13 @@ impl MemoryManager {
 
         // 2. Get L3 (Latest High-level Summary)
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare("SELECT content FROM summaries WHERE layer >= 3 ORDER BY id DESC LIMIT 1")?;
-        let l3_opt: Option<String> = stmt.query_row([], |r| r.get(0)).ok();
+
+        let l3_opt: Option<String> = {
+            let mut stmt = conn.prepare(
+                "SELECT content FROM summaries WHERE layer >= 3 ORDER BY id DESC LIMIT 1",
+            )?;
+            stmt.query_row([], |r| r.get(0)).ok()
+        };
         if let Some(l3) = l3_opt {
             context.push(Message {
                 role: "system".to_string(),
@@ -172,14 +203,16 @@ impl MemoryManager {
         }
 
         // 3. Get Recent L2 Summaries (from conversations layer=2)
-        let mut stmt = conn.prepare(
-            "SELECT content FROM conversations WHERE layer = 2 ORDER BY id DESC LIMIT 3",
-        )?;
-        let l2_rows = stmt.query_map([], |row| row.get(0))?;
         let mut l2_summaries: Vec<String> = Vec::new();
-        for row in l2_rows {
-            if let Ok(s) = row {
-                l2_summaries.push(s);
+        {
+            let mut stmt = conn.prepare(
+                "SELECT content FROM conversations WHERE layer = 2 ORDER BY id DESC LIMIT 3",
+            )?;
+            let l2_rows = stmt.query_map([], |row| row.get(0))?;
+            for row in l2_rows {
+                if let Ok(s) = row {
+                    l2_summaries.push(s);
+                }
             }
         }
         if !l2_summaries.is_empty() {
@@ -196,20 +229,21 @@ impl MemoryManager {
         }
 
         // 4. Get Active Tool Traces (Volatile)
-        let mut stmt =
-            conn.prepare("SELECT role, content, tool_call_id FROM tool_traces ORDER BY id ASC")?; // Traces should be chronological? Or reverse and then reverse back?
-                                                                                                  // Actually, if we clear them, we just want all of them.
-        let trace_rows = stmt.query_map([], |row| {
-            Ok(Message {
-                role: row.get(0)?,
-                content: Content::Simple(row.get(1)?),
-                tool_calls: None, // Simplified for now
-                tool_call_id: row.get(2)?,
-            })
-        })?;
         let mut traces = Vec::new();
-        for row in trace_rows {
-            traces.push(row?);
+        {
+            let mut stmt = conn
+                .prepare("SELECT role, content, tool_call_id FROM tool_traces ORDER BY id ASC")?;
+            let trace_rows = stmt.query_map([], |row| {
+                Ok(Message {
+                    role: row.get(0)?,
+                    content: Content::Simple(row.get(1)?),
+                    tool_calls: None, // Simplified for now
+                    tool_call_id: row.get(2)?,
+                })
+            })?;
+            for row in trace_rows {
+                traces.push(row?);
+            }
         }
         if !traces.is_empty() {
             context.push(Message {
@@ -228,23 +262,85 @@ impl MemoryManager {
         }
 
         // 5. Get Recent L1 Core Dialogue (Limit to recent N)
-        let mut stmt = conn.prepare(
-            "SELECT role, content FROM conversations WHERE layer = 1 ORDER BY id DESC LIMIT ?",
-        )?;
-        let rows = stmt.query_map(params![limit], |row| {
-            Ok(Message {
-                role: row.get(0)?,
-                content: Content::Simple(row.get(1)?),
-                tool_calls: None,
-                tool_call_id: None,
-            })
-        })?;
-
         let mut history: Vec<Message> = Vec::new();
-        for row in rows {
-            history.push(row?);
-        }
+        let mut recent_user_text = String::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT role, content FROM conversations WHERE layer = 1 ORDER BY id DESC LIMIT ?",
+            )?;
+            let rows = stmt.query_map(params![limit], |row| {
+                Ok(Message {
+                    role: row.get(0)?,
+                    content: Content::Simple(row.get(1)?),
+                    tool_calls: None,
+                    tool_call_id: None,
+                })
+            })?;
+
+            for row in rows {
+                let msg = row?;
+                if msg.role == "user" {
+                    if let Content::Simple(text) = &msg.content {
+                        recent_user_text.push_str(text);
+                        recent_user_text.push(' ');
+                    }
+                }
+                history.push(msg);
+            }
+        } // `stmt` for L1 dialogue is dropped here
         history.reverse();
+
+        // --- 5.5 Entity Graph Retrieval (Lightweight Mem0-like) ---
+        // We drop locks early to call our own connection again if needed.
+        // Because we bound statements inside blocks {}, they are already dropped here!
+        drop(conn);
+
+        // 2. Naive Entity Extraction: Since we don't have an NLP library,
+        // we'll fetch ALL existing entity names from the DB and check if they occur in `recent_user_text`.
+        // This is extremely fast for <10k entities.
+        let mut entities_in_prompt = Vec::new();
+        if !recent_user_text.is_empty() {
+            let conn2 = self.conn.lock().unwrap();
+            // Get unique entities
+            let mut stmt2 = conn2.prepare(
+                 "SELECT DISTINCT source FROM entity_graph UNION SELECT DISTINCT target FROM entity_graph"
+             )?;
+            if let Ok(mut g_rows) = stmt2.query([]) {
+                while let Ok(Some(g_row)) = g_rows.next() {
+                    if let Ok(entity) = g_row.get::<_, String>(0) {
+                        // Simple substring match
+                        if recent_user_text.contains(&entity) {
+                            entities_in_prompt.push(entity);
+                        }
+                    }
+                }
+            }
+            drop(stmt2);
+            drop(conn2);
+        }
+
+        // 3. Fetch 1-hop relations and inject
+        if !entities_in_prompt.is_empty() {
+            let entity_strs: Vec<&str> = entities_in_prompt.iter().map(|s| s.as_str()).collect();
+            if let Ok(relations) = self.get_relations_for_entities(&entity_strs) {
+                if !relations.is_empty() {
+                    let mut graph_ctx = String::new();
+                    for (src, rel, tgt) in relations {
+                        graph_ctx.push_str(&format!("- [{}] -> [{}] -> [{}]\n", src, rel, tgt));
+                    }
+                    context.push(Message {
+                        role: "system".to_string(),
+                        content: Content::Simple(format!(
+                            "Relevant Graph Connections:\n{}",
+                            graph_ctx
+                        )),
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
+                }
+            }
+        }
+
         context.extend(history);
 
         Ok(context)
@@ -283,6 +379,62 @@ impl MemoryManager {
             facts.push(row?);
         }
         Ok(facts)
+    }
+
+    // --- Entity Graph Methods ---
+
+    pub fn add_relation(&self, source: &str, relation: &str, target: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO entity_graph (source, relation, target, updated_at) 
+             VALUES (?1, ?2, ?3, CURRENT_TIMESTAMP)",
+            params![source, relation, target],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_relation(&self, source: &str, relation: &str, target: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM entity_graph WHERE source = ?1 AND relation = ?2 AND target = ?3",
+            params![source, relation, target],
+        )?;
+        Ok(())
+    }
+
+    /// Retrieve 1-hop relations for a list of entity names.
+    pub fn get_relations_for_entities(
+        &self,
+        entities: &[&str],
+    ) -> Result<Vec<(String, String, String)>> {
+        if entities.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // This limit is to avoid context overflow, prioritizing recently updated relations
+        let limit = 20;
+
+        let placeholders = entities.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query = format!(
+            "SELECT source, relation, target 
+             FROM entity_graph 
+             WHERE source IN ({p}) OR target IN ({p}) 
+             ORDER BY updated_at DESC LIMIT {l}",
+            p = placeholders,
+            l = limit
+        );
+
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(&query)?;
+
+        let params = rusqlite::params_from_iter(entities.iter().chain(entities.iter()));
+        let rows = stmt.query_map(params, |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+
+        let mut relations = Vec::new();
+        for row in rows {
+            relations.push(row?);
+        }
+        Ok(relations)
     }
 
     pub fn get_l2_uncompacted(&self, limit: usize) -> Result<Vec<(i64, String)>> {

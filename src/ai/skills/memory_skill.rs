@@ -21,7 +21,7 @@ impl Skill for MemorySkill {
     }
 
     fn description(&self) -> &str {
-        "Maintain the core Fact Board about the user. Use this to permanently 'learn' and 'set' important user preferences, habits, or facts, 'get' them to provide personalized help, or 'delete' obsolete facts."
+        "Maintain the core Fact Board and Knowledge Graph about the user. Use this to permanently 'learn' and 'set' important user preferences or facts, 'delete' obsolete facts, OR build relationship graphs using 'add_relation' (e.g. Alice -> is_friend_of -> Bob) and 'delete_relation'."
     }
 
     async fn execute(&self, args: Value) -> Result<String, String> {
@@ -52,7 +52,34 @@ impl Skill for MemorySkill {
                 self.memory.delete_fact(key).map_err(|e| e.to_string())?;
                 Ok(format!("Fact deleted: {}", key))
             }
-            _ => Err("Invalid action. Use 'set', 'get' or 'delete'.".to_string()),
+            "add_relation" => {
+                let source = args["source"].as_str().ok_or("Missing 'source'")?;
+                let relation = args["relation"].as_str().ok_or("Missing 'relation'")?;
+                let target = args["target"].as_str().ok_or("Missing 'target'")?;
+                self.memory
+                    .add_relation(source, relation, target)
+                    .map_err(|e| e.to_string())?;
+                Ok(format!(
+                    "Relation stored: {} -[{}]-> {}",
+                    source, relation, target
+                ))
+            }
+            "delete_relation" => {
+                let source = args["source"].as_str().ok_or("Missing 'source'")?;
+                let relation = args["relation"].as_str().ok_or("Missing 'relation'")?;
+                let target = args["target"].as_str().ok_or("Missing 'target'")?;
+                self.memory
+                    .delete_relation(source, relation, target)
+                    .map_err(|e| e.to_string())?;
+                Ok(format!(
+                    "Relation deleted: {} -[{}]-> {}",
+                    source, relation, target
+                ))
+            }
+            _ => Err(
+                "Invalid action. Use 'set', 'get', 'delete', 'add_relation', or 'delete_relation'."
+                    .to_string(),
+            ),
         }
     }
 
@@ -67,19 +94,31 @@ impl Skill for MemorySkill {
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["set", "get", "delete"],
-                            "description": "The action: 'set' to record/update a persistent fact, 'get' to retrieve context, or 'delete' to remove obsolete info."
+                            "enum": ["set", "get", "delete", "add_relation", "delete_relation"],
+                            "description": "The action: 'set/get/delete' for flat facts, 'add_relation/delete_relation' for graph triplets."
                         },
                         "key": {
                             "type": "string",
-                            "description": "Unique key (e.g. 'user_taste', 'work_schedule', 'relationship_status')"
+                            "description": "Unique key for facts (e.g. 'user_taste'). Required for set/get/delete."
                         },
                         "value": {
                             "type": "string",
-                            "description": "The definitive fact to record (required for 'set')"
+                            "description": "The definitive fact to record. Required for 'set'."
+                        },
+                        "source": {
+                            "type": "string",
+                            "description": "Source entity for graph (e.g. 'Alice'). Required for add_relation/delete_relation."
+                        },
+                        "relation": {
+                            "type": "string",
+                            "description": "Relationship (e.g. 'is_friend_of'). Required for add_relation/delete_relation."
+                        },
+                        "target": {
+                            "type": "string",
+                            "description": "Target entity for graph (e.g. 'Bob'). Required for add_relation/delete_relation."
                         }
                     },
-                    "required": ["action", "key"]
+                    "required": ["action"]
                 }
             }
         })
