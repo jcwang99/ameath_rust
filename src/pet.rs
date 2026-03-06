@@ -334,23 +334,43 @@ impl Pet {
     }
 
     pub fn check_hit(&mut self, mouse_x: f64, mouse_y: f64) -> bool {
-        let (w, h) = self.get_scaled_size();
-        let rel_x = mouse_x - self.position.0;
-        let rel_y = mouse_y - self.position.1;
+        let (scaled_w, scaled_h) = self.get_scaled_size();
+        let pos_x = self.position.0;
+        let pos_y = self.position.1;
+        let p_scale = self.scale as f64;
+        let p_facing_right = self.facing_right;
 
-        if rel_x < 0.0 || rel_x >= w || rel_y < 0.0 || rel_y >= h {
-            return false;
-        }
+        let local_x = mouse_x - pos_x;
+        let local_y = mouse_y - pos_y;
 
-        // Translate to unscaled coordinates
-        let src_x = (rel_x / self.scale as f64) as usize;
-        let src_y = (rel_y / self.scale as f64) as usize;
+        if local_x >= 0.0 && local_x < scaled_w && local_y >= 0.0 && local_y < scaled_h {
+            let px = (local_x / p_scale) as usize;
+            let py = (local_y / p_scale) as usize;
 
-        let frame = self.current_frame();
-        if src_y < frame.opaque_rows.len() {
-            let (start, end) = frame.opaque_rows[src_y];
-            return src_x >= start && src_x < end;
+            let frame = self.current_frame();
+            if px < frame.width as usize && py < frame.height as usize {
+                let actual_x = if p_facing_right {
+                    px
+                } else {
+                    frame.width as usize - 1 - px
+                };
+                let (start_x, end_x) = frame.opaque_rows[py];
+                return actual_x >= start_x && actual_x < end_x;
+            }
         }
         false
+    }
+
+    pub fn hit_test_bubble(
+        &self,
+        mouse_x: f64,
+        mouse_y: f64,
+        bubble_rect: (i32, i32, i32, i32),
+    ) -> bool {
+        let (bx, by, bw, bh) = bubble_rect;
+        mouse_x >= bx as f64
+            && mouse_x <= (bx + bw) as f64
+            && mouse_y >= by as f64
+            && mouse_y <= (by + bh) as f64
     }
 }

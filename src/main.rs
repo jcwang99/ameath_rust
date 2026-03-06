@@ -62,6 +62,12 @@ fn main() {
     // 防止 Windows 注册表启动时工作目录在 System32 导致无权限写日志或找不到相对路径的 assets。
     if let Ok(mut exe_path) = std::env::current_exe() {
         exe_path.pop(); // 获取所在文件夹路径
+        let path_str = exe_path.to_string_lossy();
+        if path_str.ends_with("target\\debug") || path_str.ends_with("target\\release") {
+            // In development, the assets are in the project root
+            exe_path.pop(); // pop "debug" or "release"
+            exe_path.pop(); // pop "target"
+        }
         let _ = std::env::set_current_dir(&exe_path);
     }
 
@@ -236,7 +242,8 @@ fn main() {
         }
     };
 
-    let mut bubble_manager = bubble::SpeechBubble::new();
+    let mut bubbles: Vec<bubble::SpeechBubble> = Vec::new();
+    let mut last_response_segments: Vec<bubble::BubbleContent> = Vec::new();
     let mut pomodoro_manager = pomodoro::Pomodoro::new();
     let mut menu_manager = menu::QuickMenu::new();
     let mut music_player = music_player::MusicPlayer::new();
@@ -317,11 +324,9 @@ fn main() {
     let mut settings_win: Option<SettingsWindow> = None;
     let mut menu_visible_timer: Option<Instant> = None;
     let mut current_layer = types::WindowLayer::Top;
-    let mut bubble_rect: Option<(i32, i32, i32, i32)>;
+    let bubble_rect: Option<(i32, i32, i32, i32)>;
     bubble_rect = None;
     let mut last_bubble_click_time: Option<Instant> = None;
-    let mut original_bubble_text: Option<String> = None;
-    let mut bubble_restore_time: Option<Instant> = None;
 
     let mut composite_data: Vec<u8> = Vec::new();
     let mut decompressed_frame_buffer: Vec<u8> = Vec::new();
@@ -471,21 +476,29 @@ fn main() {
                                                                 }
                                                                 menu::MenuAction::Pomodoro => {
                                                                     if let Some(msg) = pomodoro_manager.update() {
-                                                                        bubble_manager.show(&msg, Duration::from_secs(4), pet.scale);
+                                                                        let mut b1 = bubble::SpeechBubble::new();
+                                                                        b1.show(&msg, Duration::from_secs(4), pet.scale);
+                                                                        bubbles.push(b1);
                                                                     }
                                                                     if pomodoro_manager.toggle() {
-                                                                        bubble_manager.show("Pomodoro Started! 🍅", Duration::from_secs(2), pet.scale);
+                                                                        let mut b2 = bubble::SpeechBubble::new();
+                                                                        b2.show("Pomodoro Started! 🍅", Duration::from_secs(2), pet.scale);
+                                                                        bubbles.push(b2);
                                                                     } else {
-                                                                        bubble_manager.show("Pomodoro Stopped.", Duration::from_secs(2), pet.scale);
+                                                                        let mut b2 = bubble::SpeechBubble::new();
+                                                                        b2.show("Pomodoro Stopped.", Duration::from_secs(2), pet.scale);
+                                                                        bubbles.push(b2);
                                                                     }
                                                                 }
                                                                 menu::MenuAction::Music => {
                                                                     music_player.toggle();
+                                                                    let mut b = bubble::SpeechBubble::new();
                                                                     if music_player.is_playing() {
-                                                                        bubble_manager.show("Music Started! 🎵", Duration::from_secs(2), pet.scale);
+                                                                        b.show("Music Started! 🎵", Duration::from_secs(2), pet.scale);
                                                                     } else {
-                                                                        bubble_manager.show("Music Paused ⏸️", Duration::from_secs(2), pet.scale);
+                                                                        b.show("Music Paused ⏸️", Duration::from_secs(2), pet.scale);
                                                                     }
+                                                                    bubbles.push(b);
                                                                     window.request_redraw();
                                                                 }
                                                                 menu::MenuAction::Exit => elwt.exit(),
@@ -509,27 +522,51 @@ fn main() {
                                                                 let b_screen_y = target_y + by as f64;
                                                                 if monitor_mx >= b_screen_x && monitor_mx <= b_screen_x + bw as f64 &&
                                                                    monitor_my >= b_screen_y && monitor_my <= b_screen_y + bh as f64 {
-                                                                    bubble_hit = true;
+                                                                    // Check if any bubble contains the point
+                                                                    let x = monitor_mx;
+                                                                    let y = monitor_my;
+                                                                    for b in &bubbles {
+                                                                        if let Some(rect) = b.get_rect() {
+                                                                            if pet.hit_test_bubble(x, y, rect) {
+                                                                                bubble_hit = true;
+                                                                                break;
+                                                                            }
+                                                                        }
+                                                                    }
                                                                 }
-                                                            }
+                                                            } // Closing if let Some((bx, by, bw, bh)) = bubble_rect {
 
                                                             if bubble_hit {
                                                                 let now = Instant::now();
-                                                                if let Some(last_time) = last_bubble_click_time {
-                                                                    if now.duration_since(last_time) < Duration::from_millis(500) {
-                                                                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                                                                            // Set text to clipboard from current text (or original if already showing feedback)
-                                                                            let text_to_copy = original_bubble_text.as_ref().unwrap_or(&bubble_manager.text).clone();
-                                                                            let _ = clipboard.set_text(text_to_copy.clone());
-                                                                            
-                                                                            // Store original if not already stored
-                                                                            if original_bubble_text.is_none() {
-                                                                                original_bubble_text = Some(bubble_manager.text.clone());
+                                                                if let Some(last_click) = last_bubble_click_time {
+                                                                    if now.duration_since(last_click) < Duration::from_millis(500) {
+                                                                        // Double click detected on any bubble
+                                                                        let mut copied_text = String::new();
+                                                                        for b in &bubbles {
+                                                                            if let Some(rect) = b.get_rect() {
+                                                                                if pet.hit_test_bubble(monitor_mx, monitor_my, rect) {
+                                                                                    match &b.content {
+                                                                                        bubble::BubbleContent::Text(t) => {
+                                                                                            copied_text = t.clone();
+                                                                                        }
+                                                                                        bubble::BubbleContent::Image(p) => {
+                                                                                            copied_text = p.clone();
+                                                                                        }
+                                                                                    }
+                                                                                    break;
+                                                                                }
                                                                             }
-                                                                            bubble_restore_time = Some(now + Duration::from_secs(2));
-
-                                                                            bubble_manager.show("已复制到剪贴板! 📋", Duration::from_secs(2), pet.scale);
-                                                                            window.request_redraw();
+                                                                        }
+                                                                        
+                                                                        if !copied_text.is_empty() {
+                                                                            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                                                                                if clipboard.set_text(copied_text).is_ok() {
+                                                                                    // Feedback (we just push a temporary system bubble instead of overwriting)
+                                                                                    let mut temp_bubble = bubble::SpeechBubble::new();
+                                                                                    temp_bubble.show("📋 Copied to clipboard!", Duration::from_secs(2), pet.scale);
+                                                                                    bubbles.push(temp_bubble);
+                                                                                }
+                                                                            }
                                                                         }
                                                                         last_bubble_click_time = None;
                                                                     } else {
@@ -539,10 +576,13 @@ fn main() {
                                                                     last_bubble_click_time = Some(now);
                                                                 }
                                                             } else if pet.check_hit(monitor_mx, monitor_my) {
-                                                                if let Some(&quote) = rand::seq::SliceRandom::choose(&quotes[..], &mut rand::thread_rng()) {
-                                                                    bubble_manager.show(quote, Duration::from_secs(4), pet.scale);
-                                                                    window.request_redraw();
-                                                                }
+                                                                let idx = std::time::SystemTime::now()
+                                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                                    .unwrap_or_default()
+                                                                    .as_millis() as usize % quotes.len();
+                                                                let mut b = bubble::SpeechBubble::new();
+                                                                b.show(quotes[idx], Duration::from_secs(4), pet.scale);
+                                                                bubbles.push(b);
                                                             }
                                                         }
                                                     }
@@ -555,7 +595,7 @@ fn main() {
                                         }
                                     }
                                 }
-                            }
+                             }
                             WindowEvent::CursorMoved { position, .. } => {
                                 last_cursor_pos = Some(position);
                                 if let Ok(win_pos) = window.outer_position() {
@@ -842,60 +882,93 @@ fn main() {
                                 needs_pet_redraw = true;
                             }
                             AiResponseEvent::Response(response) => {
-                                // Don't reset state here; keep it until audio/bubble is ready
+                                // Instead of a single manager, we parse the response string and generate multiple bubbles.
+                                // Format example: "Hello! [IMG]assets/emojis/smile.png This is fun!"
+                                let mut segments = Vec::new();
+                                let mut remaining = response.as_str();
+                                
+                                while let Some(idx) = remaining.find("[IMG]") {
+                                    if idx > 0 {
+                                        let text_part = &remaining[..idx];
+                                        if !text_part.trim().is_empty() {
+                                            segments.push(bubble::BubbleContent::Text(text_part.trim().to_string()));
+                                        }
+                                    }
+                                    
+                                    remaining = &remaining[idx + 5..]; // skip "[IMG]"
+                                    
+                                    // find end of path (next whitespace or end of string)
+                                    let path_end = remaining.find(|c: char| c.is_whitespace()).unwrap_or(remaining.len());
+                                    let path = &remaining[..path_end];
+                                    
+                                    if !path.is_empty() {
+                                        segments.push(bubble::BubbleContent::Image(path.to_string()));
+                                    }
+                                    
+                                    remaining = &remaining[path_end..];
+                                }
+
+                                if !remaining.trim().is_empty() {
+                                    segments.push(bubble::BubbleContent::Text(remaining.trim().to_string()));
+                                }
+                                
+                                last_response_segments = segments.clone();
+                                
+                                // Actually handle TTs & display queue
                                 if let Some(tts) = &tts_controller {
                                     if ai_config.tts_enabled {
-                                        tts.speak(response.clone(), &ai_config);
-                                        // Queue for synchronized display
-                                        pending_responses.push_back((response, Instant::now()));
-                                    } else {
-                                        // Show immediately if TTS disabled - reset state here
-                                        // If there's restoring logic pending, clear it because a new message arrived
-                                        original_bubble_text = None;
-                                        bubble_restore_time = None;
+                                        // We just TTS the pure text
+                                        let pure_text: String = segments.iter().filter_map(|s| match s {
+                                            bubble::BubbleContent::Text(t) => Some(t.clone() + " "),
+                                            _ => None
+                                        }).collect();
                                         
-                                        bubble_manager.show(&response, Duration::from_secs(6), pet.scale);
-                                        thinking_state = ThinkingState::None;
-                                        thinking_start = None;
-                                        needs_pet_redraw = true;
+                                        if !pure_text.trim().is_empty() {
+                                            tts.speak(pure_text, &ai_config);
+                                        }
                                     }
-                                } else {
-                                    // No TTS controller at all - reset state here
-                                    bubble_manager.show(&response, Duration::from_secs(6), pet.scale);
-                                    thinking_state = ThinkingState::None;
-                                    thinking_start = None;
-                                    needs_pet_redraw = true;
                                 }
+                                
+                                // Generate all bubbles concurrently
+                                let mut cumulative_duration = Duration::from_secs(0);
+                                for seg in segments {
+                                    let mut new_bubble = bubble::SpeechBubble::new();
+                                    match seg {
+                                        bubble::BubbleContent::Text(t) => {
+                                            new_bubble.show(&t, Duration::from_secs(6), pet.scale);
+                                        }
+                                        bubble::BubbleContent::Image(p) => {
+                                            new_bubble.show_image(&p, pet.scale);
+                                        }
+                                    }
+                                    
+                                    // Extract the base duration it assigned itself
+                                    let base_dur = if let Some(until) = new_bubble.show_until {
+                                        until.duration_since(Instant::now())
+                                    } else {
+                                        Duration::from_secs(4)
+                                    };
+                                    
+                                    // Make it stay visible for its own duration PLUS all previous bubbles' durations
+                                    new_bubble.show_until = Some(Instant::now() + cumulative_duration + base_dur);
+                                    
+                                    // Add to cumulative for the NEXT bubble
+                                    cumulative_duration += base_dur;
+                                    
+                                    bubbles.push(new_bubble);
+                                }
+                                
+                                thinking_state = ThinkingState::None;
+                                thinking_start = None;
+                                needs_pet_redraw = true;
                             }
                         }
                     }
 
-                    // Check for TTS audio readiness signals
+                    // Check for TTS audio readiness signals (deprecated sequential queueing logic inside here can be simplified out next as we show instantly)
                     if let Some(rx) = &tts_rx {
-                        while let Ok(text) = rx.try_recv() {
-                            // Find matching response in queue
-                            let mut found = false;
-                            for i in 0..pending_responses.len() {
-                                if pending_responses[i].0 == text {
-                                    let (resp, _) = pending_responses.remove(i).unwrap();
-                                    bubble_manager.show(&resp, Duration::from_secs(6), pet.scale);
-                                    needs_pet_redraw = true;
-                                    thinking_state = ThinkingState::None;
-                                    thinking_start = None;
-                                    found = true;
-                                    break;
-                                }
-                            }
-                            if !found {
-                                // Maybe it was a partial match or something went wrong?
-                                // If we can't find exact text, just take the oldest one.
-                                if let Some((resp, _)) = pending_responses.pop_front() {
-                                    bubble_manager.show(&resp, Duration::from_secs(6), pet.scale);
-                                    needs_pet_redraw = true;
-                                    thinking_state = ThinkingState::None;
-                                    thinking_start = None;
-                                }
-                            }
+                        while let Ok(_) = rx.try_recv() {
+                           // Keep drain alive to prevent blocking
                         }
                     }
 
@@ -903,7 +976,9 @@ fn main() {
                     while let Some((_, start)) = pending_responses.front() {
                         if start.elapsed() > Duration::from_secs(60) {
                             let (resp, _) = pending_responses.pop_front().unwrap();
-                            bubble_manager.show(&resp, Duration::from_secs(6), pet.scale);
+                            let mut new_bubble = bubble::SpeechBubble::new();
+                            new_bubble.show(&resp, Duration::from_secs(6), pet.scale);
+                            bubbles.push(new_bubble);
                             needs_pet_redraw = true;
                             thinking_state = ThinkingState::None;
                             thinking_start = None;
@@ -981,13 +1056,56 @@ fn main() {
                     pet.update_state(dt, is_paused);
 
                     // 3. Triggers
+                    let is_thinking = thinking_state != ThinkingState::None;
+                    
+                    // Auto-dismiss expired bubbles, but keep hovering ones alive
+                    if is_hovered {
+                        if bubbles.is_empty() && !last_response_segments.is_empty() && !is_thinking && pomodoro_manager.visible == false {
+                            // Re-create the last response segments when hovering over the empty pet
+                            let mut cumulative_duration = Duration::from_secs(0);
+                            for seg in &last_response_segments {
+                                let mut new_bubble = bubble::SpeechBubble::new();
+                                new_bubble.is_hover_recall = true;
+                                match seg {
+                                    bubble::BubbleContent::Text(t) => {
+                                        new_bubble.show(t, Duration::from_secs(6), pet.scale);
+                                    }
+                                    bubble::BubbleContent::Image(p) => {
+                                        new_bubble.show_image(p, pet.scale);
+                                    }
+                                }
+                                
+                                let base_dur = if let Some(until) = new_bubble.show_until {
+                                    until.duration_since(Instant::now())
+                                } else {
+                                    Duration::from_secs(4)
+                                };
+                                
+                                new_bubble.show_until = Some(Instant::now() + cumulative_duration + base_dur);
+                                cumulative_duration += base_dur;
+                                bubbles.push(new_bubble);
+                            }
+                        }
+                        
+                        for b in bubbles.iter_mut() {
+                            b.keep_alive();
+                        }
+                    } else {
+                        // Immediately drop any hover-recalled bubbles once the mouse leaves
+                        bubbles.retain(|b| !b.is_hover_recall);
+                    }
+                    bubbles.retain(|b| b.is_visible());
+
                     if let Some(msg) = pomodoro_manager.update() {
-                        bubble_manager.show(&msg, Duration::from_secs(4), pet.scale);
+                        let mut b = bubble::SpeechBubble::new();
+                        b.show(&msg, Duration::from_secs(4), pet.scale);
+                        bubbles.push(b);
                     }
                     if let Some(msg) = music_player.update() {
-                        bubble_manager.show(&msg, Duration::from_secs(4), pet.scale);
+                        let mut b = bubble::SpeechBubble::new();
+                        b.show(&msg, Duration::from_secs(4), pet.scale);
+                        bubbles.push(b);
                     }
-                    let is_thinking = thinking_state != ThinkingState::None;
                     if !is_thinking {
                         if let Some(system_event) = interaction_manager.check_for_trigger() {
                             let kernel = chat_kernel.clone();
@@ -1019,8 +1137,17 @@ fn main() {
                         loading_h_f = 32.0 * draw_scale as f64;
                     }
 
-                    let current_bubble_w_f = if bubble_manager.is_visible() { bubble_manager.current_width as f64 } else { 0.0 };
-                    let current_bubble_h_f = if bubble_manager.is_visible() { bubble_manager.current_height as f64 } else { 0.0 };
+                    let current_bubble_w_f = if !bubbles.is_empty() { 
+                        let max_w: u32 = bubbles.iter().map(|b| b.current_width as u32).max().unwrap_or(0);
+                        (max_w as f64).max(100.0 * pet.scale as f64) 
+                    } else { 
+                        0.0 
+                    };
+                    let current_bubble_h_f = if let Some(last_b) = bubbles.last() { 
+                        last_b.current_height as f64 
+                    } else { 
+                        0.0 
+                    };
                     let current_pomodoro_w_f = if pomodoro_manager.visible { (pomodoro::BASE_POMODORO_WIDTH as f32 * pet.scale) as f64 } else { 0.0 };
                     let current_pomodoro_h_f = if pomodoro_manager.visible { (pomodoro::BASE_POMODORO_HEIGHT as f32 * pet.scale) as f64 } else { 0.0 };
 
@@ -1038,7 +1165,11 @@ fn main() {
 
                     let padding_top_v = 40.0;
                     let mut extras_h = 0.0;
-                    if bubble_manager.is_visible() { extras_h += current_bubble_h_f + gap_between; }
+                    if !bubbles.is_empty() { 
+                        // compute total height roughly:
+                        let total_bh: f64 = bubbles.iter().filter_map(|b| b.get_rect().map(|(_,_,_,h)| h as f64)).sum();
+                        extras_h += total_bh + gap_between * bubbles.len() as f64; 
+                    }
                     if pomodoro_manager.visible { extras_h += current_pomodoro_h_f + gap_between; }
                     if is_thinking { extras_h += loading_h_f + gap_between; }
 
@@ -1046,9 +1177,9 @@ fn main() {
 
                     let loading_y_f = if is_thinking { pet_off_y - gap_between - loading_h_f } else { pet_off_y };
                     let bubble_y_f = if is_thinking { loading_y_f - gap_between - current_bubble_h_f } 
-                                   else if bubble_manager.is_visible() { pet_off_y - gap_between - current_bubble_h_f } 
+                                   else if !bubbles.is_empty() { pet_off_y - gap_between - current_bubble_h_f } 
                                    else { pet_off_y };
-                    let pomodoro_y_f = if bubble_manager.is_visible() { bubble_y_f - gap_between - current_pomodoro_h_f }
+                    let pomodoro_y_f = if !bubbles.is_empty() { bubble_y_f - gap_between - current_pomodoro_h_f }
                                      else if is_thinking { loading_y_f - gap_between - current_pomodoro_h_f }
                                      else { pet_off_y - gap_between - current_pomodoro_h_f };
 
@@ -1073,33 +1204,38 @@ fn main() {
                     let target_pos = POINT { x: target_x, y: target_y };
 
                     // 5. UPDATE CACHED RECTS & HIT DETECTION
-                    if bubble_manager.is_visible() {
-                        bubble_rect = Some((bx_f as i32, bubble_y_f as i32, current_bubble_w_f as i32, current_bubble_h_f as i32));
-                    } else {
-                        bubble_rect = None;
-                    }
-
                     let mouse_x = current_mouse.0;
                     let mouse_y = current_mouse.1;
-                    
-                    let over_pet = pet.check_hit(mouse_x - monitor_offset.0 as f64, mouse_y - monitor_offset.1 as f64);
-                    
-                    let menu_on_right_x = target_x as f64 + menu_x_f;
-                    let menu_on_top_y = target_y as f64 + menu_y_f;
-                    let over_menu = mouse_x >= menu_on_right_x && mouse_x <= menu_on_right_x + menu_w_f && 
-                                    mouse_y >= menu_on_top_y && mouse_y <= menu_on_top_y + menu_h_f_val;
+                    let over_pet = pet.check_hit(mouse_x, mouse_y);
+                    let mut over_menu = false;
+                    if menu_manager.visible || menu_manager.opacity > 0.0 {
+                        let m_screen_x = target_x as f64 + menu_x_f;
+                        let m_screen_y = target_y as f64 + menu_y_f;
+                        if mouse_x >= m_screen_x && mouse_x <= m_screen_x + menu_w_f &&
+                           mouse_y >= m_screen_y && mouse_y <= m_screen_y + menu_h_f_val {
+                            over_menu = true;
+                        }
+                    }
 
-                    let over_bubble = if let Some((bx, by, bw, bh)) = bubble_rect {
-                        let b_screen_x = target_x as f64 + bx as f64;
-                        let b_screen_y = target_y as f64 + by as f64;
-                        mouse_x >= b_screen_x && mouse_x <= (b_screen_x + bw as f64) && 
-                        mouse_y >= b_screen_y && mouse_y <= (b_screen_y + bh as f64)
-                    } else { false };
+                    let mut over_bubble = false;
+                    for b in &bubbles {
+                        if let Some((bx, by, bw, bh)) = b.get_rect() {
+                            let b_screen_x = target_x as f64 + bx as f64;
+                            let b_screen_y = target_y as f64 + by as f64;
+                            if mouse_x >= b_screen_x && mouse_x <= (b_screen_x + bw as f64) &&
+                               mouse_y >= b_screen_y && mouse_y <= (b_screen_y + bh as f64) {
+                                over_bubble = true;
+                                break;
+                            }
+                        }
+                    }
 
                     is_hovered = over_pet || over_menu || over_bubble;
                     
                     if is_hovered {
-                        bubble_manager.keep_alive();
+                        for b in &mut bubbles {
+                            b.keep_alive();
+                        }
                         if over_pet || over_menu {
                             if !menu_manager.visible || menu_manager.opacity < 1.0 {
                                 needs_pet_redraw = true;
@@ -1306,55 +1442,66 @@ fn main() {
                               }
                         }
 
-                        // 2. Bubble
-                        if bubble_manager.is_visible() {
-                            // Restore original bubble text if needed
-                            if let Some(restore_time) = bubble_restore_time {
-                                if Instant::now() >= restore_time {
-                                    if let Some(orig_text) = original_bubble_text.take() {
-                                        // Don't change duration much, keep it alive natively 
-                                        bubble_manager.show(&orig_text, Duration::from_secs(4), pet.scale);
-                                        window.request_redraw();
-                                    }
-                                    bubble_restore_time = None;
-                                }
-                            }
-                            
-                            bubble_manager.render_to_buffer(std::ptr::null_mut(), pet.scale);
-                            let by = bubble_y_f as i32;
-                            let bx = bx_f as i32;
-                            if by >= 0 {
-                                if let Some(b_pixels) = bubble_manager.pixel_data() {
-                                    // Use actual pixel data dimensions to avoid mismatch after render_to_buffer updates
-                                    let bw = bubble_manager.current_width as u32;
-                                    let bh = bubble_manager.current_height as u32;
+                        // 2. Bubbles
+                        let mut stack_bottom_y = if is_thinking { 
+                            loading_y_f - gap_between 
+                        } else { 
+                            pet_off_y - gap_between 
+                        };
+
+                        if !bubbles.is_empty() {
+                            // Render from newest (bottom) to oldest (top)
+                            for b in bubbles.iter_mut().rev() {
+                                b.render_to_buffer(std::ptr::null_mut(), pet.scale);
+                                
+                                if let Some(b_pixels) = b.pixel_data() {
+                                    let bw = b.current_width as u32;
+                                    let bh = b.current_height as u32;
                                     
-                                    // Safety check: ensure pixel data size matches dimensions
+                                    // Base center coordinate for the pet
+                                    let pet_center_x = pet_off_x + cur_pw / 2.0;
+                                    let bx = (pet_center_x - (bw as f64 / 2.0)) as i32;
+                                    
+                                    
+                                    // Calculate top Y coordinate of this bubble
+                                    let mut by = stack_bottom_y as i32 - bh as i32;
+                                    
+                                    // if it's pushed off screen top, we just stop drawing or clip it
+                                    if by < 0 {
+                                        by = by.max(0);
+                                    }
+                                    
                                     let expected_len = (bw * bh * 4) as usize;
                                     if b_pixels.len() == expected_len {
                                         let b_u32 = unsafe {
-                                        std::slice::from_raw_parts(
-                                            b_pixels.as_ptr() as *const u32,
-                                            b_pixels.len() / 4,
-                                        )
-                                    };
-                                    let comp_u32 = unsafe {
-                                        std::slice::from_raw_parts_mut(
-                                            composite_data.as_mut_ptr() as *mut u32,
-                                            composite_data.len() / 4,
-                                        )
-                                    };
+                                            std::slice::from_raw_parts(
+                                                b_pixels.as_ptr() as *const u32,
+                                                b_pixels.len() / 4,
+                                            )
+                                        };
+                                        let comp_u32 = unsafe {
+                                            std::slice::from_raw_parts_mut(
+                                                composite_data.as_mut_ptr() as *mut u32,
+                                                composite_data.len() / 4,
+                                            )
+                                        };
 
-                                    ui_primitives::blit_32bit_premultiplied(
-                                        comp_u32,
-                                        win_w as u32,
-                                        win_h as u32,
-                                        b_u32,
-                                        bx,
-                                        by,
-                                        bw,
-                                        bh,
-                                    );
+                                        ui_primitives::blit_32bit_premultiplied(
+                                            comp_u32,
+                                            win_w as u32,
+                                            win_h as u32,
+                                            b_u32,
+                                            bx,
+                                            by,
+                                            bw,
+                                            bh,
+                                        );
+                                        
+                                        // Move the stack bottom up for the next older bubble
+                                        stack_bottom_y = stack_bottom_y - bh as f64 - (10.0 * pet.scale as f64);
+                                        
+                                        // Tell the bubble where it ended up for hit detection
+                                        b.update_rect(bx, by, bw, bh);
                                     }
                                 }
                             }
@@ -1425,7 +1572,7 @@ fn main() {
                                          pet.state == PetState::Clingy || 
                                          pet.state == PetState::Drag ||
                                          menu_manager.opacity > 0.0 ||
-                                         bubble_manager.is_visible() ||
+                                         !bubbles.is_empty() ||
                                          pomodoro_manager.visible;
 
                     if needs_high_freq {

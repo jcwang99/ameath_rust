@@ -31,16 +31,40 @@ use crate::ui_primitives::{get_metrics_dw_ex, get_or_create_layout_ex};
 pub const BASE_BUBBLE_WIDTH: i32 = 250;
 pub const BASE_BUBBLE_HEIGHT: i32 = 60;
 
+pub enum BubbleContent {
+    Text(String),
+    Image(String), // Path to image
+}
+
 struct BubbleRenderRequest {
-    text: String,
+    content: BubbleContent,
     scale: f32,
+}
+
+// We need to implement Clone for BubbleRenderRequest to allow skip/replace logic in the channel
+impl Clone for BubbleContent {
+    fn clone(&self) -> Self {
+        match self {
+            BubbleContent::Text(t) => BubbleContent::Text(t.clone()),
+            BubbleContent::Image(p) => BubbleContent::Image(p.clone()),
+        }
+    }
+}
+
+impl Clone for BubbleRenderRequest {
+    fn clone(&self) -> Self {
+        Self {
+            content: self.content.clone(),
+            scale: self.scale,
+        }
+    }
 }
 
 struct BubbleRenderResult {
     pixels: Box<Vec<u8>>, // Use Box to avoid clone cost when sending through channel
     width: i32,
     height: i32,
-    text_hash: u64,
+    render_hash: u64,
 }
 
 pub struct SpeechBubble {
@@ -59,6 +83,9 @@ pub struct SpeechBubble {
     current_pixels: Option<Vec<u8>>,
     current_scale: f32,
     is_working: bool,
+    pub content: BubbleContent,
+    pub rect: Option<(i32, i32, i32, i32)>, // (x, y, w, h)
+    pub is_hover_recall: bool,
 }
 
 impl SpeechBubble {
@@ -84,6 +111,9 @@ impl SpeechBubble {
             current_pixels: None,
             current_scale: 1.0,
             is_working: false,
+            content: BubbleContent::Text(String::new()),
+            rect: None,
+            is_hover_recall: false,
         }
     }
 
@@ -92,7 +122,8 @@ impl SpeechBubble {
 
         // Only update if text actually changed
         if self.text != clean_text {
-            self.text = clean_text;
+            self.text = clean_text.clone();
+            self.content = BubbleContent::Text(clean_text);
 
             // Adaptive Duration
             let chars = self.text.chars().count();
@@ -103,12 +134,33 @@ impl SpeechBubble {
         }
     }
 
+    pub fn show_image(&mut self, path: &str, scale: f32) {
+        if self.text != path {
+            self.text = path.to_string(); // store path as text identifier
+            self.content = BubbleContent::Image(path.to_string());
+
+            // Image duration fixed 4 seconds + minimum layout time
+            self.show_until = Some(Instant::now() + Duration::from_secs(4));
+
+            self.request_render(scale);
+        }
+    }
+
     fn request_render(&mut self, scale: f32) {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
         let mut hasher = DefaultHasher::new();
-        self.text.hash(&mut hasher);
+        match &self.content {
+            BubbleContent::Text(t) => {
+                hasher.write_u8(0);
+                t.hash(&mut hasher);
+            }
+            BubbleContent::Image(p) => {
+                hasher.write_u8(1);
+                p.hash(&mut hasher);
+            }
+        }
         let hash = hasher.finish();
 
         if hash == self.last_rendered_hash && (scale - self.current_scale).abs() < 0.001 {
@@ -117,7 +169,7 @@ impl SpeechBubble {
 
         // Send request to worker
         let req = BubbleRenderRequest {
-            text: self.text.clone(),
+            content: self.content.clone(),
             scale,
         };
 
@@ -177,7 +229,7 @@ impl SpeechBubble {
             self.current_pixels = Some(*res.pixels); // Unbox the Vec
             self.current_width = res.width;
             self.current_height = res.height;
-            self.last_rendered_hash = res.text_hash;
+            self.last_rendered_hash = res.render_hash;
             self.is_working = false;
         }
 
@@ -189,6 +241,13 @@ impl SpeechBubble {
                 }
             }
         }
+    }
+    pub fn get_rect(&self) -> Option<(i32, i32, i32, i32)> {
+        self.rect
+    }
+
+    pub fn update_rect(&mut self, x: i32, y: i32, w: u32, h: u32) {
+        self.rect = Some((x, y, w as i32, h as i32));
     }
 }
 
@@ -272,39 +331,104 @@ fn render_bubble_internal(
         let font_size = 18.0 * scale;
         let font_family = "Segoe UI Emoji";
 
-        // Layout Calculation
         let screen_w = GetSystemMetrics(SM_CXSCREEN);
         let padding = (24.0 * scale).ceil() as i32;
         let max_w_allowed =
             ((screen_w / 2) - padding * 2).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
 
-        let (text_w, text_h) = get_metrics_dw_ex(
-            &req.text,
-            font_size,
-            max_w_allowed as u32,
-            font_family,
-            true, // bold
-            true, // centered
-        );
-
+        let mut image_bmp_data: Option<(u32, u32, Vec<u8>)> = None;
         let tail_h = (20.0 * scale) as i32;
-        let width_buffer = (16.0 * scale).ceil() as i32;
-        let height_buffer = (32.0 * scale).ceil() as i32;
 
-        let calc_w = (text_w as i32 + padding * 2 + width_buffer)
-            .max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
-        let calc_h = text_h.ceil() as i32 + padding * 2 + tail_h + height_buffer;
+        let mut calc_w = 0;
+        let mut calc_h = 0;
 
-        // Create Layout
-        let layout = get_or_create_layout_ex(
-            &req.text,
-            font_size,
-            (calc_w - padding * 2) as u32,
-            font_family,
-            true,
-            true,
-        );
-        state.cached_layout = Some(layout);
+        match &req.content {
+            BubbleContent::Text(text) => {
+                let (text_w, text_h) = get_metrics_dw_ex(
+                    text,
+                    font_size,
+                    max_w_allowed as u32,
+                    font_family,
+                    true, // bold
+                    true, // centered
+                );
+
+                let width_buffer = (16.0 * scale).ceil() as i32;
+                let height_buffer = (32.0 * scale).ceil() as i32;
+
+                calc_w = (text_w as i32 + padding * 2 + width_buffer)
+                    .max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
+                calc_h = text_h.ceil() as i32 + padding * 2 + tail_h + height_buffer;
+
+                // Create Layout
+                let layout = get_or_create_layout_ex(
+                    text,
+                    font_size,
+                    (calc_w - padding * 2) as u32,
+                    font_family,
+                    true,
+                    true,
+                );
+                state.cached_layout = Some(layout);
+            }
+            BubbleContent::Image(path) => {
+                // Decode image
+                state.cached_layout = None;
+                match image::open(path) {
+                    Ok(img) => {
+                        let rgba = img.to_rgba8();
+                        let (img_w, img_h) = rgba.dimensions();
+
+                        let mut final_img_w = img_w as f32 * scale;
+                        let mut final_img_h = img_h as f32 * scale;
+
+                        // Scale to fit
+                        if final_img_w > max_w_allowed as f32 {
+                            let ratio = max_w_allowed as f32 / final_img_w;
+                            final_img_w = max_w_allowed as f32;
+                            final_img_h *= ratio;
+                        }
+                        // Hard cap to avoid crazy tall images taking whole screen
+                        let max_h_allowed = 400.0 * scale;
+                        if final_img_h > max_h_allowed {
+                            let ratio = max_h_allowed / final_img_h;
+                            final_img_h = max_h_allowed;
+                            final_img_w *= ratio;
+                        }
+
+                        calc_w = (final_img_w as i32 + padding * 2)
+                            .max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
+                        calc_h = final_img_h as i32 + padding * 2 + tail_h;
+
+                        image_bmp_data = Some((img_w, img_h, rgba.into_raw()));
+                    }
+                    Err(e) => {
+                        // Fallback to error text if image fails to load
+                        let fallback = format!("[Image Error: {} | {}]", path, e);
+                        let (text_w, text_h) = get_metrics_dw_ex(
+                            &fallback,
+                            font_size,
+                            max_w_allowed as u32,
+                            font_family,
+                            true,
+                            true,
+                        );
+                        calc_w = (text_w as i32 + padding * 2)
+                            .max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
+                        calc_h = text_h.ceil() as i32 + padding * 2 + tail_h;
+                        let layout = get_or_create_layout_ex(
+                            &fallback,
+                            font_size,
+                            (calc_w - padding * 2) as u32,
+                            font_family,
+                            true,
+                            true,
+                        );
+                        state.cached_layout = Some(layout);
+                    }
+                }
+            }
+        }
 
         // Resize Buffer / Bitmap if needed
         let width = calc_w;
@@ -514,17 +638,122 @@ fn render_bubble_internal(
                     rt.DrawGeometry(&path, &border_brush, 1.0, None);
                 }
 
-                // Text
-                if let Some(layout) = &state.cached_layout {
-                    rt.DrawTextLayout(
-                        D2D_POINT_2F {
-                            x: padding as f32,
-                            y: padding as f32,
-                        },
-                        layout,
-                        &text_brush,
-                        D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-                    );
+                // Text or Image Rendering
+                match &req.content {
+                    BubbleContent::Text(_) => {
+                        if let Some(layout) = &state.cached_layout {
+                            rt.DrawTextLayout(
+                                D2D_POINT_2F {
+                                    x: padding as f32,
+                                    y: padding as f32,
+                                },
+                                layout,
+                                &text_brush,
+                                D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                            );
+                        }
+                    }
+                    BubbleContent::Image(_) => {
+                        if let Some((img_w, img_h, raw_pixels)) = &image_bmp_data {
+                            // Convert standard RGBA to Premultiplied BGRA for Direct2D
+                            let mut bgra_pixels = Vec::with_capacity(raw_pixels.len());
+                            for chunk in raw_pixels.chunks_exact(4) {
+                                let r = chunk[0] as f32;
+                                let g = chunk[1] as f32;
+                                let b = chunk[2] as f32;
+                                let a = chunk[3] as f32 / 255.0;
+
+                                // Direct2D PREMULTIPLIED mode expects pre-multiplied colors
+                                bgra_pixels.push((b * a) as u8); // B
+                                bgra_pixels.push((g * a) as u8); // G
+                                bgra_pixels.push((r * a) as u8); // R
+                                bgra_pixels.push(chunk[3]); // A
+                            }
+
+                            let bmp_props = windows::Win32::Graphics::Direct2D::D2D1_BITMAP_PROPERTIES {
+                                pixelFormat: D2D1_PIXEL_FORMAT {
+                                    format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+                                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                                },
+                                dpiX: 96.0,
+                                dpiY: 96.0,
+                            };
+
+                            let hr = rt.CreateBitmap(
+                                windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U {
+                                    width: *img_w,
+                                    height: *img_h,
+                                },
+                                Some(bgra_pixels.as_ptr() as *const _),
+                                *img_w * 4,
+                                &bmp_props,
+                            );
+
+                            if let Ok(bmp) = hr {
+                                let content_w = width as f32 - (padding as f32 * 2.0);
+                                let content_h = main_h as f32 - (padding as f32 * 2.0);
+
+                                let mut final_img_w = *img_w as f32 * scale;
+                                let mut final_img_h = *img_h as f32 * scale;
+                                let max_w_allowed = BASE_BUBBLE_WIDTH as f32 * 2.0 * scale;
+                                if final_img_w > max_w_allowed {
+                                    let ratio = max_w_allowed / final_img_w;
+                                    final_img_w = max_w_allowed;
+                                    final_img_h *= ratio;
+                                }
+                                let max_h_allowed = 400.0 * scale;
+                                if final_img_h > max_h_allowed {
+                                    let ratio = max_h_allowed / final_img_h;
+                                    final_img_h = max_h_allowed;
+                                    final_img_w *= ratio;
+                                }
+
+                                let off_x = (content_w - final_img_w) / 2.0;
+                                let off_y = (content_h - final_img_h) / 2.0;
+
+                                let dest_rect = D2D_RECT_F {
+                                    left: padding as f32 + off_x,
+                                    top: padding as f32 + off_y,
+                                    right: padding as f32 + off_x + final_img_w,
+                                    bottom: padding as f32 + off_y + final_img_h,
+                                };
+
+                                rt.DrawBitmap(
+                                        &bmp,
+                                        Some(&dest_rect),
+                                        1.0,
+                                        windows::Win32::Graphics::Direct2D::D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                                        None
+                                    );
+                            } else {
+                                // Fallback if image creation fails in D2D
+                                if let Some(layout) = &state.cached_layout {
+                                    rt.DrawTextLayout(
+                                        D2D_POINT_2F {
+                                            x: padding as f32,
+                                            y: padding as f32,
+                                        },
+                                        layout,
+                                        &text_brush,
+                                        D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                                    );
+                                }
+                            }
+                        } else {
+                            // Used the fallback text
+                            if let Some(layout) = &state.cached_layout {
+                                rt.DrawTextLayout(
+                                    D2D_POINT_2F {
+                                        x: padding as f32,
+                                        y: padding as f32,
+                                    },
+                                    layout,
+                                    &text_brush,
+                                    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                                );
+                            }
+                        }
+                    }
                 }
 
                 rt.EndDraw(None, None).unwrap();
@@ -582,14 +811,23 @@ fn render_bubble_internal(
 
         // Hashing
         let mut hasher = DefaultHasher::new();
-        req.text.hash(&mut hasher);
-        let text_hash = hasher.finish();
+        match &req.content {
+            BubbleContent::Text(t) => {
+                hasher.write_u8(0);
+                t.hash(&mut hasher);
+            }
+            BubbleContent::Image(p) => {
+                hasher.write_u8(1);
+                p.hash(&mut hasher);
+            }
+        }
+        let render_hash = hasher.finish();
 
         Some(BubbleRenderResult {
             pixels: Box::new(std::mem::take(&mut state.pixel_buffer)),
             width,
             height,
-            text_hash,
+            render_hash,
         })
     }
 }
