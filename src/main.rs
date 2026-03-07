@@ -706,6 +706,7 @@ fn main() {
                                                 }
                                                 settings::SettingsAction::SetAiModel(model) => {
                                                     ai_config.active_profile_mut().model = model;
+                                                    ai_config.active_interaction_screenshots_enabled = false;
                                                     ai_config.save();
                                                     chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
                                                     sw.request_redraw();

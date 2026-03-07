@@ -921,6 +921,7 @@ impl SettingsWindow {
                         config.profiles.remove(config.active_profile_index);
                         config.active_profile_index =
                             config.active_profile_index.min(config.profiles.len() - 1);
+                        config.active_interaction_screenshots_enabled = false;
                         self.config_dirty = true;
                         self.notification =
                             Some(("Delete Success".to_string(), std::time::Instant::now()));
@@ -1127,6 +1128,7 @@ impl SettingsWindow {
                     } else if !config.profiles.is_empty() {
                         config.active_profile_index = config.profiles.len() - 1;
                     }
+                    config.active_interaction_screenshots_enabled = false;
                     self.config_dirty = true;
                     self.window.request_redraw();
                     return SettingsAction::UpdateAiConfig(config);
@@ -1141,6 +1143,7 @@ impl SettingsWindow {
                         config.active_profile_index =
                             (config.active_profile_index + 1) % config.profiles.len();
                     }
+                    config.active_interaction_screenshots_enabled = false;
                     self.config_dirty = true;
                     self.window.request_redraw();
                     return SettingsAction::UpdateAiConfig(config);
@@ -1165,6 +1168,7 @@ impl SettingsWindow {
                     new_profile.name = final_name;
                     config.profiles.push(new_profile);
                     config.active_profile_index = config.profiles.len() - 1;
+                    config.active_interaction_screenshots_enabled = false;
                     self.config_dirty = true;
                     self.notification =
                         Some(("Add Success".to_string(), std::time::Instant::now()));
@@ -1386,7 +1390,10 @@ impl SettingsWindow {
                     0 => profile.name = text,
                     2 => profile.api_key = text,
                     3 => profile.base_url = text,
-                    4 => profile.model = text,
+                    4 => {
+                        profile.model = text;
+                        ai_config.active_interaction_screenshots_enabled = false;
+                    }
                     _ => {}
                 }
             }
