@@ -57,6 +57,7 @@ pub struct ChatWindow {
     image_rx: std::sync::mpsc::Receiver<ImageAsyncMsg>,
     image_tx: std::sync::mpsc::Sender<ImageAsyncMsg>,
     proxy: winit::event_loop::EventLoopProxy<()>,
+    cursor_byte_idx: usize,
 }
 
 pub enum ChatAction {
@@ -113,6 +114,7 @@ impl ChatWindow {
             image_tx,
             image_rx,
             proxy,
+            cursor_byte_idx: 0,
         }
     }
 
@@ -140,6 +142,7 @@ impl ChatWindow {
 
         self.is_visible = true;
         self.input_text.clear();
+        self.cursor_byte_idx = 0;
         self.slots.clear();
         self.cursor_blink_start = std::time::Instant::now();
         self.request_redraw();
@@ -197,7 +200,8 @@ impl ChatWindow {
         match event {
             WindowEvent::Ime(ime) => match ime {
                 winit::event::Ime::Commit(text) => {
-                    self.input_text.push_str(text);
+                    self.input_text.insert_str(self.cursor_byte_idx, text);
+                    self.cursor_byte_idx += text.len();
                     self.cursor_blink_start = std::time::Instant::now();
                     self.request_redraw();
                 }
@@ -213,7 +217,18 @@ impl ChatWindow {
                 } else if let Some(idx) = self.get_thumbnail_at_mouse() {
                     self.remove_image(idx);
                 } else {
-                    let _ = self.window.drag_window();
+                    // Check if click is in text area
+                    let padding = 10.0;
+                    let text_y_offset = if self.slots.is_empty() { 0.0 } else { 100.0 };
+                    let (mx, my) = self.mouse_pos;
+                    let window_size = self.window.inner_size();
+                    
+                    // Button row height is 40. Text area is roughly between top+offset and bottom-40
+                    if my > padding + text_y_offset && my < (window_size.height as f64 - 40.0) {
+                        self.set_cursor_at_mouse();
+                    } else {
+                        let _ = self.window.drag_window();
+                    }
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -245,6 +260,7 @@ impl ChatWindow {
                                 images: ready_images,
                             };
                             self.input_text.clear();
+                            self.cursor_byte_idx = 0;
                             self.slots.clear();
                             self.request_redraw();
                             return ChatAction::Send(msg);
@@ -255,9 +271,44 @@ impl ChatWindow {
                         return ChatAction::Close;
                     }
                     Key::Named(NamedKey::Backspace) => {
-                        self.input_text.pop();
-                        self.cursor_blink_start = std::time::Instant::now();
-                        self.request_redraw();
+                        if self.cursor_byte_idx > 0 {
+                            // Find previous character start
+                            if let Some((idx, _)) = self.input_text[..self.cursor_byte_idx]
+                                .char_indices()
+                                .next_back()
+                            {
+                                self.input_text.remove(idx);
+                                self.cursor_byte_idx = idx;
+                                self.cursor_blink_start = std::time::Instant::now();
+                                self.request_redraw();
+                            }
+                        }
+                    }
+                    Key::Named(NamedKey::ArrowLeft) => {
+                        if self.cursor_byte_idx > 0 {
+                            if let Some((idx, _)) = self.input_text[..self.cursor_byte_idx]
+                                .char_indices()
+                                .next_back()
+                            {
+                                self.cursor_byte_idx = idx;
+                                self.cursor_blink_start = std::time::Instant::now();
+                                self.request_redraw();
+                            }
+                        }
+                    }
+                    Key::Named(NamedKey::ArrowRight) => {
+                        if self.cursor_byte_idx < self.input_text.len() {
+                            if let Some((idx, c)) = self.input_text[self.cursor_byte_idx..]
+                                .char_indices()
+                                .nth(1)
+                            {
+                                self.cursor_byte_idx += idx;
+                            } else {
+                                self.cursor_byte_idx = self.input_text.len();
+                            }
+                            self.cursor_blink_start = std::time::Instant::now();
+                            self.request_redraw();
+                        }
                     }
                     Key::Character(c) => {
                         let c_lower = c.to_lowercase();
@@ -275,13 +326,15 @@ impl ChatWindow {
 
                         // Filter control characters and Alt combinations (to prevent hotkey leakage)
                         if !c.chars().any(|ch| ch.is_control()) && !modifiers.alt_key() {
-                            self.input_text.push_str(c);
+                            self.input_text.insert_str(self.cursor_byte_idx, c);
+                            self.cursor_byte_idx += c.len();
                             self.cursor_blink_start = std::time::Instant::now();
                             self.request_redraw();
                         }
                     }
                     Key::Named(NamedKey::Space) => {
-                        self.input_text.push(' ');
+                        self.input_text.insert(self.cursor_byte_idx, ' ');
+                        self.cursor_byte_idx += 1;
                         self.cursor_blink_start = std::time::Instant::now();
                         self.request_redraw();
                     }
@@ -434,7 +487,8 @@ impl ChatWindow {
                             return;
                         }
                     }
-                    self.input_text.push_str(trimmed);
+                    self.input_text.insert_str(self.cursor_byte_idx, trimmed);
+                    self.cursor_byte_idx += trimmed.len();
                     self.request_redraw();
                 }
             }
@@ -465,6 +519,73 @@ impl ChatWindow {
             self.slots.remove(index);
             self.request_redraw();
         }
+    }
+
+    fn set_cursor_at_mouse(&mut self) {
+        let (mx, my) = self.mouse_pos;
+        let scale = Scale::uniform(24.0);
+        let padding = 10.0;
+        let v_metrics = self.font.v_metrics(scale);
+        let line_height = v_metrics.ascent - v_metrics.descent + v_metrics.line_gap;
+        let text_y_offset = if self.slots.is_empty() { 0.0 } else { 100.0 };
+        let max_width = 600.0 - (padding * 2.0);
+
+        // Relative to text area
+        let rx = mx as f32 - padding;
+        let ry = my as f32 - padding - text_y_offset;
+
+        if ry < 0.0 {
+            self.cursor_byte_idx = 0;
+            self.request_redraw();
+            return;
+        }
+
+        let mut lines = Vec::new();
+        let mut current_line_start = 0;
+        let mut current_width = 0.0f32;
+        for (i, c) in self.input_text.char_indices() {
+            let glyph = self.font.glyph(c).scaled(scale);
+            let advance = glyph.h_metrics().advance_width;
+            if current_width + advance > max_width {
+                lines.push(current_line_start..i);
+                current_line_start = i;
+                current_width = 0.0;
+            }
+            current_width += advance;
+        }
+        lines.push(current_line_start..self.input_text.len());
+
+        let line_height_f32 = line_height as f32;
+        let line_idx = (ry / line_height_f32).floor() as usize;
+        let target_line_idx = if line_idx < lines.len() {
+            line_idx
+        } else {
+            lines.len() - 1
+        };
+        let target_line_range = &lines[target_line_idx];
+
+        // Find character in line
+        let mut best_idx = target_line_range.start;
+        let mut current_x = 0.0f32;
+        let mut min_dist = rx.abs(); // Distance to start of line
+
+        for (i, c) in self.input_text[target_line_range.clone()].char_indices() {
+            let glyph = self.font.glyph(c).scaled(scale);
+            let advance = glyph.h_metrics().advance_width;
+            
+            // Current character's right edge
+            let next_x = current_x + advance;
+            let dist = (rx - next_x).abs();
+            if dist < min_dist {
+                min_dist = dist;
+                best_idx = target_line_range.start + i + c.len_utf8();
+            }
+            current_x = next_x;
+        }
+        
+        self.cursor_byte_idx = best_idx;
+        self.cursor_blink_start = std::time::Instant::now();
+        self.request_redraw();
     }
 
     fn trigger_upload(&mut self) {
@@ -574,23 +695,21 @@ impl ChatWindow {
 
         // Wrap text
         let mut lines = Vec::new();
-        let mut current_line = String::new();
-        let mut current_width = 0.0;
+        let mut current_line_start = 0;
+        let mut current_width = 0.0f32;
 
-        for c in self.input_text.chars() {
+        for (i, c) in self.input_text.char_indices() {
             let glyph = self.font.glyph(c).scaled(scale);
-            let h_metrics = glyph.h_metrics();
-            let advance = h_metrics.advance_width;
+            let advance = glyph.h_metrics().advance_width;
 
             if current_width + advance > max_width {
-                lines.push(current_line);
-                current_line = String::new();
+                lines.push(&self.input_text[current_line_start..i]);
+                current_line_start = i;
                 current_width = 0.0;
             }
-            current_line.push(c);
             current_width += advance;
         }
-        lines.push(current_line); // Push last line
+        lines.push(&self.input_text[current_line_start..]);
 
         // Dynamic height calculation
         let text_h = (lines.len() as f32 * line_height).max(line_height) as u32;
@@ -858,16 +977,29 @@ impl ChatWindow {
             }
         }
 
-        // Draw text (no horizontal offset anymore, starts at padding)
         let text_y_offset = if self.slots.is_empty() { 0.0 } else { 100.0 };
         let text_x_offset = 0.0;
+        let mut cursor_x = (padding + text_x_offset) as i32;
+        let mut cursor_y = (padding + text_y_offset) as i32;
+        let mut current_byte_offset = 0;
+
         for (i, line) in lines.iter().enumerate() {
             let y_pos = padding + v_metrics.ascent + (i as f32 * line_height) + text_y_offset;
             let offset = point(padding + text_x_offset, y_pos);
 
             let glyphs: Vec<_> = self.font.layout(line, scale, offset).collect();
-            for glyph in glyphs {
-                if let Some(bb) = glyph.pixel_bounding_box() {
+            
+            // Check if cursor is at the start of this line
+            if current_byte_offset == self.cursor_byte_idx {
+                cursor_x = padding as i32;
+                cursor_y = (padding + (i as f32 * line_height) + text_y_offset) as i32;
+            }
+
+            let mut line_x_accum = padding;
+            let mut glyph_idx = 0;
+            for (char_idx, c) in line.char_indices() {
+                 let glyph = &glyphs[glyph_idx];
+                 if let Some(bb) = glyph.pixel_bounding_box() {
                     glyph.draw(|x, y, v| {
                         let px = x as i32 + bb.min.x;
                         let py = y as i32 + bb.min.y;
@@ -876,23 +1008,19 @@ impl ChatWindow {
                         }
                     });
                 }
+                
+                line_x_accum += self.font.glyph(c).scaled(scale).h_metrics().advance_width;
+                if current_byte_offset + char_idx + c.len_utf8() == self.cursor_byte_idx {
+                    cursor_x = line_x_accum as i32;
+                    cursor_y = (padding + (i as f32 * line_height) + text_y_offset) as i32;
+                }
+                glyph_idx += 1;
             }
+            current_byte_offset += line.len();
         }
-
-        // Draw blinking cursor at end of last line
-        let last_line_idx = lines.len() - 1;
-        let last_line = &lines[last_line_idx];
-
-        // Calculate cursor_x correctly even for spaces
-        let mut cursor_x_accum = padding + text_x_offset;
-        for c in last_line.chars() {
-            let glyph = self.font.glyph(c).scaled(scale);
-            cursor_x_accum += glyph.h_metrics().advance_width;
-        }
-        let cursor_x = cursor_x_accum as i32 + 2;
 
         let cursor_h = 24; // approx line height
-        let cursor_y = (padding + (last_line_idx as f32 * line_height) + text_y_offset) as i32;
+        let cursor_x = cursor_x + 2;
 
         // Use winit's IME positioning
         self.window.set_ime_cursor_area(
