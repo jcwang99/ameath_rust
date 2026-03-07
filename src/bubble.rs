@@ -85,6 +85,7 @@ pub struct SpeechBubble {
     pub is_working: bool,
     pub content: BubbleContent,
     pub rect: Option<(i32, i32, i32, i32)>, 
+    pub is_ai_response: bool,
     pub is_hover_recall: bool,
 
     // Animation state
@@ -116,6 +117,7 @@ impl SpeechBubble {
             is_working: false,
             content: BubbleContent::Text(String::new()),
             rect: None,
+            is_ai_response: false,
             is_hover_recall: false,
             frames: Vec::new(),
             current_frame_idx: 0,

@@ -285,6 +285,8 @@ fn main() {
 
     let mut bubbles: Vec<bubble::SpeechBubble> = Vec::new();
     let mut last_response_segments: Vec<bubble::BubbleContent> = Vec::new();
+    let mut last_pure_text_response: String = String::new();
+    let mut hover_leave_time: Option<Instant> = None;
     let mut pomodoro_manager = pomodoro::Pomodoro::new();
     let mut menu_manager = menu::QuickMenu::new();
     let mut music_player = music_player::MusicPlayer::new();
@@ -365,8 +367,6 @@ fn main() {
     let mut settings_win: Option<SettingsWindow> = None;
     let mut menu_visible_timer: Option<Instant> = None;
     let mut current_layer = types::WindowLayer::Top;
-    let bubble_rect: Option<(i32, i32, i32, i32)>;
-    bubble_rect = None;
     let mut last_bubble_click_time: Option<Instant> = None;
 
     let mut composite_data: Vec<u8> = Vec::new();
@@ -556,26 +556,20 @@ fn main() {
                                                             let monitor_my = win_pos.y as f64 + pos.y - monitor_offset.1 as f64;
                                                             
                                                             let mut bubble_hit = false;
-                                                            if let Some((bx, by, bw, bh)) = bubble_rect {
-                                                                let target_x = pet.position.0 - pet_off_x;
-                                                                let target_y = pet.position.1 - pet_off_y;
-                                                                let b_screen_x = target_x + bx as f64;
-                                                                let b_screen_y = target_y + by as f64;
-                                                                if monitor_mx >= b_screen_x && monitor_mx <= b_screen_x + bw as f64 &&
-                                                                   monitor_my >= b_screen_y && monitor_my <= b_screen_y + bh as f64 {
-                                                                    // Check if any bubble contains the point
-                                                                    let x = monitor_mx;
-                                                                    let y = monitor_my;
-                                                                    for b in &bubbles {
-                                                                        if let Some(rect) = b.get_rect() {
-                                                                            if pet.hit_test_bubble(x, y, rect) {
-                                                                                bubble_hit = true;
-                                                                                break;
-                                                                            }
-                                                                        }
+                                                            let target_x = pet.position.0 - pet_off_x;
+                                                            let target_y = pet.position.1 - pet_off_y;
+
+                                                            for b in &bubbles {
+                                                                if let Some((bx, by, bw, bh)) = b.get_rect() {
+                                                                    let b_screen_x = target_x + bx as f64;
+                                                                    let b_screen_y = target_y + by as f64;
+                                                                    if monitor_mx >= b_screen_x && monitor_mx <= b_screen_x + bw as f64 &&
+                                                                       monitor_my >= b_screen_y && monitor_my <= b_screen_y + bh as f64 {
+                                                                        bubble_hit = true;
+                                                                        break;
                                                                     }
                                                                 }
-                                                            } // Closing if let Some((bx, by, bw, bh)) = bubble_rect {
+                                                            }
 
                                                             if bubble_hit {
                                                                 let now = Instant::now();
@@ -584,14 +578,21 @@ fn main() {
                                                                         // Double click detected on any bubble
                                                                         let mut copied_text = String::new();
                                                                         for b in &bubbles {
-                                                                            if let Some(rect) = b.get_rect() {
-                                                                                if pet.hit_test_bubble(monitor_mx, monitor_my, rect) {
-                                                                                    match &b.content {
-                                                                                        bubble::BubbleContent::Text(t) => {
-                                                                                            copied_text = t.clone();
-                                                                                        }
-                                                                                        bubble::BubbleContent::Image(p) => {
-                                                                                            copied_text = p.clone();
+                                                                            if let Some((bx, by, bw, bh)) = b.get_rect() {
+                                                                                let b_screen_x = target_x + bx as f64;
+                                                                                let b_screen_y = target_y + by as f64;
+                                                                                if monitor_mx >= b_screen_x && monitor_mx <= b_screen_x + bw as f64 &&
+                                                                                   monitor_my >= b_screen_y && monitor_my <= b_screen_y + bh as f64 {
+                                                                                    if b.is_ai_response && !last_pure_text_response.is_empty() {
+                                                                                        copied_text = last_pure_text_response.clone();
+                                                                                    } else {
+                                                                                        match &b.content {
+                                                                                            bubble::BubbleContent::Text(t) => {
+                                                                                                copied_text = t.clone();
+                                                                                            }
+                                                                                            bubble::BubbleContent::Image(p) => {
+                                                                                                copied_text = p.clone();
+                                                                                            }
                                                                                         }
                                                                                     }
                                                                                     break;
@@ -931,13 +932,17 @@ fn main() {
                                 // Instead of a single manager, we parse the response string and generate multiple bubbles.
                                 // Format example: "Hello! [IMG]assets/emojis/smile.png This is fun!"
                                 let mut segments = Vec::new();
+                                let mut pure_text_accum = String::new();
                                 let mut remaining = response.as_str();
                                 
                                 while let Some(idx) = remaining.find("[IMG]") {
                                     if idx > 0 {
                                         let text_part = &remaining[..idx];
                                         if !text_part.trim().is_empty() {
-                                            segments.push(bubble::BubbleContent::Text(text_part.trim().to_string()));
+                                            let text = text_part.trim().to_string();
+                                            pure_text_accum.push_str(&text);
+                                            pure_text_accum.push(' ');
+                                            segments.push(bubble::BubbleContent::Text(text));
                                         }
                                     }
                                     
@@ -955,22 +960,19 @@ fn main() {
                                 }
 
                                 if !remaining.trim().is_empty() {
-                                    segments.push(bubble::BubbleContent::Text(remaining.trim().to_string()));
+                                    let text = remaining.trim().to_string();
+                                    pure_text_accum.push_str(&text);
+                                    segments.push(bubble::BubbleContent::Text(text));
                                 }
                                 
                                 last_response_segments = segments.clone();
+                                last_pure_text_response = pure_text_accum.trim().to_string();
                                 
                                 // Actually handle TTs & display queue
                                 if let Some(tts) = &tts_controller {
                                     if ai_config.tts_enabled {
-                                        // We just TTS the pure text
-                                        let pure_text: String = segments.iter().filter_map(|s| match s {
-                                            bubble::BubbleContent::Text(t) => Some(t.clone() + " "),
-                                            _ => None
-                                        }).collect();
-                                        
-                                        if !pure_text.trim().is_empty() {
-                                            tts.speak(pure_text, &ai_config);
+                                        if !last_pure_text_response.is_empty() {
+                                            tts.speak(last_pure_text_response.clone(), &ai_config);
                                         }
                                     }
                                 }
@@ -979,6 +981,7 @@ fn main() {
                                 let mut cumulative_duration = Duration::from_secs(0);
                                 for seg in segments {
                                     let mut new_bubble = bubble::SpeechBubble::new();
+                                    new_bubble.is_ai_response = true;
                                     match seg {
                                         bubble::BubbleContent::Text(t) => {
                                             new_bubble.show(&t, Duration::from_secs(6), pet.scale);
@@ -1112,6 +1115,7 @@ fn main() {
                             for seg in &last_response_segments {
                                 let mut new_bubble = bubble::SpeechBubble::new();
                                 new_bubble.is_hover_recall = true;
+                                new_bubble.is_ai_response = true;
                                 match seg {
                                     bubble::BubbleContent::Text(t) => {
                                         new_bubble.show(t, Duration::from_secs(6), pet.scale);
@@ -1136,9 +1140,18 @@ fn main() {
                         for b in bubbles.iter_mut() {
                             b.keep_alive();
                         }
+                        hover_leave_time = None;
                     } else {
-                        // Immediately drop any hover-recalled bubbles once the mouse leaves
-                        bubbles.retain(|b| !b.is_hover_recall);
+                        // Dismiss delay for hover-recalled bubbles (2 seconds)
+                        if hover_leave_time.is_none() {
+                            hover_leave_time = Some(Instant::now());
+                        }
+                        
+                        if let Some(leave_t) = hover_leave_time {
+                            if leave_t.elapsed() > Duration::from_secs(2) {
+                                bubbles.retain(|b| !b.is_hover_recall);
+                            }
+                        }
                     }
                     bubbles.retain(|b| b.is_visible());
 
