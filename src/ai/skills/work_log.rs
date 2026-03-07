@@ -138,8 +138,8 @@ impl Skill for WorkLogSkill {
                 };
                 
                 // Get recent history from memory as "system activity"
-                // Recent 20 items should provide enough context for "what I did"
-                let history = self.memory.get_recent_history(20).map_err(|e| e.to_string())?;
+                // Recent 50 items should provide enough context for "what I did"
+                let history = self.memory.get_recent_history(50).map_err(|e| e.to_string())?;
                 let system_activity = history.iter()
                     .map(|(role, content)| format!("[{}] {}", role, content))
                     .collect::<Vec<_>>()
