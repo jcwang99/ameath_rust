@@ -14,6 +14,7 @@ mod pomodoro;
 mod render;
 mod screen_capture;
 mod settings;
+mod stickers;
 mod theme;
 mod tts;
 mod types;
@@ -161,6 +162,46 @@ fn main() {
     pet.state = PetState::Move;
 
     let mut ai_config = types::AiConfig::load();
+    // Ensure sticker info is present in the system prompt for older configs
+    if !ai_config.system_prompt.contains("assets/stickers/") {
+        tracing::info!("Appending exhaustive sticker guide to system prompt...");
+        let sticker_guide = r#"
+
+### 动态表情包/贴纸使用指南 (Stickers Usage)
+你必须**仅且只能**使用以下指定的动态表情包。严禁幻想或猜测不存在的文件名。
+**格式**：`[IMG]assets/stickers/文件名.gif`
+
+**【唯一合法可用清单】（必须精准匹配文件名）**：
+- `OK.gif` (表示同意/没问题)
+- `不OK.gif` (表示否定/拒绝)
+- `写笔记.gif` (表示正在学习/记录)
+- `加班.gif` (表示辛苦/在忙)
+- `发呆.gif` (表示无语/放空)
+- `吃瓜.gif` (表示看戏/吃惊)
+- `喵喵.gif` (表示可爱/猫猫模仿)
+- `嘲笑.gif` (表示调侃/坏笑)
+- `打你.gif` (表示娇嗔的惩罚)
+- `扯脸.gif` (表示亲昵的互动)
+- `探头.gif` (表示好奇/观察/路过)
+- `星星眼.gif` (表示崇拜/期待/闪闪发光)
+- `比心.gif` (表示爱意/感谢)
+- `生气.gif` (表示愤怒/嘟嘴)
+- `睡觉.gif` (表示困了/晚安/休息)
+- `给玫瑰.gif` (表示浪漫/诚意/绅士)
+- `脸红.gif` (表示害羞/不好意思)
+- `被摸头.gif` (表示乖巧/享受)
+- `贴贴.gif` (表示亲近/想抱抱)
+- `饿饿.gif` (表示想吃东西)
+
+**使用准则**：
+- **精准性**：标签必须严格遵循 `[IMG]assets/stickers/文件名.gif`，包括后缀。
+- **适度性**：不要刷屏，每段话建议只使用 1 个表情包，最多不超过 2 个，如果回复内容不适用则不使用。
+- **融合性**：表情包应作为情感的注脚，前后需配有符合语境的文字。
+- **严禁**：严禁发送清单之外的任何图片路径。
+"#;
+        ai_config.system_prompt.push_str(sticker_guide);
+        ai_config.save();
+    }
     let mut window_config = types::WindowConfig::load(); // Load window config
     pet.scale = window_config.scale;
 
@@ -575,14 +616,18 @@ fn main() {
                                                                 } else {
                                                                     last_bubble_click_time = Some(now);
                                                                 }
-                                                            } else if pet.check_hit(monitor_mx, monitor_my) {
+                                                                    } else if pet.check_hit(monitor_mx, monitor_my) {
                                                                 let idx = std::time::SystemTime::now()
                                                                     .duration_since(std::time::UNIX_EPOCH)
                                                                     .unwrap_or_default()
                                                                     .as_millis() as usize % quotes.len();
+                                                                let quote = quotes[idx];
                                                                 let mut b = bubble::SpeechBubble::new();
-                                                                b.show(quotes[idx], Duration::from_secs(4), pet.scale);
+                                                                b.show(quote, Duration::from_secs(4), pet.scale);
                                                                 bubbles.push(b);
+
+                                                                // Sync with hover recall
+                                                                last_response_segments = vec![bubble::BubbleContent::Text(quote.to_string())];
                                                             }
                                                         }
                                                     }
@@ -1185,7 +1230,7 @@ fn main() {
                                      else { pet_off_y - gap_between - current_pomodoro_h_f };
 
                     let loading_x_f = pet_off_x + cur_pw/2.0 - loading_w_f / 2.0;
-                    let bx_f = pet_off_x + b_left;
+                    let _bx_f = pet_off_x + b_left;
                     let px_f = pet_off_x + p_left;
                     let menu_x_f = pet_off_x + cur_pw + gap_between;
                     let menu_y_f = pet_off_y;
@@ -1278,8 +1323,11 @@ fn main() {
                     } else { 0 };
                     let loading_frame_changed = is_thinking && loading_frame_idx != last_loading_frame_idx;
 
+                    let now = Instant::now();
+                    let any_bubble_animating = bubbles.iter().any(|b| now >= b.next_frame_at());
+
                     if needs_pet_redraw || pet_frame_changed || layout_changed || loading_frame_changed || 
-                       Instant::now() >= pet.next_frame_at() {
+                       any_bubble_animating || now >= pet.next_frame_at() {
                         needs_pet_redraw = true;
                     }
 
@@ -1564,6 +1612,9 @@ fn main() {
                     
                     if pet.state != PetState::Drag {
                         next_deadline = next_deadline.min(pet.next_frame_at());
+                    }
+                    for b in &bubbles {
+                        next_deadline = next_deadline.min(b.next_frame_at());
                     }
                     if is_thinking {
                         next_deadline = next_deadline.min(now + Duration::from_millis(100));

@@ -13,7 +13,7 @@ use windows::Win32::Graphics::Direct2D::Common::{
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::{
     ID2D1DCRenderTarget, ID2D1DeviceContext, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-    D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_ROUNDED_RECT,
+    D2D1_RENDER_TARGET_PROPERTIES, D2D1_ROUNDED_RECT,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::DirectWrite::IDWriteTextLayout;
@@ -27,6 +27,8 @@ use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN};
 
 use crate::render::get_d2d_factory;
 use crate::ui_primitives::{get_metrics_dw_ex, get_or_create_layout_ex};
+use image::codecs::gif::GifDecoder;
+use image::AnimationDecoder;
 
 pub const BASE_BUBBLE_WIDTH: i32 = 250;
 pub const BASE_BUBBLE_HEIGHT: i32 = 60;
@@ -41,7 +43,6 @@ struct BubbleRenderRequest {
     scale: f32,
 }
 
-// We need to implement Clone for BubbleRenderRequest to allow skip/replace logic in the channel
 impl Clone for BubbleContent {
     fn clone(&self) -> Self {
         match self {
@@ -61,7 +62,7 @@ impl Clone for BubbleRenderRequest {
 }
 
 struct BubbleRenderResult {
-    pixels: Box<Vec<u8>>, // Use Box to avoid clone cost when sending through channel
+    frames: Vec<(Box<Vec<u8>>, Duration)>, 
     width: i32,
     height: i32,
     render_hash: u64,
@@ -80,12 +81,16 @@ pub struct SpeechBubble {
 
     // Display State
     last_rendered_hash: u64,
-    current_pixels: Option<Vec<u8>>,
-    current_scale: f32,
-    is_working: bool,
+    pub current_scale: f32,
+    pub is_working: bool,
     pub content: BubbleContent,
-    pub rect: Option<(i32, i32, i32, i32)>, // (x, y, w, h)
+    pub rect: Option<(i32, i32, i32, i32)>, 
     pub is_hover_recall: bool,
+
+    // Animation state
+    pub frames: Vec<(Vec<u8>, Duration)>,
+    pub current_frame_idx: usize,
+    pub last_frame_time: Instant,
 }
 
 impl SpeechBubble {
@@ -94,7 +99,6 @@ impl SpeechBubble {
         let (tx_worker, rx) = channel::<BubbleRenderResult>();
         let (tx_recycle, rx_recycle) = channel::<Vec<u8>>();
 
-        // Spawn independent worker thread
         thread::spawn(move || {
             worker_loop(rx_worker, tx_worker, rx_recycle);
         });
@@ -108,40 +112,34 @@ impl SpeechBubble {
             rx,
             tx_recycle,
             last_rendered_hash: 0,
-            current_pixels: None,
             current_scale: 1.0,
             is_working: false,
             content: BubbleContent::Text(String::new()),
             rect: None,
             is_hover_recall: false,
+            frames: Vec::new(),
+            current_frame_idx: 0,
+            last_frame_time: Instant::now(),
         }
     }
 
     pub fn show(&mut self, text: &str, _duration: Duration, scale: f32) {
         let clean_text = Self::clean_markdown(text);
-
-        // Only update if text actually changed
         if self.text != clean_text {
             self.text = clean_text.clone();
             self.content = BubbleContent::Text(clean_text);
-
-            // Adaptive Duration
             let chars = self.text.chars().count();
             let dyn_duration = Duration::from_secs(2) + Duration::from_millis((chars * 100) as u64);
             self.show_until = Some(Instant::now() + dyn_duration);
-
             self.request_render(scale);
         }
     }
 
     pub fn show_image(&mut self, path: &str, scale: f32) {
         if self.text != path {
-            self.text = path.to_string(); // store path as text identifier
+            self.text = path.to_string(); 
             self.content = BubbleContent::Image(path.to_string());
-
-            // Image duration fixed 4 seconds + minimum layout time
             self.show_until = Some(Instant::now() + Duration::from_secs(4));
-
             self.request_render(scale);
         }
     }
@@ -152,14 +150,8 @@ impl SpeechBubble {
 
         let mut hasher = DefaultHasher::new();
         match &self.content {
-            BubbleContent::Text(t) => {
-                hasher.write_u8(0);
-                t.hash(&mut hasher);
-            }
-            BubbleContent::Image(p) => {
-                hasher.write_u8(1);
-                p.hash(&mut hasher);
-            }
+            BubbleContent::Text(t) => { hasher.write_u8(0); t.hash(&mut hasher); }
+            BubbleContent::Image(p) => { hasher.write_u8(1); p.hash(&mut hasher); }
         }
         let hash = hasher.finish();
 
@@ -167,7 +159,6 @@ impl SpeechBubble {
             return;
         }
 
-        // Send request to worker
         let req = BubbleRenderRequest {
             content: self.content.clone(),
             scale,
@@ -194,9 +185,7 @@ impl SpeechBubble {
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 empty_count += 1;
-                if empty_count == 1 {
-                    result.push("");
-                }
+                if empty_count == 1 { result.push(""); }
             } else {
                 empty_count = 0;
                 result.push(trimmed);
@@ -213,41 +202,61 @@ impl SpeechBubble {
         }
     }
 
-    pub fn pixel_data(&self) -> Option<&[u8]> {
-        self.current_pixels.as_deref()
-    }
-
-    // Main thread just copies the latest valid buffer
     pub fn render_to_buffer(&mut self, buffer_ptr: *mut u8, _scale: f32) {
-        // 1. Check for new results from worker (zero-copy: just move the Box)
         while let Ok(res) = self.rx.try_recv() {
-            // Recycle the OLD buffer if we have one
-            if let Some(old_pixels) = self.current_pixels.take() {
-                let _ = self.tx_recycle.send(old_pixels);
-            }
-
-            self.current_pixels = Some(*res.pixels); // Unbox the Vec
+            self.frames = res.frames.into_iter().map(|(b, d)| (*b, d)).collect();
             self.current_width = res.width;
             self.current_height = res.height;
             self.last_rendered_hash = res.render_hash;
             self.is_working = false;
+            self.current_frame_idx = 0;
+            self.last_frame_time = Instant::now();
         }
 
-        // 2. Blit current valid frame
-        if let Some(pixels) = &self.current_pixels {
-            if !buffer_ptr.is_null() && pixels.len() > 0 {
+        if self.frames.len() > 1 {
+            let now = Instant::now();
+            let mut elapsed = now.duration_since(self.last_frame_time);
+            
+            while elapsed >= self.frames[self.current_frame_idx % self.frames.len()].1.max(Duration::from_millis(10)) {
+                let current_delay = self.frames[self.current_frame_idx % self.frames.len()].1.max(Duration::from_millis(10));
+                elapsed -= current_delay;
+                self.current_frame_idx = (self.current_frame_idx + 1) % self.frames.len();
+                self.last_frame_time = now - elapsed; // Step the time forward by the delay
+            }
+        }
+
+        if !self.frames.is_empty() {
+            let pixels = &self.frames[self.current_frame_idx % self.frames.len()].0;
+            if !buffer_ptr.is_null() && !pixels.is_empty() {
                 unsafe {
                     std::ptr::copy_nonoverlapping(pixels.as_ptr(), buffer_ptr, pixels.len());
                 }
             }
         }
     }
+    
     pub fn get_rect(&self) -> Option<(i32, i32, i32, i32)> {
         self.rect
     }
 
     pub fn update_rect(&mut self, x: i32, y: i32, w: u32, h: u32) {
         self.rect = Some((x, y, w as i32, h as i32));
+    }
+
+    pub fn pixel_data(&self) -> Option<&Vec<u8>> {
+        if self.frames.is_empty() {
+            None
+        } else {
+            Some(&self.frames[self.current_frame_idx % self.frames.len()].0)
+        }
+    }
+
+    pub fn next_frame_at(&self) -> Instant {
+        if self.frames.len() <= 1 {
+            return Instant::now() + Duration::from_secs(3600);
+        }
+        let current_delay = self.frames[self.current_frame_idx % self.frames.len()].1;
+        self.last_frame_time + current_delay.max(Duration::from_millis(10))
     }
 }
 
@@ -265,10 +274,7 @@ struct WorkerState {
     #[cfg(target_os = "windows")]
     h_bitmap: windows::Win32::Graphics::Gdi::HBITMAP,
     #[cfg(target_os = "windows")]
-    bitmap_capacity: (i32, i32), // Width, Height
-
-    // Recycling
-    pixel_buffer: Vec<u8>,
+    bitmap_capacity: (i32, i32), 
     rx_recycle: Receiver<Vec<u8>>,
 }
 
@@ -288,14 +294,11 @@ fn worker_loop(
             hdc_screen,
             h_bitmap: windows::Win32::Graphics::Gdi::HBITMAP(0),
             bitmap_capacity: (0, 0),
-            pixel_buffer: Vec::new(),
             rx_recycle,
         }
     };
 
     while let Ok(req) = rx.recv() {
-        let _start = Instant::now();
-        // Skip stale requests if channel is backed up
         let mut final_req = req;
         while let Ok(next_req) = rx.try_recv() {
             final_req = next_req;
@@ -307,12 +310,9 @@ fn worker_loop(
         }
     }
 
-    // Cleanup
     #[cfg(target_os = "windows")]
     unsafe {
-        if state.h_bitmap.0 != 0 {
-            let _ = DeleteObject(state.h_bitmap);
-        }
+        if state.h_bitmap.0 != 0 { let _ = DeleteObject(state.h_bitmap); }
         let _ = DeleteDC(state.hdc_mem);
         ReleaseDC(HWND(0), state.hdc_screen);
     }
@@ -336,498 +336,215 @@ fn render_bubble_internal(
         let max_w_allowed =
             ((screen_w / 2) - padding * 2).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
 
-        let mut image_bmp_data: Option<(u32, u32, Vec<u8>)> = None;
         let tail_h = (20.0 * scale) as i32;
-
         let mut calc_w = 0;
         let mut calc_h = 0;
 
+        let mut frames_data: Vec<(u32, u32, Vec<u8>, Duration)> = Vec::new();
+
         match &req.content {
             BubbleContent::Text(text) => {
-                let (text_w, text_h) = get_metrics_dw_ex(
-                    text,
-                    font_size,
-                    max_w_allowed as u32,
-                    font_family,
-                    true, // bold
-                    true, // centered
-                );
-
+                let (text_w, text_h) = get_metrics_dw_ex(text, font_size, max_w_allowed as u32, font_family, true, true);
                 let width_buffer = (16.0 * scale).ceil() as i32;
                 let height_buffer = (32.0 * scale).ceil() as i32;
-
-                calc_w = (text_w as i32 + padding * 2 + width_buffer)
-                    .max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
+                calc_w = (text_w as i32 + padding * 2 + width_buffer).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
                 calc_h = text_h.ceil() as i32 + padding * 2 + tail_h + height_buffer;
-
-                // Create Layout
-                let layout = get_or_create_layout_ex(
-                    text,
-                    font_size,
-                    (calc_w - padding * 2) as u32,
-                    font_family,
-                    true,
-                    true,
-                );
+                let layout = get_or_create_layout_ex(text, font_size, (calc_w - padding * 2) as u32, font_family, true, true);
                 state.cached_layout = Some(layout);
             }
             BubbleContent::Image(path) => {
-                // Decode image
                 state.cached_layout = None;
-                match image::open(path) {
-                    Ok(img) => {
-                        let rgba = img.to_rgba8();
-                        let (img_w, img_h) = rgba.dimensions();
-
-                        let mut final_img_w = img_w as f32 * scale;
-                        let mut final_img_h = img_h as f32 * scale;
-
-                        // Scale to fit
-                        if final_img_w > max_w_allowed as f32 {
-                            let ratio = max_w_allowed as f32 / final_img_w;
-                            final_img_w = max_w_allowed as f32;
-                            final_img_h *= ratio;
+                
+                // 优先从嵌入资源加载
+                let embedded_bytes = crate::stickers::get_sticker_bytes(&path);
+                
+                if path.to_lowercase().ends_with(".gif") {
+                    if let Some(bytes) = embedded_bytes {
+                        if let Ok(decoder) = GifDecoder::new(std::io::Cursor::new(bytes)) {
+                            if let Ok(frames) = decoder.into_frames().collect_frames() {
+                                for f in frames {
+                                    let delay_ms = f.delay().numer_denom_ms().0;
+                                    let delay = Duration::from_millis(delay_ms as u64);
+                                    let (fw, fh) = (f.buffer().width(), f.buffer().height());
+                                    frames_data.push((fw, fh, f.into_buffer().into_raw(), delay));
+                                }
+                            }
                         }
-                        // Hard cap to avoid crazy tall images taking whole screen
+                    } else if let Ok(file) = std::fs::File::open(&path) {
+                        if let Ok(decoder) = GifDecoder::new(file) {
+                            if let Ok(frames) = decoder.into_frames().collect_frames() {
+                                for f in frames {
+                                    let delay_ms = f.delay().numer_denom_ms().0;
+                                    let delay = Duration::from_millis(delay_ms as u64);
+                                    let (fw, fh) = (f.buffer().width(), f.buffer().height());
+                                    frames_data.push((fw, fh, f.into_buffer().into_raw(), delay));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if frames_data.is_empty() {
+                    let img_result = if let Some(bytes) = embedded_bytes {
+                        image::load_from_memory(bytes)
+                    } else {
+                        image::open(&path)
+                    };
+
+                    match img_result {
+                        Ok(img) => {
+                            let rgba = img.to_rgba8();
+                            let (iw, ih) = rgba.dimensions();
+                            frames_data.push((iw, ih, rgba.into_raw(), Duration::from_secs(1)));
+                        }
+                        Err(e) => {
+                            let fallback = format!("[Image Error: {} | {}]", path, e);
+                            let (tw, th) = get_metrics_dw_ex(&fallback, font_size, max_w_allowed as u32, font_family, true, true);
+                            calc_w = (tw as i32 + padding * 2).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
+                            calc_h = th.ceil() as i32 + padding * 2 + tail_h;
+                            let layout = get_or_create_layout_ex(&fallback, font_size, (calc_w - padding * 2) as u32, font_family, true, true);
+                            state.cached_layout = Some(layout);
+                        }
+                    }
+                }
+
+                if !frames_data.is_empty() {
+                    let mut max_img_w = 0.0f32;
+                    let mut max_img_h = 0.0f32;
+                    for (iw, ih, _, _) in &frames_data {
+                        let mut fw = *iw as f32 * scale;
+                        let mut fh = *ih as f32 * scale;
+                        if fw > max_w_allowed as f32 { let r = max_w_allowed as f32 / fw; fw = max_w_allowed as f32; fh *= r; }
                         let max_h_allowed = 400.0 * scale;
-                        if final_img_h > max_h_allowed {
-                            let ratio = max_h_allowed / final_img_h;
-                            final_img_h = max_h_allowed;
-                            final_img_w *= ratio;
-                        }
-
-                        calc_w = (final_img_w as i32 + padding * 2)
-                            .max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
-                        calc_h = final_img_h as i32 + padding * 2 + tail_h;
-
-                        image_bmp_data = Some((img_w, img_h, rgba.into_raw()));
+                        if fh > max_h_allowed { let r = max_h_allowed / fh; fh = max_h_allowed; fw *= r; }
+                        max_img_w = max_img_w.max(fw);
+                        max_img_h = max_img_h.max(fh);
                     }
-                    Err(e) => {
-                        // Fallback to error text if image fails to load
-                        let fallback = format!("[Image Error: {} | {}]", path, e);
-                        let (text_w, text_h) = get_metrics_dw_ex(
-                            &fallback,
-                            font_size,
-                            max_w_allowed as u32,
-                            font_family,
-                            true,
-                            true,
-                        );
-                        calc_w = (text_w as i32 + padding * 2)
-                            .max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
-                        calc_h = text_h.ceil() as i32 + padding * 2 + tail_h;
-                        let layout = get_or_create_layout_ex(
-                            &fallback,
-                            font_size,
-                            (calc_w - padding * 2) as u32,
-                            font_family,
-                            true,
-                            true,
-                        );
-                        state.cached_layout = Some(layout);
-                    }
+                    calc_w = (max_img_w as i32 + padding * 2).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
+                    calc_h = max_img_h as i32 + padding * 2 + tail_h;
                 }
             }
         }
 
-        // Resize Buffer / Bitmap if needed
         let width = calc_w;
         let height = calc_h;
 
-        // GDI Bitmap Recycling
-        // Only recreate if current bitmap is too small or doesn't exist
-        if state.h_bitmap.0 == 0
-            || width > state.bitmap_capacity.0
-            || height > state.bitmap_capacity.1
-        {
-            if state.h_bitmap.0 != 0 {
-                let _ = DeleteObject(state.h_bitmap);
-            }
-
-            // Grow capacity with some buffer (e.g., align to 256px or just use current)
-            // Using exact size for now, but trailing growth is better.
-            // Let's alloc exactly what's needed to start, optimization step 2 could be exponential growth.
-            let new_cap_w = width;
-            let new_cap_h = height;
-
+        if state.h_bitmap.0 == 0 || width > state.bitmap_capacity.0 || height > state.bitmap_capacity.1 {
+            if state.h_bitmap.0 != 0 { let _ = DeleteObject(state.h_bitmap); }
             let bmi = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: new_cap_w,
-                    biHeight: 0 - new_cap_h,
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: BI_RGB.0,
-                    ..Default::default()
-                },
-                ..Default::default()
+                    biWidth: width, biHeight: -height, biPlanes: 1, biBitCount: 32, biCompression: BI_RGB.0, ..Default::default()
+                }, ..Default::default()
             };
-
             let mut bits = std::ptr::null_mut();
-            let h_bitmap =
-                CreateDIBSection(state.hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, HANDLE(0), 0)
-                    .unwrap();
-
-            state.h_bitmap = h_bitmap;
-            state.bitmap_capacity = (new_cap_w, new_cap_h);
-
-            // Re-bind to DC
-            SelectObject(state.hdc_mem, h_bitmap);
+            state.h_bitmap = CreateDIBSection(state.hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, HANDLE(0), 0).unwrap();
+            state.bitmap_capacity = (width, height);
+            SelectObject(state.hdc_mem, state.h_bitmap);
         }
 
-        // We can't easily get the raw pointer again without keeping it,
-        // but SelectObject + GetDIBits or just knowing it's bound to hdc_mem is enough for D2D?
-        // Actually D2D BindDC writes to the DC's selected bitmap.
-        // But we need to Read from it later.
-        // CreateDIBSection gave us `bits`.
-        // To access `bits` again without storing it, we can use GetObject but storing is better.
-        // For now, let's just re-lock or rely on GDI GetDIBits?
-        // Wait, the original code used `bits` directly.
-        // If we reuse the bitmap, we need that pointer.
-        // `SelectObject` returns the old object.
-        // Issue: `CreateDIBSection` returns the pointer in `bits`. If we reuse `h_bitmap`, we lose `bits` unless we stored it.
-        // However, `BITMAP` struct from `GetObject` contains `bmBits`.
+        let mut render_frames = Vec::new();
+        let frame_count = if frames_data.is_empty() { 1 } else { frames_data.len() };
 
-        let mut bitmap_info: windows::Win32::Graphics::Gdi::BITMAP = std::mem::zeroed();
-        windows::Win32::Graphics::Gdi::GetObjectW(
-            state.h_bitmap,
-            std::mem::size_of::<windows::Win32::Graphics::Gdi::BITMAP>() as i32,
-            Some(&mut bitmap_info as *mut _ as *mut std::ffi::c_void),
-        );
-        let pixel_ptr = bitmap_info.bmBits as *mut u8;
-
-        let w_usize = width as usize;
-        let h_usize = height as usize;
-        // Stride usually aligned to 4 bytes, but with 32bpp (4 bytes) it is usually width * 4.
-        // Let's use bmWidthBytes if available, otherwise assume packed.
-
-        // Clear used area
-        // Note: We only need to clear the area we will convert to our buffer.
-        // Since we copy row-by-row or whole block, clearing the whole capacity might be slow.
-        // But we are only drawing `width` * `height`.
-        // D2D Clear(0) applies to the render target.
-
-        // D2D Rendering
-        let d2d_factory = get_d2d_factory();
-        let dc_rt = if let Some(ref rt) = state.cached_rt {
-            rt.clone()
-        } else {
-            let props = D2D1_RENDER_TARGET_PROPERTIES {
-                r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
-                pixelFormat: D2D1_PIXEL_FORMAT {
-                    format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
-                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-                },
-                ..Default::default()
+        for i in 0..frame_count {
+            let d2d_factory = get_d2d_factory();
+            let dc_rt = if let Some(ref rt) = state.cached_rt { rt.clone() } else {
+                let props = D2D1_RENDER_TARGET_PROPERTIES {
+                    pixelFormat: D2D1_PIXEL_FORMAT { format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                    ..Default::default()
+                };
+                let rt = d2d_factory.CreateDCRenderTarget(&props).unwrap();
+                state.cached_rt = Some(rt.clone());
+                rt
             };
-            let rt = d2d_factory.CreateDCRenderTarget(&props).unwrap();
-            state.cached_rt = Some(rt.clone());
-            rt
-        };
 
-        let rect_gdi = RECT {
-            left: 0,
-            top: 0,
-            right: width,
-            bottom: height,
-        };
+            let rect_gdi = RECT { left: 0, top: 0, right: width, bottom: height };
+            if dc_rt.BindDC(state.hdc_mem, &rect_gdi).is_ok() {
+                if let Ok(rt) = dc_rt.cast::<ID2D1DeviceContext>() {
+                    rt.BeginDraw();
+                    rt.Clear(None);
 
-        // Must BindDC every time because we might have drawn elsewhere or size changed?
-        // BindDC documentation says it binds the RT to the DC. The DC has the Bitmap selected.
-        if dc_rt.BindDC(state.hdc_mem, &rect_gdi).is_ok() {
-            if let Ok(rt) = dc_rt.cast::<ID2D1DeviceContext>() {
-                rt.BeginDraw();
-                rt.Clear(None); // Clear the bound area to transparent
+                    let bg_color = D2D1_COLOR_F { r: 1.0, g: 235.0/255.0, b: 240.0/255.0, a: 1.0 };
+                    let border_color = D2D1_COLOR_F { r: 1.0, g: 180.0/255.0, b: 190.0/255.0, a: 1.0 };
+                    let white_color = D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+                    let text_color = D2D1_COLOR_F { r: 100.0/255.0, g: 60.0/255.0, b: 70.0/255.0, a: 1.0 };
 
-                let bg_color = D2D1_COLOR_F {
-                    r: 1.0,
-                    g: 235.0 / 255.0,
-                    b: 240.0 / 255.0,
-                    a: 1.0,
-                };
-                let border_color = D2D1_COLOR_F {
-                    r: 1.0,
-                    g: 180.0 / 255.0,
-                    b: 190.0 / 255.0,
-                    a: 1.0,
-                };
-                let white_color = D2D1_COLOR_F {
-                    r: 1.0,
-                    g: 1.0,
-                    b: 1.0,
-                    a: 1.0,
-                };
-                let text_color = D2D1_COLOR_F {
-                    r: 100.0 / 255.0,
-                    g: 60.0 / 255.0,
-                    b: 70.0 / 255.0,
-                    a: 1.0,
-                };
+                    let bg_brush = rt.CreateSolidColorBrush(&bg_color, None).unwrap();
+                    let border_brush = rt.CreateSolidColorBrush(&border_color, None).unwrap();
+                    let white_brush = rt.CreateSolidColorBrush(&white_color, None).unwrap();
+                    let text_brush = rt.CreateSolidColorBrush(&text_color, None).unwrap();
 
-                let bg_brush = rt.CreateSolidColorBrush(&bg_color, None).unwrap();
-                let border_brush = rt.CreateSolidColorBrush(&border_color, None).unwrap();
-                let white_brush = rt.CreateSolidColorBrush(&white_color, None).unwrap();
-                let text_brush = rt.CreateSolidColorBrush(&text_color, None).unwrap();
+                    let radius = 12.0 * scale;
+                    let main_h = height - tail_h;
 
-                let padding = (24.0 * scale).ceil() as i32;
-                let radius = 12.0 * scale;
-                let main_h = height - tail_h;
+                    let outer = D2D1_ROUNDED_RECT { rect: D2D_RECT_F { left: 0.0, top: 0.0, right: width as f32, bottom: main_h as f32 }, radiusX: radius, radiusY: radius };
+                    rt.FillRoundedRectangle(&outer, &border_brush);
+                    let white_rect = D2D1_ROUNDED_RECT { rect: D2D_RECT_F { left: 1.0, top: 1.0, right: (width-1) as f32, bottom: (main_h-1) as f32 }, radiusX: radius-1.0, radiusY: radius-1.0 };
+                    rt.FillRoundedRectangle(&white_rect, &white_brush);
+                    let inner = D2D1_ROUNDED_RECT { rect: D2D_RECT_F { left: 2.0, top: 2.0, right: (width-2) as f32, bottom: (main_h-2) as f32 }, radiusX: radius-2.0, radiusY: radius-2.0 };
+                    rt.FillRoundedRectangle(&inner, &bg_brush);
 
-                let outer = D2D1_ROUNDED_RECT {
-                    rect: D2D_RECT_F {
-                        left: 0.0,
-                        top: 0.0,
-                        right: width as f32,
-                        bottom: main_h as f32,
-                    },
-                    radiusX: radius,
-                    radiusY: radius,
-                };
-                let white_rect = D2D1_ROUNDED_RECT {
-                    rect: D2D_RECT_F {
-                        left: 1.0,
-                        top: 1.0,
-                        right: (width - 1) as f32,
-                        bottom: (main_h - 1) as f32,
-                    },
-                    radiusX: radius - 1.0,
-                    radiusY: radius - 1.0,
-                };
-                let inner = D2D1_ROUNDED_RECT {
-                    rect: D2D_RECT_F {
-                        left: 2.0,
-                        top: 2.0,
-                        right: (width - 2) as f32,
-                        bottom: (main_h - 2) as f32,
-                    },
-                    radiusX: radius - 2.0,
-                    radiusY: radius - 2.0,
-                };
+                    let tail_w = (20.0 * scale) as f32;
+                    let tail_x = (width as f32 - tail_w) / 2.0;
+                    let geometry = d2d_factory.CreatePathGeometry().unwrap();
+                    let sink = geometry.Open().unwrap();
+                    sink.BeginFigure(D2D_POINT_2F { x: tail_x, y: main_h as f32 - 2.0 }, windows::Win32::Graphics::Direct2D::Common::D2D1_FIGURE_BEGIN_FILLED);
+                    sink.AddLine(D2D_POINT_2F { x: tail_x + tail_w, y: main_h as f32 - 2.0 });
+                    sink.AddLine(D2D_POINT_2F { x: width as f32 / 2.0, y: height as f32 });
+                    sink.EndFigure(windows::Win32::Graphics::Direct2D::Common::D2D1_FIGURE_END_CLOSED);
+                    sink.Close().unwrap();
+                    rt.FillGeometry(&geometry, &bg_brush, None);
+                    rt.DrawGeometry(&geometry, &border_brush, 2.0 * scale, None);
 
-                rt.FillRoundedRectangle(&outer, &border_brush);
-                rt.FillRoundedRectangle(&white_rect, &white_brush);
-                rt.FillRoundedRectangle(&inner, &bg_brush);
-
-                // Tail
-                let center_x = width as f32 / 2.0;
-                let hw = 8.0 * scale;
-                let ty = 15.0 * scale;
-                if let Ok(path) = d2d_factory.CreatePathGeometry() {
-                    if let Ok(sink) = path.Open() {
-                        sink.BeginFigure(
-                            D2D_POINT_2F {
-                                x: center_x - hw,
-                                y: main_h as f32 - 1.0,
-                            },
-                            windows::Win32::Graphics::Direct2D::Common::D2D1_FIGURE_BEGIN_FILLED,
-                        );
-                        sink.AddLine(D2D_POINT_2F {
-                            x: center_x + hw,
-                            y: main_h as f32 - 1.0,
-                        });
-                        sink.AddLine(D2D_POINT_2F {
-                            x: center_x,
-                            y: (main_h as f32 + ty),
-                        });
-                        sink.EndFigure(
-                            windows::Win32::Graphics::Direct2D::Common::D2D1_FIGURE_END_CLOSED,
-                        );
-                        sink.Close().unwrap();
-                    }
-                    rt.FillGeometry(&path, &bg_brush, None);
-                    rt.DrawGeometry(&path, &border_brush, 1.0, None);
-                }
-
-                // Text or Image Rendering
-                match &req.content {
-                    BubbleContent::Text(_) => {
-                        if let Some(layout) = &state.cached_layout {
-                            rt.DrawTextLayout(
-                                D2D_POINT_2F {
-                                    x: padding as f32,
-                                    y: padding as f32,
-                                },
-                                layout,
-                                &text_brush,
-                                D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-                            );
+                    if !frames_data.is_empty() {
+                        let (fw, fh, raw_pixels, _) = &frames_data[i];
+                        let mut bgra = Vec::with_capacity(raw_pixels.len());
+                        for chunk in raw_pixels.chunks_exact(4) {
+                            let r = chunk[0] as f32; let g = chunk[1] as f32; let b = chunk[2] as f32; let a = chunk[3] as f32 / 255.0;
+                            bgra.push((b * a) as u8); bgra.push((g * a) as u8); bgra.push((r * a) as u8); bgra.push(chunk[3]);
                         }
-                    }
-                    BubbleContent::Image(_) => {
-                        if let Some((img_w, img_h, raw_pixels)) = &image_bmp_data {
-                            // Convert standard RGBA to Premultiplied BGRA for Direct2D
-                            let mut bgra_pixels = Vec::with_capacity(raw_pixels.len());
-                            for chunk in raw_pixels.chunks_exact(4) {
-                                let r = chunk[0] as f32;
-                                let g = chunk[1] as f32;
-                                let b = chunk[2] as f32;
-                                let a = chunk[3] as f32 / 255.0;
-
-                                // Direct2D PREMULTIPLIED mode expects pre-multiplied colors
-                                bgra_pixels.push((b * a) as u8); // B
-                                bgra_pixels.push((g * a) as u8); // G
-                                bgra_pixels.push((r * a) as u8); // R
-                                bgra_pixels.push(chunk[3]); // A
-                            }
-
-                            let bmp_props = windows::Win32::Graphics::Direct2D::D2D1_BITMAP_PROPERTIES {
-                                pixelFormat: D2D1_PIXEL_FORMAT {
-                                    format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
-                                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-                                },
-                                dpiX: 96.0,
-                                dpiY: 96.0,
-                            };
-
-                            let hr = rt.CreateBitmap(
-                                windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U {
-                                    width: *img_w,
-                                    height: *img_h,
-                                },
-                                Some(bgra_pixels.as_ptr() as *const _),
-                                *img_w * 4,
-                                &bmp_props,
-                            );
-
-                            if let Ok(bmp) = hr {
-                                let content_w = width as f32 - (padding as f32 * 2.0);
-                                let content_h = main_h as f32 - (padding as f32 * 2.0);
-
-                                let mut final_img_w = *img_w as f32 * scale;
-                                let mut final_img_h = *img_h as f32 * scale;
-                                let max_w_allowed = BASE_BUBBLE_WIDTH as f32 * 2.0 * scale;
-                                if final_img_w > max_w_allowed {
-                                    let ratio = max_w_allowed / final_img_w;
-                                    final_img_w = max_w_allowed;
-                                    final_img_h *= ratio;
-                                }
-                                let max_h_allowed = 400.0 * scale;
-                                if final_img_h > max_h_allowed {
-                                    let ratio = max_h_allowed / final_img_h;
-                                    final_img_h = max_h_allowed;
-                                    final_img_w *= ratio;
-                                }
-
-                                let off_x = (content_w - final_img_w) / 2.0;
-                                let off_y = (content_h - final_img_h) / 2.0;
-
-                                let dest_rect = D2D_RECT_F {
-                                    left: padding as f32 + off_x,
-                                    top: padding as f32 + off_y,
-                                    right: padding as f32 + off_x + final_img_w,
-                                    bottom: padding as f32 + off_y + final_img_h,
-                                };
-
-                                rt.DrawBitmap(
-                                        &bmp,
-                                        Some(&dest_rect),
-                                        1.0,
-                                        windows::Win32::Graphics::Direct2D::D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-                                        None
-                                    );
-                            } else {
-                                // Fallback if image creation fails in D2D
-                                if let Some(layout) = &state.cached_layout {
-                                    rt.DrawTextLayout(
-                                        D2D_POINT_2F {
-                                            x: padding as f32,
-                                            y: padding as f32,
-                                        },
-                                        layout,
-                                        &text_brush,
-                                        D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-                                    );
-                                }
-                            }
-                        } else {
-                            // Used the fallback text
-                            if let Some(layout) = &state.cached_layout {
-                                rt.DrawTextLayout(
-                                    D2D_POINT_2F {
-                                        x: padding as f32,
-                                        y: padding as f32,
-                                    },
-                                    layout,
-                                    &text_brush,
-                                    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-                                );
-                            }
+                        let bmp_props = windows::Win32::Graphics::Direct2D::D2D1_BITMAP_PROPERTIES {
+                            pixelFormat: D2D1_PIXEL_FORMAT { format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                            dpiX: 96.0, dpiY: 96.0
+                        };
+                        if let Ok(bmp) = rt.CreateBitmap(windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U { width: *fw, height: *fh }, Some(bgra.as_ptr() as *const _), *fw * 4, &bmp_props) {
+                            let mut dw = *fw as f32 * scale;
+                            let mut dh = *fh as f32 * scale;
+                            if dw > (width - padding*2) as f32 { let r = (width-padding*2) as f32 / dw; dw = (width-padding*2) as f32; dh *= r; }
+                            if dh > (main_h - padding*2) as f32 { let r = (main_h-padding*2) as f32 / dh; dh = (main_h-padding*2) as f32; dw *= r; }
+                            let ox = (width as f32 - padding as f32 * 2.0 - dw) / 2.0;
+                            let oy = (main_h as f32 - padding as f32 * 2.0 - dh) / 2.0;
+                            let dest = D2D_RECT_F { left: padding as f32 + ox, top: padding as f32 + oy, right: padding as f32 + ox + dw, bottom: padding as f32 + oy + dh };
+                            rt.DrawBitmap(&bmp, Some(&dest), 1.0, windows::Win32::Graphics::Direct2D::D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None);
                         }
+                    } else if let Some(layout) = &state.cached_layout {
+                        rt.DrawTextLayout(D2D_POINT_2F { x: padding as f32, y: padding as f32 }, layout, &text_brush, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
                     }
-                }
 
-                rt.EndDraw(None, None).unwrap();
-            }
-        }
-
-        GdiFlush();
-
-        // 3. Buffer Recycling
-        // Try to get a recycled buffer
-        if let Ok(old_buf) = state.rx_recycle.try_recv() {
-            state.pixel_buffer = old_buf;
-        }
-
-        // Ensure buffer usage size
-        let total_bytes = w_usize * h_usize * 4;
-        if state.pixel_buffer.len() != total_bytes {
-            state.pixel_buffer.resize(total_bytes, 0);
-        }
-
-        // Copy from GDI Bitmap to Vec<u8>
-        // CRITICAL FIX: The GDI bitmap has a stride based on its CAPACITY, not the current render width.
-        // We must copy row-by-row if the width differs, or if using a sub-region.
-        if !pixel_ptr.is_null() {
-            let cap_w = if state.bitmap_capacity.0 > 0 {
-                state.bitmap_capacity.0 as usize
-            } else {
-                w_usize
-            };
-            let stride = cap_w * 4; // 32bpp = 4 bytes per pixel. GDI stride is always aligned to 4 bytes.
-            let row_bytes = w_usize * 4;
-
-            if stride == row_bytes {
-                // Determine if we can just copy linearly
-                // This happens if current width == capacity width
-                std::ptr::copy_nonoverlapping(
-                    pixel_ptr,
-                    state.pixel_buffer.as_mut_ptr(),
-                    total_bytes,
-                );
-            } else {
-                // Must copy row by row
-                let dest_ptr = state.pixel_buffer.as_mut_ptr();
-                for y in 0..h_usize {
-                    let src_offset = y * stride;
-                    let dest_offset = y * row_bytes;
-                    std::ptr::copy_nonoverlapping(
-                        pixel_ptr.add(src_offset),
-                        dest_ptr.add(dest_offset),
-                        row_bytes,
-                    );
+                    rt.EndDraw(None, None).unwrap();
                 }
             }
+
+            GdiFlush();
+            let mut bitmap_info: windows::Win32::Graphics::Gdi::BITMAP = std::mem::zeroed();
+            windows::Win32::Graphics::Gdi::GetObjectW(state.h_bitmap, std::mem::size_of::<windows::Win32::Graphics::Gdi::BITMAP>() as i32, Some(&mut bitmap_info as *mut _ as *mut std::ffi::c_void));
+            let pixel_ptr = bitmap_info.bmBits as *mut u8;
+            let total_bytes = width as usize * height as usize * 4;
+            let mut frame_buffer = vec![0u8; total_bytes];
+            if !pixel_ptr.is_null() {
+                std::ptr::copy_nonoverlapping(pixel_ptr, frame_buffer.as_mut_ptr(), total_bytes);
+            }
+            let delay = if frames_data.is_empty() { Duration::from_secs(1) } else { frames_data[i].3 };
+            render_frames.push((Box::new(frame_buffer), delay));
         }
 
-        // Hashing
         let mut hasher = DefaultHasher::new();
         match &req.content {
-            BubbleContent::Text(t) => {
-                hasher.write_u8(0);
-                t.hash(&mut hasher);
-            }
-            BubbleContent::Image(p) => {
-                hasher.write_u8(1);
-                p.hash(&mut hasher);
-            }
+            BubbleContent::Text(t) => { hasher.write_u8(0); t.hash(&mut hasher); }
+            BubbleContent::Image(p) => { hasher.write_u8(1); p.hash(&mut hasher); }
         }
         let render_hash = hasher.finish();
 
-        Some(BubbleRenderResult {
-            pixels: Box::new(std::mem::take(&mut state.pixel_buffer)),
-            width,
-            height,
-            render_hash,
-        })
+        Some(BubbleRenderResult { frames: render_frames, width, height, render_hash })
     }
 }

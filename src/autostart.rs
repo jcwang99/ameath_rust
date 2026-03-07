@@ -3,7 +3,7 @@ use windows::core::{w, PCWSTR};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegGetValueW, RegSetValueExW, HKEY,
-    HKEY_CURRENT_USER, KEY_ALL_ACCESS, KEY_READ, REG_SZ, REG_VALUE_TYPE, RRF_RT_REG_SZ,
+    HKEY_CURRENT_USER, KEY_ALL_ACCESS, REG_SZ, REG_VALUE_TYPE, RRF_RT_REG_SZ,
 };
 
 #[cfg(target_os = "windows")]

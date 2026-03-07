@@ -54,6 +54,30 @@ impl ChatKernel {
             }
         };
 
+        // --- #log FAST-TRACK ---
+        if input.trim_start().starts_with("#log ") {
+            let log_content = input.trim_start()["#log ".len()..].trim();
+            if !log_content.is_empty() {
+                match crate::ai::skills::work_log::WorkLogSkill::record_log_local(log_content) {
+                    Ok(_) => {
+                        let confirmation = "好哒，已经帮你记在小本本上啦~ [IMG]assets/stickers/写笔记.gif";
+                        
+                        // Persistent persistence for the command and response
+                        self.memory.add_conversation_item("user", &input, 1).ok();
+                        self.memory.add_conversation_item("assistant", confirmation, 1).ok();
+                        
+                        let _ = tx.send(AiResponseEvent::Response(confirmation.to_string()));
+                        return;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AiResponseEvent::Response(format!("日志记录失败: {}", e)));
+                        return;
+                    }
+                }
+            }
+        }
+        // -----------------------
+
         // 1. Initial User Message
         // Clear volatile tool traces from previous sessions/requests
         self.memory.clear_traces().ok();

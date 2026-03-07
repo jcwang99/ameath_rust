@@ -7,6 +7,7 @@ pub mod browser;
 pub mod memory_skill;
 pub mod reminder_skill;
 pub mod system;
+pub mod work_log;
 
 #[async_trait]
 pub trait Skill: Send + Sync {
@@ -44,10 +45,11 @@ impl SkillManager {
             config.firecrawl_url.clone(),
             config.firecrawl_api_key.clone(),
         )));
-        manager.register(Arc::new(memory_skill::MemorySkill::new(memory)));
+        manager.register(Arc::new(memory_skill::MemorySkill::new(memory.clone())));
         manager.register(Arc::new(reminder_skill::ScheduleReminderSkill::new(
             scheduler,
         )));
+        manager.register(Arc::new(work_log::WorkLogSkill::new(memory)));
 
         manager
     }
