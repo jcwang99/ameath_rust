@@ -355,31 +355,40 @@ fn render_bubble_internal(
             BubbleContent::Image(path) => {
                 state.cached_layout = None;
                 
-                // 优先从嵌入资源加载
-                let embedded_bytes = crate::stickers::get_sticker_bytes(&path);
+                let trimmed_path = path.trim();
+                let lower_path = trimmed_path.to_lowercase();
                 
-                if path.to_lowercase().ends_with(".gif") {
-                    if let Some(bytes) = embedded_bytes {
+                // 优先从嵌入资源加载
+                let embedded_bytes = crate::stickers::get_sticker_bytes(trimmed_path);
+                
+                // 只要是嵌入资源（目前全是 GIF）或者路径以 .gif 结尾，就尝试动画解码
+                let should_try_gif = embedded_bytes.is_some() || lower_path.ends_with(".gif");
+
+                if should_try_gif {
+                    let decoded = if let Some(bytes) = embedded_bytes {
+                        // 内存读取
                         if let Ok(decoder) = GifDecoder::new(std::io::Cursor::new(bytes)) {
-                            if let Ok(frames) = decoder.into_frames().collect_frames() {
-                                for f in frames {
-                                    let delay_ms = f.delay().numer_denom_ms().0;
-                                    let delay = Duration::from_millis(delay_ms as u64);
-                                    let (fw, fh) = (f.buffer().width(), f.buffer().height());
-                                    frames_data.push((fw, fh, f.into_buffer().into_raw(), delay));
-                                }
-                            }
+                            decoder.into_frames().collect_frames().ok()
+                        } else {
+                            None
                         }
-                    } else if let Ok(file) = std::fs::File::open(&path) {
+                    } else if let Ok(file) = std::fs::File::open(trimmed_path) {
+                        // 文件读取
                         if let Ok(decoder) = GifDecoder::new(file) {
-                            if let Ok(frames) = decoder.into_frames().collect_frames() {
-                                for f in frames {
-                                    let delay_ms = f.delay().numer_denom_ms().0;
-                                    let delay = Duration::from_millis(delay_ms as u64);
-                                    let (fw, fh) = (f.buffer().width(), f.buffer().height());
-                                    frames_data.push((fw, fh, f.into_buffer().into_raw(), delay));
-                                }
-                            }
+                            decoder.into_frames().collect_frames().ok()
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    if let Some(frames) = decoded {
+                        for f in frames {
+                            let delay_ms = f.delay().numer_denom_ms().0;
+                            let delay = Duration::from_millis(delay_ms as u64);
+                            let (fw, fh) = (f.buffer().width(), f.buffer().height());
+                            frames_data.push((fw, fh, f.into_buffer().into_raw(), delay));
                         }
                     }
                 }
