@@ -10,6 +10,7 @@
 
 *   **“你在这里吗？真好。”**
 
+
 ---
 
 ## ✨ 核心机能 (Core Features)
@@ -104,7 +105,9 @@ cargo run --release
         *   [Bilibili 原项目参考](https://www.bilibili.com/video/BV12rcMznEcG/)
     *   **《鸣潮》 (Kuro Games)**: 感谢创造了爱弥斯这个令人难忘的角色。
 
-*   **技术支持**:
+*   **技术与工具支持**:
+    *   **Gemini (AI)**: 本项目真正的“幕后功臣”，为 Rust 初学者提供了保姆级的代码实现与架构指导。
+    *   **表情包素材**: 感谢大佬分享的超可爱像素表情包 ([Bilibili BV1pBADzgE14](https://www.bilibili.com/video/BV1pBADzgE14/))。
     *   `winit`, `softbuffer`, `rodio`, `tray-icon`, `reqwest` 等开源社区的贡献。
 
 ---
