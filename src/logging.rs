@@ -20,23 +20,18 @@ pub fn init_logging() {
         let _ = std::fs::create_dir_all(log_dir);
     }
 
-    // Cleanup old logs (keep last 7 days)
-    cleanup_old_logs(log_dir, 7);
-
     // 1. File appender: daily rotation
     let file_appender = RollingFileAppender::new(Rotation::DAILY, log_dir, "ameath.log");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
     // Leak the guard so it stays alive for the duration of the program
-    // In a GUI app, we usually don't have a clean "exit" but if we do,
-    // we might want a global guard.
     Box::leak(Box::new(_guard));
 
     // 2. Formatters
     let file_layer = fmt::layer()
         .with_timer(LocalTimer)
         .with_writer(non_blocking)
-        .with_ansi(false) // Disable ANSI colors in file
+        .with_ansi(false)
         .with_target(true)
         .with_thread_ids(true);
 
@@ -52,7 +47,11 @@ pub fn init_logging() {
         .with(file_layer)
         .init();
 
-    // 4. Setup Panic Hook to ensure panics are stored in log files
+    // 4. Cleanup old logs (keep last 7 days)
+    // Now called AFTER init() so we can see cleanup logs in the file
+    cleanup_old_logs(log_dir, 7);
+
+    // 5. Setup Panic Hook to ensure panics are stored in log files
     std::panic::set_hook(Box::new(|panic_info| {
         let msg = match panic_info.payload().downcast_ref::<&'static str>() {
             Some(s) => *s,
@@ -78,17 +77,50 @@ pub fn init_logging() {
 }
 
 fn cleanup_old_logs(dir: &str, keep_days: i64) {
-    let now = chrono::Local::now();
+    let now = chrono::Local::now().date_naive();
+    tracing::info!(
+        "Checking for logs older than {} days in directory: {}",
+        keep_days,
+        dir
+    );
+
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
-            if let Ok(metadata) = entry.metadata() {
-                if let Ok(modified) = metadata.modified() {
-                    let modified: chrono::DateTime<chrono::Local> = modified.into();
-                    if now.signed_duration_since(modified).num_days() > keep_days {
-                        let _ = std::fs::remove_file(entry.path());
+            let path = entry.path();
+            if path.is_dir() {
+                continue;
+            }
+
+            let file_name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(name) => name,
+                None => continue,
+            };
+
+            // Expected format: ameath.log.YYYY-MM-DD
+            // We split by '.' and try to parse the last part
+            let parts: Vec<&str> = file_name.split('.').collect();
+            if parts.len() < 3 {
+                continue;
+            }
+
+            let date_str = parts[parts.len() - 1];
+            if let Ok(log_date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+                let days_old = (now - log_date).num_days();
+
+                if days_old >= keep_days {
+                    tracing::info!(
+                        "Deleting old log file: {:?} (Log date: {}, {} days old)",
+                        file_name,
+                        log_date,
+                        days_old
+                    );
+                    if let Err(e) = std::fs::remove_file(&path) {
+                        tracing::error!("Failed to delete old log file {:?}: {}", file_name, e);
                     }
                 }
             }
         }
+    } else {
+        tracing::error!("Failed to read log directory: {}", dir);
     }
 }
