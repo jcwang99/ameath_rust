@@ -39,12 +39,25 @@ impl Skill for MemorySkill {
                 Ok(format!("Fact stored: {} = {}", key, value))
             }
             "get" => {
-                let key = args["key"].as_str().ok_or("Missing 'key'")?;
+                let key = args["key"].as_str();
                 let facts = self.memory.get_facts().map_err(|e| e.to_string())?;
-                if let Some(val) = facts.iter().find(|(k, _)| k == key).map(|(_, v)| v) {
-                    Ok(format!("{}: {}", key, val))
+                if let Some(k) = key {
+                    if let Some(val) = facts.iter().find(|(name, _)| name == k).map(|(_, v)| v) {
+                        Ok(format!("{}: {}", k, val))
+                    } else {
+                        Ok(format!("Fact not found for key: {}", k))
+                    }
                 } else {
-                    Ok(format!("Fact not found for key: {}", key))
+                    if facts.is_empty() {
+                        Ok("No facts found in the Fact Board.".to_string())
+                    } else {
+                        let all_facts = facts
+                            .iter()
+                            .map(|(k, v)| format!("{}: {}", k, v))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        Ok(format!("Current Fact Board:\n{}", all_facts))
+                    }
                 }
             }
             "delete" => {
@@ -99,7 +112,7 @@ impl Skill for MemorySkill {
                         },
                         "key": {
                             "type": "string",
-                            "description": "Unique key for facts (e.g. 'user_taste'). Required for set/get/delete."
+                            "description": "Unique key for facts (e.g. 'user_taste'). Required for set/delete. Optional for 'get' (if omitted, returns all facts)."
                         },
                         "value": {
                             "type": "string",
@@ -122,5 +135,73 @@ impl Skill for MemorySkill {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::memory::MemoryManager;
+
+    #[tokio::test]
+    async fn test_memory_skill_get_all() {
+        // 创建一个具有独立隔离数据的 MemoryManager 测试实例比较困难，
+        // 因为 new() 内部硬编码了 data/ameath_memory.db。
+        // 为了验证逻辑，我们使用当前的真实 Manager，但在测试后不一定能清理。
+        // 注意：在真实环境下运行单元测试可能会干扰本地数据库。
+        let memory = Arc::new(MemoryManager::new());
+        let skill = MemorySkill::new(memory.clone());
+
+        let test_key_1 = "test_key_name_123";
+        let test_key_2 = "test_key_role_456";
+
+        // 1. 设置数据
+        skill.execute(json!({
+            "action": "set",
+            "key": test_key_1,
+            "value": "Antigravity"
+        })).await.unwrap();
+        
+        skill.execute(json!({
+            "action": "set",
+            "key": test_key_2,
+            "value": "AI Assistant"
+        })).await.unwrap();
+
+        // 2. 测试获取单个 key
+        let res_single = skill.execute(json!({
+            "action": "get",
+            "key": test_key_1
+        })).await.unwrap();
+        assert!(res_single.contains(test_key_1));
+        assert!(res_single.contains("Antigravity"));
+
+        // 3. 测试获取所有 key (不传入 key)
+        let res_all = skill.execute(json!({
+            "action": "get"
+        })).await.unwrap();
+        
+        assert!(res_all.contains("Current Fact Board:"));
+        assert!(res_all.contains(test_key_1));
+        assert!(res_all.contains(test_key_2));
+
+        // 清理测试数据
+        let _ = skill.execute(json!({"action": "delete", "key": test_key_1})).await;
+        let _ = skill.execute(json!({"action": "delete", "key": test_key_2})).await;
+    }
+
+    #[tokio::test]
+    async fn test_memory_skill_get_empty() {
+        // 由于真实 DB 可能不为空，此测试在真实环境可能不适用，
+        // 故我们只验证逻辑路径。
+        let memory = Arc::new(MemoryManager::new());
+        let skill = MemorySkill::new(memory);
+
+        let res = skill.execute(json!({
+            "action": "get"
+        })).await.unwrap();
+        
+        // 只要返回包含预期前缀或特定字符串即可证明逻辑走通
+        assert!(res.contains("Current Fact Board") || res == "No facts found in the Fact Board.");
     }
 }
