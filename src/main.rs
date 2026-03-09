@@ -645,30 +645,55 @@ fn main() {
                             WindowEvent::CursorMoved { position, .. } => {
                                 last_cursor_pos = Some(position);
                                 if let Ok(win_pos) = window.outer_position() {
+                                    // Global coordinates (absolute screen)
                                     let global_x = win_pos.x as f64 + position.x - pet_off_x;
                                     let global_y = win_pos.y as f64 + position.y - pet_off_y;
+                                    
+                                    // Monitor-local coordinates
                                     let local_x = global_x - monitor_offset.0 as f64;
                                     let local_y = global_y - monitor_offset.1 as f64;
 
                                     if pet.state == PetState::Drag {
-                                        pet.update_drag((global_x, global_y));
+                                        pet.update_drag((local_x, local_y));
                                     } else if pet.state == PetState::Clingy {
                                         pet.follow_mouse((local_x, local_y));
                                     } else if let Some(start_pos) = click_start_pos {
                                         let dx = global_x - start_pos.0;
                                         let dy = global_y - start_pos.1;
                                         if (dx * dx + dy * dy).sqrt() > 5.0 {
-                                            pet.start_drag(start_pos);
-                                            pet.update_drag((global_x, global_y));
+                                            // Convert start_pos (global) to local for pet state
+                                            let local_start = (start_pos.0 - monitor_offset.0 as f64, start_pos.1 - monitor_offset.1 as f64);
+                                            pet.start_drag(local_start);
+                                            pet.update_drag((local_x, local_y));
                                         }
                                     }
                                 }
                             }
-                            WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                            WindowEvent::Moved(pos) => {
+                                // Dynamic monitor re-basing
+                                if let Some(monitor) = window.current_monitor() {
+                                    let m_pos = monitor.position();
+                                    let m_size = monitor.size();
+                                    let new_offset = (m_pos.x, m_pos.y);
+                                    
+                                    if new_offset != monitor_offset {
+                                        let old_offset = monitor_offset;
+                                        monitor_offset = new_offset;
+                                        pet.screen_size = (m_size.width as f64, m_size.height as f64);
+                                        
+                                        // Re-base pet position to the new monitor so it doesn't "jump" or get clamped incorrectly
+                                        pet.position.0 += (old_offset.0 - new_offset.0) as f64;
+                                        pet.position.1 += (old_offset.1 - new_offset.1) as f64;
+                                        
+                                        tracing::info!("Monitor changed during move. New offset: {:?}, Re-based pet pos: {:?}", monitor_offset, pet.position);
+                                    }
+                                }
+                            }
+                            WindowEvent::ScaleFactorChanged { .. } => {
                                 if let Some(monitor) = window.current_monitor() {
                                     if let Some(refresh) = monitor.refresh_rate_millihertz() {
                                         target_frame_duration = Duration::from_nanos(1_000_000_000_000 / refresh as u64);
-                                        println!("Monitor changed, new refresh rate: {} Hz", refresh as f32 / 1000.0);
+                                        println!("Scale/Monitor changed, new refresh rate: {} Hz", refresh as f32 / 1000.0);
                                     }
                                 }
                             }
@@ -1089,7 +1114,11 @@ fn main() {
                         use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
                         let mut pt = POINT::default();
                         if GetCursorPos(&mut pt).is_ok() {
-                            current_mouse = (pt.x as f64, pt.y as f64);
+                            // Convert absolute screen coordinates to monitor-local
+                            current_mouse = (
+                                pt.x as f64 - monitor_offset.0 as f64,
+                                pt.y as f64 - monitor_offset.1 as f64,
+                            );
                         }
                     }
 
@@ -1265,13 +1294,16 @@ fn main() {
                     // 5. UPDATE CACHED RECTS & HIT DETECTION
                     let mouse_x = current_mouse.0;
                     let mouse_y = current_mouse.1;
+                    
+                    // current_mouse is already monitor-local per step 1
                     let over_pet = pet.check_hit(mouse_x, mouse_y);
                     let mut over_menu = false;
                     if menu_manager.visible || menu_manager.opacity > 0.0 {
-                        let m_screen_x = target_x as f64 + menu_x_f;
-                        let m_screen_y = target_y as f64 + menu_y_f;
-                        if mouse_x >= m_screen_x && mouse_x <= m_screen_x + menu_w_f &&
-                           mouse_y >= m_screen_y && mouse_y <= m_screen_y + menu_h_f_val {
+                        // menu_x_f/y_f are already in logical, pet-relative coordinates
+                        let m_local_x = pet.position.0 - pet_off_x + menu_x_f;
+                        let m_local_y = pet.position.1 - pet_off_y + menu_y_f;
+                        if mouse_x >= m_local_x && mouse_x <= m_local_x + menu_w_f &&
+                           mouse_y >= m_local_y && mouse_y <= m_local_y + menu_h_f_val {
                             over_menu = true;
                         }
                     }

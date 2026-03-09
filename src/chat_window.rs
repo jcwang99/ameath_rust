@@ -9,6 +9,7 @@ use winit::{
     keyboard::{Key, NamedKey},
     window::{Window, WindowBuilder, WindowLevel},
 };
+use rusttype::PositionedGlyph;
 
 #[derive(Clone)]
 pub struct Thumbnail {
@@ -18,9 +19,7 @@ pub struct Thumbnail {
 }
 
 pub enum ImageStatus {
-    Processing {
-        progress: f32,
-    },
+    Processing,
     Ready {
         data: crate::types::ImageData,
         thumb: Thumbnail,
@@ -46,7 +45,6 @@ pub struct ChatWindow {
     font: Font<'static>,
     input_text: String,
     is_visible: bool,
-    last_size: Option<(u32, u32)>,
     cursor_blink_start: std::time::Instant,
     pub slots: Vec<ImageSlot>,
     next_slot_id: u32,
@@ -58,6 +56,14 @@ pub struct ChatWindow {
     image_tx: std::sync::mpsc::Sender<ImageAsyncMsg>,
     proxy: winit::event_loop::EventLoopProxy<()>,
     cursor_byte_idx: usize,
+    // Optimization: Cache layout
+    cached_layout: Vec<Vec<PositionedGlyph<'static>>>,
+    cached_line_heights: Vec<f32>,
+    layout_valid: bool,
+    text_buffer: Vec<u32>,
+    text_buffer_w: u32,
+    text_buffer_h: u32,
+    ignore_next_char: bool,
 }
 
 pub enum ChatAction {
@@ -104,7 +110,6 @@ impl ChatWindow {
             font,
             input_text: String::new(),
             is_visible: false,
-            last_size: None,
             cursor_blink_start: std::time::Instant::now(),
             slots: Vec::new(),
             next_slot_id: 0,
@@ -115,6 +120,13 @@ impl ChatWindow {
             image_rx,
             proxy,
             cursor_byte_idx: 0,
+            cached_layout: Vec::new(),
+            cached_line_heights: Vec::new(),
+            layout_valid: false,
+            text_buffer: Vec::new(),
+            text_buffer_w: 0,
+            text_buffer_h: 0,
+            ignore_next_char: false,
         }
     }
 
@@ -144,6 +156,7 @@ impl ChatWindow {
         self.input_text.clear();
         self.cursor_byte_idx = 0;
         self.slots.clear();
+        self.ignore_next_char = true; // Use this to swallow the hotkey leak
         self.cursor_blink_start = std::time::Instant::now();
         self.request_redraw();
     }
@@ -200,9 +213,15 @@ impl ChatWindow {
         match event {
             WindowEvent::Ime(ime) => match ime {
                 winit::event::Ime::Commit(text) => {
+                    if self.ignore_next_char && (text == "m" || text == "M") {
+                        self.ignore_next_char = false;
+                        return ChatAction::None;
+                    }
+                    self.ignore_next_char = false;
                     self.input_text.insert_str(self.cursor_byte_idx, text);
                     self.cursor_byte_idx += text.len();
                     self.cursor_blink_start = std::time::Instant::now();
+                    self.layout_valid = false;
                     self.request_redraw();
                 }
                 _ => {}
@@ -220,7 +239,7 @@ impl ChatWindow {
                     // Check if click is in text area
                     let padding = 10.0;
                     let text_y_offset = if self.slots.is_empty() { 0.0 } else { 100.0 };
-                    let (mx, my) = self.mouse_pos;
+                    let (_mx, my) = self.mouse_pos;
                     let window_size = self.window.inner_size();
                     
                     // Button row height is 40. Text area is roughly between top+offset and bottom-40
@@ -262,6 +281,7 @@ impl ChatWindow {
                             self.input_text.clear();
                             self.cursor_byte_idx = 0;
                             self.slots.clear();
+                            self.layout_valid = false;
                             self.request_redraw();
                             return ChatAction::Send(msg);
                         }
@@ -280,6 +300,7 @@ impl ChatWindow {
                                 self.input_text.remove(idx);
                                 self.cursor_byte_idx = idx;
                                 self.cursor_blink_start = std::time::Instant::now();
+                                self.layout_valid = false;
                                 self.request_redraw();
                             }
                         }
@@ -298,7 +319,7 @@ impl ChatWindow {
                     }
                     Key::Named(NamedKey::ArrowRight) => {
                         if self.cursor_byte_idx < self.input_text.len() {
-                            if let Some((idx, c)) = self.input_text[self.cursor_byte_idx..]
+                            if let Some((idx, _c)) = self.input_text[self.cursor_byte_idx..]
                                 .char_indices()
                                 .nth(1)
                             {
@@ -312,6 +333,13 @@ impl ChatWindow {
                     }
                     Key::Character(c) => {
                         let c_lower = c.to_lowercase();
+                        
+                        if self.ignore_next_char && (c_lower == "m") {
+                            self.ignore_next_char = false;
+                            return ChatAction::None;
+                        }
+                        self.ignore_next_char = false;
+
                         let has_ctrl = modifiers.control_key() || modifiers.super_key();
                         if c_lower == "v" && has_ctrl {
                             self.handle_paste();
@@ -329,6 +357,7 @@ impl ChatWindow {
                             self.input_text.insert_str(self.cursor_byte_idx, c);
                             self.cursor_byte_idx += c.len();
                             self.cursor_blink_start = std::time::Instant::now();
+                            self.layout_valid = false;
                             self.request_redraw();
                         }
                     }
@@ -336,6 +365,7 @@ impl ChatWindow {
                         self.input_text.insert(self.cursor_byte_idx, ' ');
                         self.cursor_byte_idx += 1;
                         self.cursor_blink_start = std::time::Instant::now();
+                        self.layout_valid = false;
                         self.request_redraw();
                     }
                     _ => {}
@@ -382,10 +412,10 @@ impl ChatWindow {
                 if let Ok(image) = clipboard.get_image() {
                     let slot_id = self.next_slot_id;
                     self.next_slot_id += 1;
-                    self.slots.push(ImageSlot {
-                        id: slot_id,
-                        status: ImageStatus::Processing { progress: 0.0 },
-                    });
+        self.slots.push(ImageSlot {
+            id: slot_id,
+            status: ImageStatus::Processing,
+        });
 
                     let rgba_data = image.bytes.to_vec();
                     if let Some(img_buf) = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(
@@ -446,7 +476,7 @@ impl ChatWindow {
                             self.next_slot_id += 1;
                             self.slots.push(ImageSlot {
                                 id: slot_id,
-                                status: ImageStatus::Processing { progress: 0.0 },
+                                status: ImageStatus::Processing,
                             });
 
                             let mut buffer = Vec::new();
@@ -489,6 +519,7 @@ impl ChatWindow {
                     }
                     self.input_text.insert_str(self.cursor_byte_idx, trimmed);
                     self.cursor_byte_idx += trimmed.len();
+                    self.layout_valid = false;
                     self.request_redraw();
                 }
             }
@@ -611,7 +642,7 @@ impl ChatWindow {
         self.next_slot_id += 1;
         self.slots.push(ImageSlot {
             id: slot_id,
-            status: ImageStatus::Processing { progress: 0.0 },
+            status: ImageStatus::Processing,
         });
         Self::process_image_async(path, slot_id, self.image_tx.clone(), self.proxy.clone());
         self.request_redraw();
@@ -686,363 +717,276 @@ impl ChatWindow {
     }
 
     fn redraw(&mut self) {
-        // 1. Calculate layout first to determine needed height
         let scale = Scale::uniform(24.0);
         let v_metrics = self.font.v_metrics(scale);
         let padding = 10.0;
         let line_height = v_metrics.ascent - v_metrics.descent + v_metrics.line_gap;
-        let max_width = 600.0 - (padding * 2.0); // 580.0
+        let max_width = 600.0 - (padding * 2.0);
 
-        // Wrap text
-        let mut lines = Vec::new();
-        let mut current_line_start = 0;
-        let mut current_width = 0.0f32;
+        // 1. Calculate layout & Render to text_buffer if invalid
+        if !self.layout_valid {
+            self.cached_layout.clear();
+            self.cached_line_heights.clear();
 
-        for (i, c) in self.input_text.char_indices() {
-            let glyph = self.font.glyph(c).scaled(scale);
-            let advance = glyph.h_metrics().advance_width;
+            let text_y_offset = if self.slots.is_empty() { 0.0 } else { 100.0 };
+            let mut current_line_glyphs = Vec::new();
+            let mut current_width = 0.0f32;
+            let mut line_y = padding + v_metrics.ascent + text_y_offset;
 
-            if current_width + advance > max_width {
-                lines.push(&self.input_text[current_line_start..i]);
-                current_line_start = i;
-                current_width = 0.0;
+            // Simple wrapping & layout
+            for c in self.input_text.chars() {
+                let glyph = self.font.glyph(c).scaled(scale);
+                let advance = glyph.h_metrics().advance_width;
+
+                if current_width + advance > max_width && !current_line_glyphs.is_empty() {
+                    self.cached_layout.push(current_line_glyphs);
+                    current_line_glyphs = Vec::new();
+                    current_width = 0.0;
+                    line_y += line_height;
+                }
+
+                let offset = point(padding + current_width, line_y);
+                current_line_glyphs.push(glyph.positioned(offset));
+                current_width += advance;
             }
-            current_width += advance;
+            self.cached_layout.push(current_line_glyphs);
+
+            let text_h = (self.cached_layout.len() as f32 * line_height).max(line_height) as u32;
+            let thumbnail_h = if self.slots.is_empty() { 0 } else { 100 };
+            let button_row_h = 40;
+            let total_padding = (padding * 2.0) as u32;
+            let target_height = total_padding + thumbnail_h + text_h + button_row_h;
+
+            // Prepare text_buffer for this layout
+            self.text_buffer_w = 600;
+            self.text_buffer_h = target_height;
+            self.text_buffer.clear();
+            self.text_buffer.resize((600 * target_height) as usize, 0);
+
+            // Rasterize all glyphs into the buffer ONCE
+            for line in &self.cached_layout {
+                for glyph in line {
+                    if let Some(bb) = glyph.pixel_bounding_box() {
+                        glyph.draw(|x, y, v| {
+                            let px = x as i32 + bb.min.x;
+                            let py = y as i32 + bb.min.y;
+                            if v > 0.0 && px >= 0 && px < 600 && py >= 0 && py < target_height as i32 {
+                                let alpha = (v * 255.0) as u32;
+                                if alpha > 0 {
+                                    // Simple pre-multiplied-style or solid white with alpha in buffer
+                                    // Here we store white (0xFFFFFF) and we can blend or just store alpha
+                                    // Since background is solid, we'll store the final text color with alpha
+                                    self.text_buffer[py as usize * 600 + px as usize] = (alpha << 24) | 0xFFFFFF;
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+
+            let current_size = self.window.inner_size();
+            if current_size.height != target_height {
+                let _ = self.window.request_inner_size(PhysicalSize::new(600, target_height));
+            }
+            // Always ensure surface matches target_height in layout pass
+            let _ = self.surface.resize(
+                NonZeroU32::new(600).unwrap(),
+                NonZeroU32::new(target_height).unwrap(),
+            );
+            self.layout_valid = true;
         }
-        lines.push(&self.input_text[current_line_start..]);
 
-        // Dynamic height calculation
-        let text_h = (lines.len() as f32 * line_height).max(line_height) as u32;
-        let thumbnail_h = if self.slots.is_empty() { 0 } else { 100 };
-        let button_row_h = 40; // Explicit space for the plus button at the bottom
-        let padding_total = (padding * 2.0) as u32;
-
-        let target_height = padding_total + thumbnail_h + text_h + button_row_h;
-
-        // 2. Resize window if needed
-        let current_size = self.window.inner_size();
-        if current_size.height != target_height {
-            let _ = self
-                .window
-                .request_inner_size(PhysicalSize::new(600, target_height));
-            // Return early, let the next resize event trigger redraw to avoid flickering/race
-            // or just continue drawing to the new surface size if immediate
-            self.surface
-                .resize(
-                    NonZeroU32::new(600).unwrap(),
-                    NonZeroU32::new(target_height).unwrap(),
-                )
-                .unwrap();
-            self.last_size = Some((600, target_height));
-        } else if self.last_size != Some((current_size.width, current_size.height)) {
-            self.surface
-                .resize(
-                    NonZeroU32::new(current_size.width).unwrap(),
-                    NonZeroU32::new(current_size.height).unwrap(),
-                )
-                .unwrap();
-            self.last_size = Some((current_size.width, current_size.height));
-        }
+        let size = self.window.inner_size();
+        let buf_w = size.width as usize;
+        let buf_h = size.height as usize;
 
         let mut buffer = self.surface.buffer_mut().unwrap();
-        let width = 600; // Fixed width logic for buffer
-        let height = target_height as usize;
-
-        if buffer.len() != width * height {
-            // Surface resize might not have propagated to buffer len yet if we just resized?
-            // Actually surface.resize should handle it. match width/height to buffer len just in case
-            // Or trust the target_height
+        
+        // Safety check for resize lag
+        if buffer.len() != buf_w * buf_h {
+             buffer.present().unwrap();
+             return;
         }
-
-        // Safety check for buffer size vs loop limits
-        let buf_w = width;
-        let buf_h = height;
 
         // Colors
-        let bg_color = 0xFF2D2D2D; // Dark grey
-        let border_color = 0xFF444444; // Subtle dark border
-        let text_color = 0xFFFFFFFF;
-        let cursor_color = 0xFF00FF00; // Green cursor
+        let bg_color: u32 = 0xFF2D2D2D;
+        let border_color: u32 = 0xFF444444;
+        let text_color: u32 = 0xFFFFFFFF;
+        let cursor_color: u32 = 0xFF00FF00;
 
-        // Fill background
-        buffer.fill(0);
+        // Optimized Background Fill with Rounded Corners
+        buffer.fill(0); // Transparent outer
+        
+        let r = 12i32;
+        let r_u = 12usize;
+        let r_sq = r * r;
 
-        // Draw rounded window background
-        let win_r: i32 = 12;
-        let win_r_sq = win_r * win_r;
+        // Optimized Full Fill with fast paths
         for y in 0..buf_h {
-            for x in 0..buf_w {
-                let mut draw_bg = true;
-                let dx = if x < win_r as usize {
-                    (win_r as usize - x) as i32
-                } else if x > (buf_w - win_r as usize - 1) {
-                    (x - (buf_w - win_r as usize - 1)) as i32
-                } else {
-                    0
-                };
-                let dy = if y < win_r as usize {
-                    (win_r as usize - y) as i32
-                } else if y > (buf_h - win_r as usize - 1) {
-                    (y - (buf_h - win_r as usize - 1)) as i32
-                } else {
-                    0
-                };
+            let row_start = y * buf_w;
+            let is_near_top = y < r_u;
+            let is_near_bottom = y >= buf_h - r_u;
 
-                if dx > 0 && dy > 0 && dx * dx + dy * dy > win_r_sq {
-                    draw_bg = false;
-                }
+            if !is_near_top && !is_near_bottom {
+                // Middle section: fast row fill (except borders)
+                buffer[row_start] = border_color;
+                buffer[row_start + 1..row_start + buf_w - 1].fill(bg_color);
+                buffer[row_start + buf_w - 1] = border_color;
+            } else {
+                // Top or bottom sections: still need corner checks
+                for x in 0..buf_w {
+                    let mut draw_bg = true;
+                    let is_near_left = x < r_u;
+                    let is_near_right = x >= buf_w - r_u;
+                    
+                    if (is_near_left || is_near_right) {
+                        let dx = if is_near_left { r - x as i32 } else { x as i32 - (buf_w as i32 - r - 1) };
+                        let dy = if is_near_top { r - y as i32 } else { y as i32 - (buf_h as i32 - r - 1) };
+                        if dx * dx + dy * dy > r_sq {
+                            draw_bg = false;
+                        }
+                    }
 
-                if draw_bg {
-                    // Subtle border (1px)
-                    if x == 0 || x == buf_w - 1 || y == 0 || y == buf_h - 1 {
-                        buffer[y * buf_w + x] = border_color;
-                    } else {
-                        buffer[y * buf_w + x] = bg_color;
+                    if draw_bg {
+                        if x == 0 || x == buf_w - 1 || y == 0 || y == buf_h - 1 {
+                            buffer[row_start + x] = border_color;
+                        } else {
+                            buffer[row_start + x] = bg_color;
+                        }
                     }
                 }
             }
         }
 
-        // Draw thumbnails/placeholders (at top if present)
-        let start_y = 10;
-        let mut start_x_cursor = 10;
-
+        // Draw Thumbnails
+        let mut thumb_x_cursor = 10;
         for (i, slot) in self.slots.iter().enumerate() {
             let is_hovered = self.hovered_thumb == Some(i);
-            let slot_x = start_x_cursor;
-            let slot_y = start_y;
-            let slot_w = 80;
-            let slot_h = 80;
+            if let ImageStatus::Ready { thumb, .. } = &slot.status {
+                let t_w = thumb.width as usize;
+                let t_h = thumb.height as usize;
+                let off_x = (80 - t_w) / 2;
+                let off_y = (80 - t_h) / 2;
 
-            // Draw base slot (rounded rect)
-            let r: i32 = 8;
-            let r_sq = r * r;
-            let slot_bg = 0xFF3D3D3D;
-
-            match &slot.status {
-                ImageStatus::Ready { thumb, .. } => {
-                    let t_w = thumb.width;
-                    let t_h = thumb.height;
-                    // Center thumbnail in 80x80 slot if smaller
-                    let off_x = (slot_w - t_w as usize) / 2;
-                    let off_y = (slot_h - t_h as usize) / 2;
-
-                    for ty in 0..t_h {
-                        for tx in 0..t_w {
-                            let px = slot_x + off_x + tx as usize;
-                            let py = slot_y + off_y + ty as usize;
-
-                            let mut draw = true;
-                            let dx = if tx < r as u32 {
-                                r as i32 - tx as i32
-                            } else if tx > (t_w - r as u32 - 1) {
-                                tx as i32 - (t_w as i32 - r as i32 - 1)
-                            } else {
-                                0
-                            };
-                            let dy = if ty < r as u32 {
-                                r as i32 - ty as i32
-                            } else if ty > (t_h - r as u32 - 1) {
-                                ty as i32 - (t_h as i32 - r as i32 - 1)
-                            } else {
-                                0
-                            };
-                            if dx > 0 && dy > 0 && dx * dx + dy * dy > r_sq {
-                                draw = false;
+                for ty in 0..t_h {
+                    for tx in 0..t_w {
+                        let px = thumb_x_cursor + off_x + tx;
+                        let py = 10 + off_y + ty;
+                        if px < buf_w && py < buf_h {
+                            let mut color = thumb.pixels[ty * t_w + tx];
+                            if is_hovered {
+                                let r_val = (((color >> 16) & 0xFF) as f32 * 0.5 + 127.0) as u32;
+                                let g_val = (((color >> 8) & 0xFF) as f32 * 0.5) as u32;
+                                let b_val = ((color & 0xFF) as f32 * 0.5) as u32;
+                                color = (0xFF << 24) | (r_val << 16) | (g_val << 8) | b_val;
                             }
-
-                            if draw && px < buf_w && py < buf_h {
-                                let mut color =
-                                    thumb.pixels[ty as usize * t_w as usize + tx as usize];
-                                if is_hovered {
-                                    // Visual feedback for delete
-                                    let mut r_val = (color >> 16) & 0xFF;
-                                    let mut g_val = (color >> 8) & 0xFF;
-                                    let mut b_val = color & 0xFF;
-                                    r_val = (r_val as f32 * 0.5 + 255.0 * 0.5) as u32;
-                                    g_val = (g_val as f32 * 0.5) as u32;
-                                    b_val = (b_val as f32 * 0.5) as u32;
-                                    color = (0xFF << 24) | (r_val << 16) | (g_val << 8) | b_val;
-
-                                    // X mark
-                                    let is_x = (tx as i32 - ty as i32
-                                        + (t_h as i32 - t_w as i32) / 2)
-                                        .abs()
-                                        < 2
-                                        || (tx as i32 + ty as i32 - ((t_w + t_h) as i32 / 2 - 1))
-                                            .abs()
-                                            < 2;
-                                    if is_x
-                                        && tx > t_w / 4
-                                        && tx < 3 * t_w / 4
-                                        && ty > t_h / 4
-                                        && ty < 3 * t_h / 4
-                                    {
-                                        color = 0xFFFFFFFF;
-                                    }
-                                }
-                                let alpha = (color >> 24) & 0xFF;
-                                if alpha > 0 {
-                                    buffer[py * buf_w + px] = color;
-                                }
-                            }
-                        }
-                    }
-                }
-                ImageStatus::Processing { progress } => {
-                    for ty in 0..slot_h {
-                        for tx in 0..slot_w {
-                            let px = slot_x + tx;
-                            let py = slot_y + ty;
-                            let mut draw = true;
-                            let dx = if tx < r as usize {
-                                r as i32 - tx as i32
-                            } else if tx > (slot_w - r as usize - 1) {
-                                tx as i32 - (slot_w as i32 - r as i32 - 1)
-                            } else {
-                                0
-                            };
-                            let dy = if ty < r as usize {
-                                r as i32 - ty as i32
-                            } else if ty > (slot_h - r as usize - 1) {
-                                ty as i32 - (slot_h as i32 - r as i32 - 1)
-                            } else {
-                                0
-                            };
-                            if dx > 0 && dy > 0 && dx * dx + dy * dy > r_sq {
-                                draw = false;
-                            }
-
-                            if draw && px < buf_w && py < buf_h {
-                                buffer[py * buf_w + px] = slot_bg;
-
-                                // Progress bar (at bottom of placeholder)
-                                if ty > 65 && ty < 72 && tx > 10 && tx < 70 {
-                                    let bar_w = (60.0 * progress) as usize;
-                                    if tx < 10 + bar_w {
-                                        buffer[py * buf_w + px] = 0xFF00FF00; // Green progress
-                                    } else {
-                                        buffer[py * buf_w + px] = 0xFF555555; // Background bar
-                                    }
-                                }
-
-                                // Spinner or "..." could be added here
+                            if (color >> 24) & 0xFF > 0 {
+                                buffer[py as usize * buf_w + px as usize] = color;
                             }
                         }
                     }
                 }
             }
-            start_x_cursor += slot_w + 10;
-            if start_x_cursor + 80 > buf_w {
-                break;
-            }
+            thumb_x_cursor += 90;
+            if thumb_x_cursor + 80 > buf_w { break; }
         }
 
-        // Draw Plus Button (at bottom-left) - Circular, borderless
+        // Draw Plus Button
         let btn_size = 32;
         let btn_x = 10;
         let btn_y = buf_h - 10 - btn_size;
-
-        let plus_bg = if self.plus_button_hovered {
-            0xFF444444
-        } else {
-            0xFF3D3D3D
-        };
-
-        let radius = btn_size as i32 / 2;
+        let plus_bg = if self.plus_button_hovered { 0xFF444444 } else { 0xFF3D3D3D };
+        let radius = 16;
         let r_sq = radius * radius;
-        let cx = btn_size as i32 / 2;
-        let cy = btn_size as i32 / 2;
 
         for ty in 0..btn_size {
             for tx in 0..btn_size {
-                let dx = tx as i32 - cx;
-                let dy = ty as i32 - cy;
-
+                let dx = tx as i32 - 16;
+                let dy = ty as i32 - 16;
                 if dx * dx + dy * dy <= r_sq {
-                    let px = btn_x + tx;
-                    let py = btn_y + ty;
+                    let px = (btn_x as i32 + tx as i32) as usize;
+                    let py = (btn_y as i32 + ty as i32) as usize;
                     if px < buf_w && py < buf_h {
-                        // Plus sign centered in circle
-                        let is_plus = (tx > 10 && tx < 22 && ty >= 15 && ty <= 16)
-                            || (ty > 10 && ty < 22 && tx >= 15 && tx <= 16);
-
-                        if is_plus {
-                            buffer[py * buf_w + px] = 0xFFBBBBBB; // Slightly greyish plus as in reference
-                        } else {
-                            buffer[py * buf_w + px] = plus_bg;
-                        }
+                        let is_plus = (tx > 10 && tx < 22 && ty >= 15 && ty <= 16) || (ty > 10 && ty < 22 && tx >= 15 && tx <= 16);
+                        buffer[py * buf_w + px] = if is_plus { 0xFFBBBBBB } else { plus_bg };
                     }
                 }
             }
         }
 
-        let text_y_offset = if self.slots.is_empty() { 0.0 } else { 100.0 };
-        let text_x_offset = 0.0;
-        let mut cursor_x = (padding + text_x_offset) as i32;
-        let mut cursor_y = (padding + text_y_offset) as i32;
-        let mut current_byte_offset = 0;
+        // Draw Text from Pre-rendered Buffer (Alpha Blending) - Region Optimized
+        let text_y_start = (padding + (if self.slots.is_empty() { 0.0 } else { 100.0 })) as usize;
+        let text_y_end = (text_y_start + self.text_buffer_h as usize).min(buf_h);
 
-        for (i, line) in lines.iter().enumerate() {
-            let y_pos = padding + v_metrics.ascent + (i as f32 * line_height) + text_y_offset;
-            let offset = point(padding + text_x_offset, y_pos);
-
-            let glyphs: Vec<_> = self.font.layout(line, scale, offset).collect();
-            
-            // Check if cursor is at the start of this line
-            if current_byte_offset == self.cursor_byte_idx {
-                cursor_x = padding as i32;
-                cursor_y = (padding + (i as f32 * line_height) + text_y_offset) as i32;
-            }
-
-            let mut line_x_accum = padding;
-            let mut glyph_idx = 0;
-            for (char_idx, c) in line.char_indices() {
-                 let glyph = &glyphs[glyph_idx];
-                 if let Some(bb) = glyph.pixel_bounding_box() {
-                    glyph.draw(|x, y, v| {
-                        let px = x as i32 + bb.min.x;
-                        let py = y as i32 + bb.min.y;
-                        if v > 0.5 && px >= 0 && px < buf_w as i32 && py >= 0 && py < buf_h as i32 {
-                            buffer[py as usize * buf_w + px as usize] = text_color;
-                        }
-                    });
+        for py in text_y_start..text_y_end {
+            let row_start = py * buf_w;
+            let src_row_start = py * 600;
+            for px in 0..buf_w {
+                let color_with_alpha = self.text_buffer[src_row_start + px];
+                let alpha = (color_with_alpha >> 24) & 0xFF;
+                if alpha > 0 {
+                    if alpha == 255 {
+                        buffer[row_start + px] = text_color;
+                    } else {
+                        // Blend with background
+                        let bg = buffer[row_start + px];
+                        let r = ((0xFF * alpha + ((bg >> 16) & 0xFF) * (255 - alpha)) / 255) as u32;
+                        let g = ((0xFF * alpha + ((bg >> 8) & 0xFF) * (255 - alpha)) / 255) as u32;
+                        let b = ((0xFF * alpha + (bg & 0xFF) * (255 - alpha)) / 255) as u32;
+                        buffer[row_start + px] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+                    }
                 }
-                
-                line_x_accum += self.font.glyph(c).scaled(scale).h_metrics().advance_width;
-                if current_byte_offset + char_idx + c.len_utf8() == self.cursor_byte_idx {
-                    cursor_x = line_x_accum as i32;
-                    cursor_y = (padding + (i as f32 * line_height) + text_y_offset) as i32;
-                }
-                glyph_idx += 1;
             }
-            current_byte_offset += line.len();
         }
 
-        let cursor_h = 24; // approx line height
-        let cursor_x = cursor_x + 2;
+        // Track cursor position from Cache
+        let text_y_base = if self.slots.is_empty() { 0.0 } else { 100.0 };
+        let mut cursor_pos = (padding as i32, (padding + text_y_base) as i32);
+        let mut found_cursor = false;
+        let mut byte_counter = 0;
+        let mut char_iter = self.input_text.chars();
+
+        for line in &self.cached_layout {
+            for glyph in line {
+                if byte_counter == self.cursor_byte_idx {
+                    cursor_pos = (glyph.position().x as i32, (glyph.position().y - v_metrics.ascent) as i32);
+                    found_cursor = true;
+                }
+                if let Some(c) = char_iter.next() {
+                    byte_counter += c.len_utf8();
+                }
+            }
+        }
+        
+        if !found_cursor && byte_counter == self.cursor_byte_idx {
+            if let Some(last_line) = self.cached_layout.last() {
+                if let Some(last_glyph) = last_line.last() {
+                    cursor_pos = ((last_glyph.position().x + last_glyph.unpositioned().h_metrics().advance_width) as i32, 
+                                  (last_glyph.position().y - v_metrics.ascent) as i32);
+                }
+            }
+            found_cursor = true;
+        }
+
+        // Cursor Blink
+        let elapsed = self.cursor_blink_start.elapsed().as_millis();
+        if (elapsed % 1000) < 500 {
+            let cx = cursor_pos.0 + 1;
+            let cy = cursor_pos.1;
+            for y in cy..(cy + 24) {
+                for x in cx..(cx + 2) {
+                    if x >= 0 && x < buf_w as i32 && y >= 0 && y < buf_h as i32 {
+                        buffer[y as usize * buf_w + x as usize] = cursor_color;
+                    }
+                }
+            }
+        }
 
         // Use winit's IME positioning
         self.window.set_ime_cursor_area(
-            winit::dpi::PhysicalPosition::new(cursor_x as f64, cursor_y as f64),
-            winit::dpi::PhysicalSize::new(2.0, cursor_h as f64),
+            winit::dpi::PhysicalPosition::new(cursor_pos.0 as f64, cursor_pos.1 as f64),
+            winit::dpi::PhysicalSize::new(2.0, 24.0),
         );
-
-        let elapsed = self.cursor_blink_start.elapsed().as_millis();
-        let cursor_visible = (elapsed % 1000) < 500;
-
-        if cursor_visible {
-            for y in cursor_y..(cursor_y + cursor_h) {
-                for x in cursor_x..(cursor_x + 2) {
-                    if x < buf_w as i32 && y < buf_h as i32 {
-                        let idx = y as usize * buf_w + x as usize;
-                        if idx < buffer.len() {
-                            buffer[idx] = cursor_color;
-                        }
-                    }
-                }
-            }
-        }
 
         buffer.present().unwrap();
     }
