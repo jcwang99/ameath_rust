@@ -1328,7 +1328,7 @@ fn main() {
                                      else { pet_off_y - gap_between - current_pomodoro_h_f };
                     
                     let music_y_f = if music_player.panel_enabled && (menu_manager.visible || menu_manager.opacity > 0.0) {
-                                       pet_off_y + cur_ph + gap_between
+                                       pet_off_y + cur_ph + 10.0 * pet.scale as f64
                                     } else { pet_off_y + cur_ph };
 
                     let loading_x_f = pet_off_x + cur_pw/2.0 - loading_w_f / 2.0;
@@ -1728,7 +1728,8 @@ fn main() {
                             if music_player.panel_enabled {
                                 let (cur_pw, _cur_ph) = pet.get_scaled_size();
                                 let panel_w = (music_panel::BASE_PANEL_WIDTH as f32 * pet.scale) as f64;
-                                let panel_x = (pet_off_x + cur_pw/2.0 - panel_w/2.0) as i32;
+                                // Visual adjustment: -2px offset to compensate for asymmetrical pet gif assets
+                                let panel_x = (pet_off_x + cur_pw/2.0 - panel_w/2.0 - 2.0 * pet.scale as f64) as i32;
                                 let mut panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
                                 let comp_u32 = unsafe {
                                     std::slice::from_raw_parts_mut(

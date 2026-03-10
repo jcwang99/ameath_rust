@@ -201,7 +201,9 @@ impl MusicPlayer {
         let Some(sink) = &self.sink else { return None };
 
         // If playing but sink became empty, move to next
-        if !sink.is_paused() && sink.empty() && !self.songs.is_empty() {
+        // ONLY trigger auto-next if the panel is enabled. 
+        // This prevents sink.stop() (called when closing panel) from triggering a seek and bubble.
+        if self.panel_enabled && !sink.is_paused() && sink.empty() && !self.songs.is_empty() {
             self.current_song_idx = (self.current_song_idx + 1) % self.songs.len();
             self.play_current();
             let name = self.current_song_name().unwrap_or_default();

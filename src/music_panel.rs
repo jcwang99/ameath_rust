@@ -246,9 +246,9 @@ pub fn render_music_panel(
     );
 
     // 5. Progress Bar
-    let prog_y = panel_y + (80.0 * scale) as i32;
-    let prog_x = panel_x + (15.0 * scale) as i32;
-    let prog_w = w - (30.0 * scale) as u32;
+    let prog_y = panel_y + (75.0 * scale) as i32;
+    let prog_x = panel_x + (12.0 * scale) as i32;
+    let prog_w = w - (24.0 * scale) as u32;
     let (progress, current_dur, total_dur) = player.get_progress();
 
     // Background line
@@ -285,7 +285,7 @@ pub fn render_music_panel(
         win_w,
         &time_text,
         panel_x + w as i32 - (75.0 * scale) as i32,
-        prog_y + (10.0 * scale) as i32, // Moved below progress bar
+        prog_y + (6.0 * scale) as i32, // Moved closer to bar from 10
         9.0 * scale,
         ui_primitives::apply_opacity(0x888888, opacity),
         70,
@@ -298,7 +298,9 @@ pub fn render_music_panel(
     // 5. Playlist
     if player.list_visible && !songs.is_empty() {
         let max_visible_items = MAX_VISIBLE_ITEMS;
-        let list_y = panel_y + (BASE_PANEL_HEIGHT as f32 * scale) as i32;
+        // BASE_PANEL_HEIGHT (100) is the background height of the control area. 
+        // We start list slightly earlier to merge the visual gap.
+        let list_y = panel_y + ((BASE_PANEL_HEIGHT as f32 - 4.0) * scale) as i32;
         let item_h = (BASE_LIST_ITEM_HEIGHT as f32 * scale) as i32;
         
         // Ensure scroll offset is clamped (safety)
