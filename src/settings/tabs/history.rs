@@ -124,6 +124,7 @@ pub fn draw(
             "Microsoft YaHei",
             false,
             false,
+            false,
         );
         if full_content_h > view_h {
             let sb_x = s(230) as i32 + sc(480.0) as i32;

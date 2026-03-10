@@ -164,6 +164,7 @@ pub struct LayoutKey {
     pub font_family_hash: u64,
     pub is_bold: bool,
     pub is_centered: bool,
+    pub is_nowrap: bool,
 }
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy)]
@@ -275,6 +276,7 @@ pub fn get_or_create_layout_ex(
     font_family_name: &str,
     is_bold: bool,
     is_centered: bool,
+    is_nowrap: bool,
 ) -> IDWriteTextLayout {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -294,6 +296,7 @@ pub fn get_or_create_layout_ex(
         font_family_hash,
         is_bold,
         is_centered,
+        is_nowrap,
     };
 
     {
@@ -363,6 +366,11 @@ pub fn get_or_create_layout_ex(
             .CreateTextLayout(&wide_text, &text_format, max_w as f32, 1000000.0)
             .unwrap();
 
+        if is_nowrap {
+            use windows::Win32::Graphics::DirectWrite::DWRITE_WORD_WRAPPING_NO_WRAP;
+            let _ = layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        }
+
         let mut cache = get_layout_cache().write().unwrap();
         // Eviction logic
         if cache.map.len() >= 100 {
@@ -378,7 +386,7 @@ pub fn get_or_create_layout_ex(
 }
 
 fn get_or_create_layout(text: &str, font_size: f32, max_w: u32) -> IDWriteTextLayout {
-    get_or_create_layout_ex(text, font_size, max_w, "Microsoft YaHei", false, false)
+    get_or_create_layout_ex(text, font_size, max_w, "Microsoft YaHei", false, false, false)
 }
 
 pub fn draw_rect(
@@ -736,6 +744,7 @@ pub fn draw_text_dw_h(
         font_family_hash,
         is_bold: false,
         is_centered: false,
+        is_nowrap: false, // Default to wrap for standard text
     };
     let key = RasterKey {
         layout_key: layout_key.clone(),
@@ -789,6 +798,63 @@ pub fn draw_text_dw_h(
         scroll_offset,
         scroll_x,
         layout_w, // Pass layout_w
+    );
+}
+
+pub fn draw_text_dw_ex_nowrap(
+    buffer: &mut [u32],
+    surface_w: u32,
+    text: &str,
+    x: i32,
+    y: i32,
+    font_size: f32,
+    color: u32,
+    max_w: u32,
+    max_h: u32,
+    scroll_offset: f32,
+    scroll_x: f32,
+    layout_w: u32,
+) {
+    if text.is_empty() {
+        return;
+    }
+
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut text_hasher = DefaultHasher::new();
+    text.hash(&mut text_hasher);
+    let text_hash = text_hasher.finish();
+
+    let font_family_name = "Microsoft YaHei";
+    let mut family_hasher = DefaultHasher::new();
+    font_family_name.hash(&mut family_hasher);
+    let font_family_hash = family_hasher.finish();
+
+    let layout_key = LayoutKey {
+        text_hash,
+        font_size_bits: font_size.to_bits(),
+        max_w: layout_w,
+        font_family_hash,
+        is_bold: false,
+        is_centered: false,
+        is_nowrap: true,
+    };
+
+    draw_text_dw_ex_internal(
+        buffer,
+        surface_w,
+        text,
+        layout_key,
+        x,
+        y,
+        font_size,
+        color,
+        max_w,
+        max_h,
+        scroll_offset,
+        scroll_x,
+        layout_w,
     );
 }
 
@@ -850,6 +916,7 @@ pub fn get_text_width(text: &str, font_size: f32, is_bold: bool) -> f32 {
             "Microsoft YaHei",
             is_bold,
             false,
+            false,
         );
         let mut metrics = std::mem::zeroed();
         if layout.GetMetrics(&mut metrics).is_ok() {
@@ -883,6 +950,7 @@ fn draw_text_dw_ex_internal(
             "Microsoft YaHei",
             layout_key.is_bold,
             layout_key.is_centered,
+            layout_key.is_nowrap,
         );
         let mut metrics = std::mem::zeroed();
         layout.GetMetrics(&mut metrics).unwrap();
@@ -910,11 +978,11 @@ fn draw_text_dw_ex_internal(
                 a: 0.0,
             }));
 
-            let r = ((color >> 16) & 0xFF) as f32 / 255.0;
-            let g = ((color >> 8) & 0xFF) as f32 / 255.0;
-            let b = (color & 0xFF) as f32 / 255.0;
+            let _r = ((color >> 16) & 0xFF) as f32 / 255.0;
+            let _g = ((color >> 8) & 0xFF) as f32 / 255.0;
+            let _b = (color & 0xFF) as f32 / 255.0;
             let brush = rt
-                .CreateSolidColorBrush(&D2D1_COLOR_F { r, g, b, a: 1.0 }, None)
+                .CreateSolidColorBrush(&D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }, None) // Always white for Mask
                 .unwrap();
 
             let draw_offset_y = scroll_offset;
@@ -1078,6 +1146,7 @@ pub fn get_metrics_dw_ex(
     font_family_name: &str,
     is_bold: bool,
     is_centered: bool,
+    is_nowrap: bool,
 ) -> (f32, f32) {
     #[cfg(target_os = "windows")]
     {
@@ -1088,6 +1157,7 @@ pub fn get_metrics_dw_ex(
             font_family_name,
             is_bold,
             is_centered,
+            is_nowrap,
         );
         unsafe {
             let mut metrics = std::mem::zeroed();
@@ -1102,7 +1172,7 @@ pub fn get_metrics_dw_ex(
 }
 
 pub fn get_metrics_dw(text: &str, font_size: f32, max_w: u32) -> (f32, f32) {
-    get_metrics_dw_ex(text, font_size, max_w, "Microsoft YaHei", false, false)
+    get_metrics_dw_ex(text, font_size, max_w, "Microsoft YaHei", false, false, false)
 }
 #[cfg(target_os = "windows")]
 #[allow(dead_code)]

@@ -2,7 +2,7 @@ use crate::music_player::MusicPlayer;
 use crate::ui_primitives;
 
 pub const BASE_PANEL_WIDTH: i32 = 220;
-pub const BASE_PANEL_HEIGHT: i32 = 85;
+pub const BASE_PANEL_HEIGHT: i32 = 110;
 pub const BASE_LIST_ITEM_HEIGHT: i32 = 22;
 
 #[derive(Debug, Clone, Copy)]
@@ -127,33 +127,43 @@ pub fn render_music_panel(
     if text_w > title_max_w as f32 {
         use std::time::SystemTime;
         let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_millis() as f64;
-        let speed = 40.0; // Pixels per second
-        let total_range = (text_w - title_max_w as f32) + 40.0; // Add some pause space
-        let cycle = (now / 1000.0 * speed as f64) % (total_range as f64 * 2.0);
+        let speed = 40.0; 
+        let text_overflow = text_w - title_max_w as f32;
+        let pause_duration = 1.5; // seconds
+        let move_duration = text_overflow / speed;
+        let total_half_cycle = pause_duration + move_duration;
+        let total_cycle = total_half_cycle * 2.0;
         
-        scroll_x = if cycle < total_range as f64 {
-            -(cycle as f32)
+        let local_time = (now / 1000.0) % total_cycle as f64;
+        
+        scroll_x = if local_time < pause_duration as f64 {
+            0.0
+        } else if local_time < total_half_cycle as f64 {
+            let t = (local_time - pause_duration as f64) as f32;
+            -(t * speed)
+        } else if local_time < (total_half_cycle + pause_duration) as f64 {
+            -text_overflow
         } else {
-            -(total_range * 2.0 - cycle as f32)
+            let t = (local_time - (total_half_cycle + pause_duration) as f64) as f32;
+            -(text_overflow - t * speed)
         };
-        // Clamp to avoid showing empty space if not desired, but here we want back and forth or circular
-        // Let's do a simple back-and-forth for better readability
-        scroll_x = scroll_x.min(0.0).max(-(text_w - title_max_w as f32));
+        
+        scroll_x = scroll_x.min(0.0).max(-text_overflow);
     }
 
-    ui_primitives::draw_text_dw_ex(
+    ui_primitives::draw_text_dw_ex_nowrap(
         buffer,
         win_w,
         &name,
         title_x,
-        panel_y + (12.0 * scale) as i32,
+        panel_y + (15.0 * scale) as i32,
         font_size,
         text_color,
         title_max_w,
-        20,
+        25,
         0.0,
         scroll_x,
-        title_max_w,
+        2000,
     );
 
     // List toggle button (≡)
@@ -174,7 +184,7 @@ pub fn render_music_panel(
     );
 
     // 4. Controls (Shifted right to make room for cover)
-    let ctrl_y = panel_y + (40.0 * scale) as i32;
+    let ctrl_y = panel_y + (45.0 * scale) as i32;
     let btn_gap = (35.0 * scale) as i32;
     let ctrl_start_x = title_x + (5.0 * scale) as i32;
 
@@ -226,7 +236,7 @@ pub fn render_music_panel(
     );
 
     // 5. Progress Bar
-    let prog_y = panel_y + (68.0 * scale) as i32;
+    let prog_y = panel_y + (80.0 * scale) as i32;
     let prog_x = panel_x + (15.0 * scale) as i32;
     let prog_w = w - (30.0 * scale) as u32;
     let (progress, current_dur, total_dur) = player.get_progress();
@@ -265,7 +275,7 @@ pub fn render_music_panel(
         win_w,
         &time_text,
         panel_x + w as i32 - (75.0 * scale) as i32,
-        prog_y - (12.0 * scale) as i32,
+        prog_y + (10.0 * scale) as i32, // Moved below progress bar
         9.0 * scale,
         ui_primitives::apply_opacity(0x888888, opacity),
         70,
@@ -363,7 +373,7 @@ pub fn check_music_panel_hit(
     let cover_size = (45.0 * scale) as i32;
     let title_x = (12.0 * scale) as i32 + cover_size + (10.0 * scale) as i32;
     let ctrl_start_x = title_x + (5.0 * scale) as i32;
-    let ctrl_y = (40.0 * scale) as i32;
+    let ctrl_y = (45.0 * scale) as i32;
     let btn_gap = (35.0 * scale) as i32;
 
     if ry >= ctrl_y - (5.0 * scale) as i32 && ry < ctrl_y + (25.0 * scale) as i32 {
@@ -377,7 +387,7 @@ pub fn check_music_panel_hit(
     }
 
     // 3. Progress Bar Seek - Bottom
-    let prog_y = (68.0 * scale) as i32;
+    let prog_y = (80.0 * scale) as i32;
     if ry >= prog_y - (10.0 * scale) as i32 && ry < prog_y + (15.0 * scale) as i32 {
         let prog_x = (15.0 * scale) as i32;
         let prog_w = w - (30.0 * scale) as i32;

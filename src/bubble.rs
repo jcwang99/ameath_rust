@@ -346,12 +346,12 @@ fn render_bubble_internal(
 
         match &req.content {
             BubbleContent::Text(text) => {
-                let (text_w, text_h) = get_metrics_dw_ex(text, font_size, max_w_allowed as u32, font_family, true, true);
+                let (text_w, text_h) = get_metrics_dw_ex(text, font_size, max_w_allowed as u32, font_family, true, true, false);
                 let width_buffer = (16.0 * scale).ceil() as i32;
                 let height_buffer = (32.0 * scale).ceil() as i32;
                 calc_w = (text_w as i32 + padding * 2 + width_buffer).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
                 calc_h = text_h.ceil() as i32 + padding * 2 + tail_h + height_buffer;
-                let layout = get_or_create_layout_ex(text, font_size, (calc_w - padding * 2) as u32, font_family, true, true);
+                let layout = get_or_create_layout_ex(text, font_size, (calc_w - padding * 2) as u32, font_family, true, true, false);
                 state.cached_layout = Some(layout);
             }
             BubbleContent::Image(path) => {
@@ -410,10 +410,10 @@ fn render_bubble_internal(
                         }
                         Err(e) => {
                             let fallback = format!("[Image Error: {} | {}]", path, e);
-                            let (tw, th) = get_metrics_dw_ex(&fallback, font_size, max_w_allowed as u32, font_family, true, true);
+                            let (tw, th) = get_metrics_dw_ex(&fallback, font_size, max_w_allowed as u32, font_family, true, true, false);
                             calc_w = (tw as i32 + padding * 2).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
                             calc_h = th.ceil() as i32 + padding * 2 + tail_h;
-                            let layout = get_or_create_layout_ex(&fallback, font_size, (calc_w - padding * 2) as u32, font_family, true, true);
+                            let layout = get_or_create_layout_ex(&fallback, font_size, (calc_w - padding * 2) as u32, font_family, true, true, false);
                             state.cached_layout = Some(layout);
                         }
                     }
