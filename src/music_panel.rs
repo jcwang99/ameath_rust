@@ -2,8 +2,15 @@ use crate::music_player::MusicPlayer;
 use crate::ui_primitives;
 
 pub const BASE_PANEL_WIDTH: i32 = 220;
-pub const BASE_PANEL_HEIGHT: i32 = 110;
+pub const BASE_PANEL_HEIGHT: i32 = 100;
 pub const BASE_LIST_ITEM_HEIGHT: i32 = 22;
+pub const MAX_VISIBLE_ITEMS: usize = 8;
+
+pub fn get_max_scroll_offset(songs_len: usize) -> f32 {
+    let content_h = songs_len as f32 * BASE_LIST_ITEM_HEIGHT as f32;
+    let visible_h = MAX_VISIBLE_ITEMS as f32 * BASE_LIST_ITEM_HEIGHT as f32;
+    (content_h - visible_h).max(0.0)
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum MusicPanelAction {
@@ -33,9 +40,12 @@ pub fn render_music_panel(
     let mut h = (BASE_PANEL_HEIGHT as f32 * scale) as u32;
     
     let songs = player.songs();
+    let max_visible_items = 8;
+    let visible_items = songs.len().min(max_visible_items);
+    
     if player.list_visible && !songs.is_empty() {
-        let list_h = (songs.len().min(8) as f32 * BASE_LIST_ITEM_HEIGHT as f32 * scale) as u32;
-        h += list_h + (5.0 * scale) as u32;
+        let list_h = (visible_items as f32 * BASE_LIST_ITEM_HEIGHT as f32 * scale) as u32;
+        h += list_h; // 精简高度，移除多余的 5.0 * scale
     }
 
     // 1. Background
@@ -287,14 +297,27 @@ pub fn render_music_panel(
 
     // 5. Playlist
     if player.list_visible && !songs.is_empty() {
+        let max_visible_items = MAX_VISIBLE_ITEMS;
         let list_y = panel_y + (BASE_PANEL_HEIGHT as f32 * scale) as i32;
         let item_h = (BASE_LIST_ITEM_HEIGHT as f32 * scale) as i32;
         
-        let start_idx = (player.list_scroll_offset / item_h as f32).max(0.0) as usize;
-        let end_idx = (start_idx + 8).min(songs.len());
+        // Ensure scroll offset is clamped (safety)
+        let max_offset = get_max_scroll_offset(songs.len());
+        let current_offset = player.list_scroll_offset.clamp(0.0, max_offset);
+        
+        let start_idx = (current_offset / BASE_LIST_ITEM_HEIGHT as f32).floor() as usize;
+        let end_idx = (start_idx + max_visible_items + 1).min(songs.len());
 
         for i in start_idx..end_idx {
-            let item_y = list_y + (i - start_idx) as i32 * item_h;
+            // High-precision Y calculation to prevent rounding errors causing mis-clipping
+            let ry_f = (i as f32 * BASE_LIST_ITEM_HEIGHT as f32 - player.list_scroll_offset) * scale;
+            let item_y = list_y + ry_f as i32;
+            
+            // Clip items outside of the list area with 2px buffer
+            if item_y < list_y - 2 || item_y >= list_y + (visible_items as i32 * item_h) - 2 {
+                continue;
+            }
+
             let is_current = i == player.current_idx();
             
             if is_current {
@@ -319,19 +342,67 @@ pub fn render_music_panel(
             };
             
             let item_text = format!("{:02}. {}", i + 1, display_name);
-            ui_primitives::draw_text_dw_ex(
+            let item_text_w = ui_primitives::get_text_width(&item_text, 11.0 * scale, false);
+            let item_max_w = w - (40.0 * scale) as u32;
+            
+            let mut item_scroll_x = 0.0;
+            // Marquee for current playing song if it's too long
+            if is_current && item_text_w > item_max_w as f32 {
+                use std::time::SystemTime;
+                let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_millis() as f64;
+                let speed = 30.0;
+                let overflow = item_text_w - item_max_w as f32;
+                let cycle = (overflow / speed + 2.0) * 2.0;
+                let t = (now / 1000.0) % cycle as f64;
+                item_scroll_x = if t < 1.0 { 0.0 } 
+                               else if t < 1.0 + (overflow / speed) as f64 { -((t - 1.0) as f32 * speed) }
+                               else if t < 2.0 + (overflow / speed) as f64 { -overflow }
+                               else { -(overflow - (t - (2.0 + (overflow / speed) as f64)) as f32 * speed) };
+                item_scroll_x = item_scroll_x.min(0.0).max(-overflow);
+            }
+
+            ui_primitives::draw_text_dw_ex_nowrap(
                 buffer,
                 win_w,
                 &item_text,
                 panel_x + (15.0 * scale) as i32,
-                item_y + (2.0 * scale) as i32,
+                item_y + (4.0 * scale) as i32,
                 11.0 * scale,
                 if is_current { ui_primitives::apply_opacity(0xFB7299, opacity) } else { text_color },
-                w - (30.0 * scale) as u32,
+                item_max_w,
                 item_h as u32,
                 0.0,
-                0.0,
-                w - (30.0 * scale) as u32,
+                item_scroll_x,
+                2000,
+            );
+        }
+
+        // 6. Scrollbar
+        if songs.len() > max_visible_items {
+            let bar_w = (4.0 * scale) as u32;
+            let bar_x = panel_x + w as i32 - (6.0 * scale) as i32;
+            
+            let list_area_h = (visible_items as f32 * BASE_LIST_ITEM_HEIGHT as f32 * scale) as f32;
+            let total_content_h = (songs.len() as f32 * BASE_LIST_ITEM_HEIGHT as f32 * scale) as f32;
+            
+            // 滑块长度比例
+            let bar_h = (list_area_h * (list_area_h / total_content_h)).max(15.0 * scale);
+            
+            // 滑块位置：(当前滚动位 / 总溢出量) * (列表区域 - 滑块长度)
+            let max_scroll = (songs.len() - visible_items) as f32 * BASE_LIST_ITEM_HEIGHT as f32;
+            let scroll_ratio = if max_scroll > 0.0 { player.list_scroll_offset / max_scroll } else { 0.0 };
+            let bar_y = list_y as f32 + scroll_ratio * (list_area_h - bar_h);
+
+            ui_primitives::draw_rect(
+                buffer,
+                win_w,
+                bar_x,
+                bar_y as i32,
+                bar_w,
+                bar_h as u32,
+                ui_primitives::apply_opacity(0xFB7299, opacity * 0.7),
+                win_w,
+                win_h,
             );
         }
     }
@@ -400,9 +471,8 @@ pub fn check_music_panel_hit(
     // 4. Playlist Selection
     if player.list_visible && ry >= (BASE_PANEL_HEIGHT as f32 * scale) as i32 {
         let list_ry = ry - (BASE_PANEL_HEIGHT as f32 * scale) as i32;
-        let item_h = (BASE_LIST_ITEM_HEIGHT as f32 * scale) as i32;
-        let start_idx = (player.list_scroll_offset / item_h as f32).max(0.0) as usize;
-        let clicked_idx = start_idx + (list_ry / item_h) as usize;
+        let item_h_scaled = (BASE_LIST_ITEM_HEIGHT as f32 * scale).max(1.0);
+        let clicked_idx = ((player.list_scroll_offset * scale + list_ry as f32) / item_h_scaled).floor() as usize;
         if clicked_idx < songs.len() {
             return Some(MusicPanelAction::SelectSong(clicked_idx));
         }

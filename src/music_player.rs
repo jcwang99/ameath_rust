@@ -133,13 +133,28 @@ impl MusicPlayer {
 
     pub fn toggle_panel(&mut self) {
         self.panel_enabled = !self.panel_enabled;
-        if self.panel_enabled && !self.is_playing() {
-            self.play_current();
+        if self.panel_enabled {
+            if !self.is_playing() {
+                self.play_current();
+            }
+        } else {
+            // Stop playing when panel is closed
+            if let Some(sink) = &self.sink {
+                sink.stop();
+            }
         }
     }
 
     pub fn toggle_list(&mut self) {
         self.list_visible = !self.list_visible;
+        if self.list_visible && !self.songs.is_empty() {
+            // Auto-scroll to show current song
+            // Assuming item_h is 22 (consistent with music_panel::BASE_LIST_ITEM_HEIGHT)
+            let item_h = 22.0;
+            let target_offset = (self.current_song_idx as f32 * item_h) - (item_h * 3.0);
+            let max_offset = ((self.songs.len() as f32 * item_h) - (item_h * 8.0)).max(0.0);
+            self.list_scroll_offset = target_offset.clamp(0.0, max_offset);
+        }
     }
 
     pub fn songs(&self) -> &[PathBuf] {

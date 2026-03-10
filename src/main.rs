@@ -45,7 +45,7 @@ use winit::{
     dpi::PhysicalPosition,
     event::{ElementState, Event, MouseButton, WindowEvent},
     event_loop::EventLoop,
-    window::{WindowBuilder, WindowLevel},
+    window::{Window, WindowBuilder, WindowLevel},
 };
 
 #[cfg(target_os = "windows")]
@@ -720,23 +720,24 @@ fn main() {
                             WindowEvent::MouseWheel { delta, .. } => {
                                 if music_player.panel_enabled && (menu_manager.visible || menu_manager.opacity > 0.0) {
                                     if let Some(pos) = last_cursor_pos {
-                                        let (cur_pw, _cur_ph) = pet.get_scaled_size();
+                                        let (cur_pw, cur_ph) = pet.get_scaled_size();
                                         let panel_w = (music_panel::BASE_PANEL_WIDTH as f32 * pet.scale) as f64;
                                         let panel_x = (pet_off_x + cur_pw/2.0 - panel_w/2.0) as i32;
-                                        let music_h = (music_panel::BASE_PANEL_HEIGHT as f32 * pet.scale) as f64;
-                                        let mut panel_y = (pet_off_y - (10.0 * pet.scale as f64) - music_h) as i32;
-                                        if pomodoro_manager.visible {
-                                            panel_y -= (pomodoro::BASE_POMODORO_HEIGHT as f32 * pet.scale + 10.0 * pet.scale) as i32;
-                                        }
+                                        let panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
                                         let panel_h = music_panel::BASE_PANEL_HEIGHT as f32 * pet.scale;
-                                        
-                                        if pos.x >= panel_x as f64 && pos.x < panel_x as f64 + panel_w &&
-                                           pos.y >= (panel_y as f64 + panel_h as f64) {
+
+                                        // Check if mouse is anywhere within the music panel (including list area below it)
+                                        let is_in_panel_x = pos.x >= panel_x as f64 && pos.x < panel_x as f64 + panel_w;
+                                        let is_in_panel_y = pos.y >= panel_y as f64; 
+
+                                        if is_in_panel_x && is_in_panel_y {
                                             let dy = match delta {
-                                                winit::event::MouseScrollDelta::LineDelta(_, y) => y * 20.0,
+                                                winit::event::MouseScrollDelta::LineDelta(_, y) => y * 25.0, // Adjusted speed
                                                 winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32,
                                             };
-                                            music_player.list_scroll_offset = (music_player.list_scroll_offset - dy).max(0.0);
+                                            
+                                            let max_offset = music_panel::get_max_scroll_offset(music_player.songs().len());
+                                            music_player.list_scroll_offset = (music_player.list_scroll_offset - dy).clamp(0.0, max_offset);
                                             window.request_redraw();
                                         }
                                     }
@@ -1290,8 +1291,10 @@ fn main() {
                         music_panel_w_f = (music_panel::BASE_PANEL_WIDTH as f32 * pet.scale) as f64;
                         music_panel_h_f = (music_panel::BASE_PANEL_HEIGHT as f32 * pet.scale) as f64;
                         if music_player.list_visible && !music_player.songs().is_empty() {
-                            let list_h = (music_player.songs().len().min(8) as f32 * music_panel::BASE_LIST_ITEM_HEIGHT as f32 * pet.scale) as f64;
-                            music_panel_h_f += list_h + (5.0 * pet.scale as f64);
+                            let songs_len = music_player.songs().len();
+                            let visible_count = songs_len.min(8);
+                            let list_h = (visible_count as f32 * music_panel::BASE_LIST_ITEM_HEIGHT as f32 * pet.scale) as f64;
+                            music_panel_h_f += list_h;
                         }
                     }
 
@@ -1339,14 +1342,23 @@ fn main() {
                     let bubble_right_f = pet_off_x + b_left + current_bubble_w_f + padding_edge_v;
                     let pomodoro_right_f = pet_off_x + p_left + current_pomodoro_w_f + padding_edge_v;
                     let win_w = (menu_area_right_f.max(bubble_right_f).max(pomodoro_right_f).max(pet_off_x + cur_pw/2.0 + music_panel_w_f/2.0 + padding_edge_v) + 20.0) as u32;
-                    let base_padding_bottom_v = 40.0 * pet.scale as f64;
-                    let mut win_h_f_final = pet_off_y + cur_ph + base_padding_bottom_v;
-                    if music_player.panel_enabled && (menu_manager.visible || menu_manager.opacity > 0.0) {
-                        win_h_f_final = music_y_f + music_panel_h_f + base_padding_bottom_v;
-                    }
-                    // Sync win_h with the largest needed height (considering menu or extras)
-                    let padding_bottom_v = base_padding_bottom_v.max(menu_h_f_val - cur_ph);
-                    let win_h = win_h_f_final.max(pet_off_y + cur_ph + padding_bottom_v) as u32;
+                    
+                    // --- COMPREHENSIVE HEIGHT CALCULATION ---
+                    // 1. Pet bottom
+                    let pet_bottom = pet_off_y + cur_ph + 5.0 * pet.scale as f64;
+                    
+                    // 2. Menu bottom (if visible)
+                    let menu_bottom = if menu_manager.visible || menu_manager.opacity > 0.0 {
+                        pet_off_y + menu_h_f_val + 5.0 * pet.scale as f64
+                    } else { 0.0 };
+                    
+                    // 3. Music panel bottom (if enabled)
+                    let music_bottom = if music_player.panel_enabled {
+                        music_y_f + music_panel_h_f + 5.0 * pet.scale as f64
+                    } else { 0.0 };
+                    
+                    // Final win_h is the max of all active components' bottoms
+                    let win_h = pet_bottom.max(menu_bottom).max(music_bottom) as u32;
 
                     let target_x = monitor_offset.0 + (pet.position.0 - pet_off_x) as i32;
                     let target_y = monitor_offset.1 + (pet.position.1 - pet_off_y) as i32;
@@ -1455,6 +1467,12 @@ fn main() {
                         last_state = pet.state;
                         last_facing_right = pet.facing_right;
                         last_window_pos = target_pos;
+                        
+                        // Sync physical window size using request_inner_size (used in chat_window)
+                        let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(win_w, win_h));
+                        
+                        // Verification: check if id() works
+                        let _ = window.id();
                         
                         // --- SYNCHRONOUS RENDER START ---
                         menu_manager.update_layout(draw_scale);
