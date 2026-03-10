@@ -421,6 +421,11 @@ pub fn draw_rect(
     }
 }
 
+pub fn apply_opacity(color: u32, opacity: f32) -> u32 {
+    let alpha = (opacity * 255.0).clamp(0.0, 255.0) as u32;
+    (color & 0xFFFFFF) | (alpha << 24)
+}
+
 pub fn draw_rect_alpha(
     buffer: &mut [u32],
     surface_w: u32,
@@ -605,8 +610,9 @@ fn blit_alpha(
             let inv_a = 255 - a;
             let rb_res = (rb_src * a + rb_dest * inv_a) >> 8;
             let g_res = (g_src * a + g_dest * inv_a) >> 8;
+            let a_res = ((color >> 24) * a + (d >> 24) * inv_a) >> 8;
 
-            dest_slice[i] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
+            dest_slice[i] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00) | (a_res << 24);
         }
     }
 }
@@ -831,6 +837,29 @@ pub fn draw_text_dw_ex(
 }
 
 #[cfg(target_os = "windows")]
+#[cfg(target_os = "windows")]
+pub fn get_text_width(text: &str, font_size: f32, is_bold: bool) -> f32 {
+    if text.is_empty() {
+        return 0.0;
+    }
+    unsafe {
+        let layout = get_or_create_layout_ex(
+            text,
+            font_size,
+            2000, // Sufficiently large width for measurement
+            "Microsoft YaHei",
+            is_bold,
+            false,
+        );
+        let mut metrics = std::mem::zeroed();
+        if layout.GetMetrics(&mut metrics).is_ok() {
+            metrics.width
+        } else {
+            0.0
+        }
+    }
+}
+
 fn draw_text_dw_ex_internal(
     buffer: &mut [u32],
     surface_w: u32,
@@ -1002,6 +1031,7 @@ pub fn blit_alpha_pixels(
     let sr = (color >> 16) & 0xFF;
     let sg = (color >> 8) & 0xFF;
     let sb = color & 0xFF;
+    let sa = (color >> 24) & 0xFF;
 
     let surface_w_usize = surface_w as usize;
     let tw_usize = tw as usize;
@@ -1016,14 +1046,14 @@ pub fn blit_alpha_pixels(
         let src_slice = &src_alpha[src_row_off + src_col as usize..];
         let dest_slice = &mut buffer[row_idx + start_x as usize..row_idx + end_x as usize];
 
-        blend_row_u8(dest_slice, src_slice, sr, sg, sb);
+        blend_row_u8(dest_slice, src_slice, sr, sg, sb, sa);
     }
 }
 
 #[inline(always)]
-fn blend_row_u8(dest_slice: &mut [u32], src_alpha: &[u8], sr: u32, sg: u32, sb: u32) {
+fn blend_row_u8(dest_slice: &mut [u32], src_alpha: &[u8], sr: u32, sg: u32, sb: u32, sa: u32) {
     let len = dest_slice.len();
-    let color_v = (sr << 16) | (sg << 8) | sb;
+    let color_v = (sa << 24) | (sr << 16) | (sg << 8) | sb;
 
     for i in 0..len {
         let a = src_alpha[i] as u32;
@@ -1035,8 +1065,9 @@ fn blend_row_u8(dest_slice: &mut [u32], src_alpha: &[u8], sr: u32, sg: u32, sb: 
 
         let rb_res = ((color_v & 0x00FF00FF) * a + rb * inv_a) >> 8;
         let g_res = ((color_v & 0x0000FF00) * a + g * inv_a) >> 8;
+        let a_res = (sa * a + (bg >> 24) * inv_a) >> 8;
 
-        dest_slice[i] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
+        dest_slice[i] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00) | (a_res << 24);
     }
 }
 

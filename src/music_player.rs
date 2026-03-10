@@ -1,7 +1,8 @@
-use rodio::{Decoder, OutputStream, Sink};
+use rodio::{Decoder, OutputStream, Sink, Source};
 use std::fs;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub struct MusicPlayer {
     _stream: Option<OutputStream>,
@@ -10,6 +11,10 @@ pub struct MusicPlayer {
     songs: Vec<PathBuf>,
     current_song_idx: usize,
     pub music_path: Option<PathBuf>,
+    pub current_duration: Option<Duration>,
+    pub panel_enabled: bool,
+    pub list_visible: bool,
+    pub list_scroll_offset: f32,
 }
 
 impl MusicPlayer {
@@ -32,6 +37,10 @@ impl MusicPlayer {
             songs: Vec::new(),
             current_song_idx: 0,
             music_path: None,
+            current_duration: None,
+            panel_enabled: false,
+            list_visible: false,
+            list_scroll_offset: 0.0,
         }
     }
 
@@ -64,6 +73,29 @@ impl MusicPlayer {
         self.current_song_idx = 0;
     }
 
+    pub fn next(&mut self) {
+        if self.songs.is_empty() { return; }
+        self.current_song_idx = (self.current_song_idx + 1) % self.songs.len();
+        self.play_current();
+    }
+
+    pub fn prev(&mut self) {
+        if self.songs.is_empty() { return; }
+        if self.current_song_idx == 0 {
+            self.current_song_idx = self.songs.len() - 1;
+        } else {
+            self.current_song_idx -= 1;
+        }
+        self.play_current();
+    }
+
+    pub fn play_index(&mut self, idx: usize) {
+        if idx < self.songs.len() {
+            self.current_song_idx = idx;
+            self.play_current();
+        }
+    }
+
     pub fn toggle(&mut self) {
         if let Some(sink) = &self.sink {
             if sink.empty() {
@@ -85,6 +117,53 @@ impl MusicPlayer {
             .unwrap_or(false)
     }
 
+    pub fn get_progress(&self) -> (f32, Duration, Duration) {
+        let current = self.sink.as_ref().map(|s| s.get_pos()).unwrap_or(Duration::ZERO);
+        let total = self.current_duration.unwrap_or(Duration::from_secs(1)); // Avoid div zero
+        let progress = (current.as_secs_f32() / total.as_secs_f32()).min(1.0);
+        (progress, current, total)
+    }
+
+    pub fn seek_to(&mut self, fraction: f32) {
+        if let (Some(sink), Some(total)) = (&self.sink, self.current_duration) {
+            let target = Duration::from_secs_f32(total.as_secs_f32() * fraction.clamp(0.0, 1.0));
+            let _ = sink.try_seek(target);
+        }
+    }
+
+    pub fn toggle_panel(&mut self) {
+        self.panel_enabled = !self.panel_enabled;
+        if self.panel_enabled && !self.is_playing() {
+            self.play_current();
+        }
+    }
+
+    pub fn toggle_list(&mut self) {
+        self.list_visible = !self.list_visible;
+    }
+
+    pub fn songs(&self) -> &[PathBuf] {
+        &self.songs
+    }
+
+    pub fn current_idx(&self) -> usize {
+        self.current_song_idx
+    }
+
+    pub fn current_song_name(&self) -> Option<String> {
+        if self.songs.is_empty() { return None; }
+        self.songs[self.current_song_idx]
+            .file_name()?
+            .to_str()
+            .map(|s| {
+                if let Some(idx) = s.rfind('.') {
+                    s[..idx].to_string()
+                } else {
+                    s.to_string()
+                }
+            })
+    }
+
     fn play_current(&mut self) {
         let Some(sink) = &self.sink else { return };
         if self.songs.is_empty() {
@@ -95,6 +174,7 @@ impl MusicPlayer {
         if let Ok(file) = fs::File::open(song_path) {
             let source = Decoder::new(BufReader::new(file)).ok();
             if let Some(source) = source {
+                self.current_duration = source.total_duration();
                 sink.stop();
                 sink.append(source);
                 sink.play();
@@ -109,10 +189,7 @@ impl MusicPlayer {
         if !sink.is_paused() && sink.empty() && !self.songs.is_empty() {
             self.current_song_idx = (self.current_song_idx + 1) % self.songs.len();
             self.play_current();
-            let name = self.songs[self.current_song_idx]
-                .file_name()?
-                .to_string_lossy()
-                .to_string();
+            let name = self.current_song_name().unwrap_or_default();
             return Some(format!("Now Playing: {}", name));
         }
         None

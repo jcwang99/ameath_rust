@@ -9,6 +9,7 @@ mod interaction;
 mod logging;
 mod menu;
 mod music_player;
+mod music_panel;
 mod pet;
 mod pomodoro;
 mod render;
@@ -300,9 +301,10 @@ fn main() {
         .music_path
         .clone()
         .unwrap_or_else(|| std::path::PathBuf::from("assets/music"));
-    if music_dir.exists() {
-        music_player.set_path(music_dir);
+    if !music_dir.exists() {
+        let _ = std::fs::create_dir_all(&music_dir);
     }
+    music_player.set_path(music_dir);
     let mut interaction_manager =
         interaction::InteractionManager::new(ai_config.clone(), scheduler.clone());
     let (path_tx, path_rx) = std::sync::mpsc::channel::<Option<std::path::PathBuf>>();
@@ -532,18 +534,33 @@ fn main() {
                                                                     }
                                                                 }
                                                                 menu::MenuAction::Music => {
-                                                                    music_player.toggle();
-                                                                    let mut b = bubble::SpeechBubble::new();
-                                                                    if music_player.is_playing() {
-                                                                        b.show("Music Started! 🎵", Duration::from_secs(2), pet.scale);
-                                                                    } else {
-                                                                        b.show("Music Paused ⏸️", Duration::from_secs(2), pet.scale);
-                                                                    }
-                                                                    bubbles.push(b);
+                                                                    music_player.toggle_panel();
                                                                     window.request_redraw();
                                                                 }
                                                                 menu::MenuAction::Exit => elwt.exit(),
                                                             }
+                                                        }
+                                                    }
+                                                }
+
+                                                if !handled && music_player.panel_enabled && (menu_manager.visible || menu_manager.opacity > 0.0) {
+                                                    if let Some(pos) = last_cursor_pos {
+                                                        let (cur_pw, cur_ph) = pet.get_scaled_size();
+                                                        let panel_w = (music_panel::BASE_PANEL_WIDTH as f32 * pet.scale) as f64;
+                                                        let panel_x = (pet_off_x + cur_pw/2.0 - panel_w/2.0) as i32;
+                                                         let mut panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
+                                                        
+                                                        if let Some(action) = music_panel::check_music_panel_hit(&music_player, pos.x, pos.y, panel_x, panel_y, pet.scale) {
+                                                            handled = true;
+                                                            match action {
+                                                                music_panel::MusicPanelAction::PlayPause => music_player.toggle(),
+                                                                music_panel::MusicPanelAction::Prev => music_player.prev(),
+                                                                music_panel::MusicPanelAction::Next => music_player.next(),
+                                                                music_panel::MusicPanelAction::Seek(f) => music_player.seek_to(f),
+                                                                music_panel::MusicPanelAction::ToggleList => music_player.toggle_list(),
+                                                                music_panel::MusicPanelAction::SelectSong(idx) => music_player.play_index(idx),
+                                                            }
+                                                            window.request_redraw();
                                                         }
                                                     }
                                                 }
@@ -669,7 +686,7 @@ fn main() {
                                     }
                                 }
                             }
-                            WindowEvent::Moved(pos) => {
+                            WindowEvent::Moved(_pos) => {
                                 // Dynamic monitor re-basing
                                 if let Some(monitor) = window.current_monitor() {
                                     let m_pos = monitor.position();
@@ -699,6 +716,31 @@ fn main() {
                             }
                             WindowEvent::Focused(true) => {
                                 ui_primitives::harvest_memory();
+                            }
+                            WindowEvent::MouseWheel { delta, .. } => {
+                                if music_player.panel_enabled && (menu_manager.visible || menu_manager.opacity > 0.0) {
+                                    if let Some(pos) = last_cursor_pos {
+                                        let (cur_pw, _cur_ph) = pet.get_scaled_size();
+                                        let panel_w = (music_panel::BASE_PANEL_WIDTH as f32 * pet.scale) as f64;
+                                        let panel_x = (pet_off_x + cur_pw/2.0 - panel_w/2.0) as i32;
+                                        let music_h = (music_panel::BASE_PANEL_HEIGHT as f32 * pet.scale) as f64;
+                                        let mut panel_y = (pet_off_y - (10.0 * pet.scale as f64) - music_h) as i32;
+                                        if pomodoro_manager.visible {
+                                            panel_y -= (pomodoro::BASE_POMODORO_HEIGHT as f32 * pet.scale + 10.0 * pet.scale) as i32;
+                                        }
+                                        let panel_h = music_panel::BASE_PANEL_HEIGHT as f32 * pet.scale;
+                                        
+                                        if pos.x >= panel_x as f64 && pos.x < panel_x as f64 + panel_w &&
+                                           pos.y >= (panel_y as f64 + panel_h as f64) {
+                                            let dy = match delta {
+                                                winit::event::MouseScrollDelta::LineDelta(_, y) => y * 20.0,
+                                                winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32,
+                                            };
+                                            music_player.list_scroll_offset = (music_player.list_scroll_offset - dy).max(0.0);
+                                            window.request_redraw();
+                                        }
+                                    }
+                                }
                             }
                             _ => {}
                         }
@@ -1242,6 +1284,17 @@ fn main() {
                     let menu_w_f = if menu_manager.visible || menu_manager.opacity > 0.0 { menu_manager.menu_width as f64 } else { 0.0 };
                     let menu_h_f_val = if menu_manager.visible || menu_manager.opacity > 0.0 { menu_manager.menu_height as f64 } else { 0.0 };
 
+                    let mut music_panel_w_f = 0.0;
+                    let mut music_panel_h_f = 0.0;
+                    if music_player.panel_enabled && (menu_manager.visible || menu_manager.opacity > 0.0) {
+                        music_panel_w_f = (music_panel::BASE_PANEL_WIDTH as f32 * pet.scale) as f64;
+                        music_panel_h_f = (music_panel::BASE_PANEL_HEIGHT as f32 * pet.scale) as f64;
+                        if music_player.list_visible && !music_player.songs().is_empty() {
+                            let list_h = (music_player.songs().len().min(8) as f32 * music_panel::BASE_LIST_ITEM_HEIGHT as f32 * pet.scale) as f64;
+                            music_panel_h_f += list_h + (5.0 * pet.scale as f64);
+                        }
+                    }
+
                     let gap_between = 10.0 * pet.scale as f64;
                     let pet_cx = cur_pw / 2.0;
                     let b_left = pet_cx - current_bubble_w_f / 2.0;
@@ -1260,7 +1313,7 @@ fn main() {
                     }
                     if pomodoro_manager.visible { extras_h += current_pomodoro_h_f + gap_between; }
                     if is_thinking { extras_h += loading_h_f + gap_between; }
-
+                    
                     pet_off_y = padding_top_v + extras_h;
 
                     let loading_y_f = if is_thinking { pet_off_y - gap_between - loading_h_f } else { pet_off_y };
@@ -1270,6 +1323,10 @@ fn main() {
                     let pomodoro_y_f = if !bubbles.is_empty() { bubble_y_f - gap_between - current_pomodoro_h_f }
                                      else if is_thinking { loading_y_f - gap_between - current_pomodoro_h_f }
                                      else { pet_off_y - gap_between - current_pomodoro_h_f };
+                    
+                    let music_y_f = if music_player.panel_enabled && (menu_manager.visible || menu_manager.opacity > 0.0) {
+                                       pet_off_y + cur_ph + gap_between
+                                    } else { pet_off_y + cur_ph };
 
                     let loading_x_f = pet_off_x + cur_pw/2.0 - loading_w_f / 2.0;
                     let _bx_f = pet_off_x + b_left;
@@ -1281,11 +1338,15 @@ fn main() {
                     let menu_area_right_f = pet_right + gap_between + menu_w_f + (20.0 * pet.scale as f64);
                     let bubble_right_f = pet_off_x + b_left + current_bubble_w_f + padding_edge_v;
                     let pomodoro_right_f = pet_off_x + p_left + current_pomodoro_w_f + padding_edge_v;
-                    let win_w_f = (menu_area_right_f.max(bubble_right_f).max(pomodoro_right_f) + 20.0) as u32;
-
-                    let base_padding_bottom_v = 20.0 * pet.scale as f64;
+                    let win_w = (menu_area_right_f.max(bubble_right_f).max(pomodoro_right_f).max(pet_off_x + cur_pw/2.0 + music_panel_w_f/2.0 + padding_edge_v) + 20.0) as u32;
+                    let base_padding_bottom_v = 40.0 * pet.scale as f64;
+                    let mut win_h_f_final = pet_off_y + cur_ph + base_padding_bottom_v;
+                    if music_player.panel_enabled && (menu_manager.visible || menu_manager.opacity > 0.0) {
+                        win_h_f_final = music_y_f + music_panel_h_f + base_padding_bottom_v;
+                    }
+                    // Sync win_h with the largest needed height (considering menu or extras)
                     let padding_bottom_v = base_padding_bottom_v.max(menu_h_f_val - cur_ph);
-                    let win_h_f = (pet_off_y + cur_ph + padding_bottom_v + 40.0) as u32;
+                    let win_h = win_h_f_final.max(pet_off_y + cur_ph + padding_bottom_v) as u32;
 
                     let target_x = monitor_offset.0 + (pet.position.0 - pet_off_x) as i32;
                     let target_y = monitor_offset.1 + (pet.position.1 - pet_off_y) as i32;
@@ -1321,13 +1382,23 @@ fn main() {
                         }
                     }
 
-                    is_hovered = over_pet || over_menu || over_bubble;
+                    let mut over_music = false;
+                    if music_player.panel_enabled && (menu_manager.visible || menu_manager.opacity > 0.0) {
+                        let m_local_x = pet.position.0 - pet_off_x + (pet_off_x + cur_pw/2.0 - music_panel_w_f/2.0);
+                        let m_local_y = pet.position.1 - pet_off_y + music_y_f;
+                        if mouse_x >= m_local_x && mouse_x <= m_local_x + music_panel_w_f &&
+                           mouse_y >= m_local_y && mouse_y <= m_local_y + music_panel_h_f {
+                            over_music = true;
+                        }
+                    }
+
+                    is_hovered = over_pet || over_menu || over_bubble || over_music;
                     
                     if is_hovered {
                         for b in &mut bubbles {
                             b.keep_alive();
                         }
-                        if over_pet || over_menu {
+                        if over_pet || over_menu || over_music {
                             if !menu_manager.visible || menu_manager.opacity < 1.0 {
                                 needs_pet_redraw = true;
                             }
@@ -1388,8 +1459,6 @@ fn main() {
                         // --- SYNCHRONOUS RENDER START ---
                         menu_manager.update_layout(draw_scale);
 
-                        let win_w = win_w_f;
-                        let win_h = win_h_f;
 
                         let total_size = win_w as usize * win_h as usize * 4usize;
                         if composite_data.len() != total_size { composite_data.resize(total_size, 0); }
@@ -1636,6 +1705,21 @@ fn main() {
                         // 3. Menu
                         if menu_manager.visible || menu_manager.opacity > 0.0 {
                             menu_manager.render(composite_data.as_mut_slice(), win_w as i32, win_h as i32, menu_x_f as i32, menu_y_f as i32);
+                            
+                            // 3.5 Music Panel (only when menu is visible/hovering)
+                            if music_player.panel_enabled {
+                                let (cur_pw, _cur_ph) = pet.get_scaled_size();
+                                let panel_w = (music_panel::BASE_PANEL_WIDTH as f32 * pet.scale) as f64;
+                                let panel_x = (pet_off_x + cur_pw/2.0 - panel_w/2.0) as i32;
+                                let mut panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
+                                let comp_u32 = unsafe {
+                                    std::slice::from_raw_parts_mut(
+                                        composite_data.as_mut_ptr() as *mut u32,
+                                        composite_data.len() / 4,
+                                    )
+                                };
+                                music_panel::render_music_panel(&music_player, comp_u32, win_w, win_h, panel_x, panel_y, pet.scale, menu_manager.opacity);
+                            }
                         }
 
                         #[cfg(target_os = "windows")]
@@ -1674,6 +1758,11 @@ fn main() {
 
                     if needs_high_freq {
                         next_deadline = next_deadline.min(now + target_frame_duration);
+                    }
+                    
+                    // Extra deadline check for music progress bar
+                    if music_player.panel_enabled && music_player.is_playing() && (menu_manager.visible || menu_manager.opacity > 0.0) {
+                        next_deadline = next_deadline.min(now + Duration::from_millis(100));
                     }
 
                     if chat_window.is_visible() {
