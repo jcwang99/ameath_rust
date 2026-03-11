@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 pub mod browser;
 pub mod memory_skill;
+pub mod notification_skill;
 pub mod reminder_skill;
 pub mod system;
 pub mod work_log;
@@ -49,6 +50,7 @@ impl SkillManager {
         manager.register(Arc::new(reminder_skill::ScheduleReminderSkill::new(
             scheduler,
         )));
+        manager.register(Arc::new(notification_skill::NotificationSkill::new()));
         manager.register(Arc::new(work_log::WorkLogSkill::new(memory)));
 
         manager
