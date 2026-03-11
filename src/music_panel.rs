@@ -255,30 +255,89 @@ pub fn render_music_panel(
     let prog_w = w - (24.0 * scale) as u32;
     let (progress, current_dur, total_dur) = player.get_progress();
 
-    // Background line
+    // --- Dynamic Hover & Glow Logic ---
+    let mut prog_hovered = false;
+    let rel_mx = mx as i32 - prog_x;
+    let rel_my = my as i32 - prog_y;
+    // Expanded hit area for better touch/mouse feel (-10 to +15 pixels vertically)
+    if rel_mx >= -5 && rel_mx <= prog_w as i32 + 5 {
+        if rel_my >= (-10.0 * scale) as i32 && rel_my <= (15.0 * scale) as i32 {
+            prog_hovered = true;
+        }
+    }
+
+    let bar_h = if prog_hovered { (4.0 * scale).max(1.0) as u32 } else { (2.0 * scale).max(1.0) as u32 };
+    let bar_y_offset = if prog_hovered { (2.0 * scale) as i32 } else { (3.0 * scale) as i32 };
+    let active_w = (prog_w as f32 * progress) as u32;
+
+    // 5.1 Glow Layer (rendered only when hovered for the neon effect)
+    if prog_hovered && active_w > 0 {
+        let glow_h = (12.0 * scale) as u32;
+        let glow_y_offset = bar_y_offset - ((glow_h as i32 - bar_h as i32) / 2);
+        ui_primitives::draw_rect_alpha(
+            buffer,
+            win_w,
+            prog_x,
+            prog_y + glow_y_offset,
+            active_w,
+            glow_h,
+            0xFB7299, // Pink neon source
+            0.15 * opacity, // Soft bloom opacity mapping
+            win_w,
+            win_h,
+        );
+    }
+
+    // 5.2 Background line (Track)
     ui_primitives::draw_rect(
         buffer,
         win_w,
         prog_x,
-        prog_y + (3.0 * scale) as i32,
+        prog_y + bar_y_offset,
         prog_w,
-        (3.0 * scale) as u32,
-        ui_primitives::apply_opacity(0x333333, opacity),
+        bar_h,
+        ui_primitives::apply_opacity(if prog_hovered { 0x4A4A4A } else { 0x333333 }, opacity), // Slightly lighter track on hover
         win_w,
         win_h,
     );
-    // Active line
-    ui_primitives::draw_rect(
-        buffer,
-        win_w,
-        prog_x,
-        prog_y + (3.0 * scale) as i32,
-        (prog_w as f32 * progress) as u32,
-        (3.0 * scale) as u32,
-        ui_primitives::apply_opacity(0xFB7299, opacity),
-        win_w,
-        win_h,
-    );
+
+    // 5.3 Active line (Fill)
+    if active_w > 0 {
+        ui_primitives::draw_rect(
+            buffer,
+            win_w,
+            prog_x,
+            prog_y + bar_y_offset,
+            active_w,
+            bar_h,
+            ui_primitives::apply_opacity(0xFB7299, opacity),
+            win_w,
+            win_h,
+        );
+    }
+
+    // 5.4 Thumb Indicator (rendered only when hovered, at the tip of the fill)
+    if prog_hovered {
+        let thumb_r = (4.0 * scale).max(1.0) as u32;
+        let thumb_d = thumb_r * 2;
+        // Position thumb centered perfectly at the end of active line
+        let thumb_x = prog_x + active_w as i32 - thumb_r as i32;
+        let thumb_y = prog_y + bar_y_offset + (bar_h as i32 / 2) - thumb_r as i32;
+        
+        // Draw the white circular head
+        ui_primitives::draw_rounded_rect(
+            buffer,
+            win_w,
+            thumb_x,
+            thumb_y,
+            thumb_d,
+            thumb_d,
+            thumb_r,
+            ui_primitives::apply_opacity(0xFFFFFF, opacity),
+            win_w,
+            win_h,
+        );
+    }
 
     // Time text (Mini style: 01:23 / 03:45 at bottom right)
     let time_text = format!("{:02}:{:02}/{:02}:{:02}", 
