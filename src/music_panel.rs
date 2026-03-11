@@ -31,6 +31,8 @@ pub fn render_music_panel(
     panel_y: i32,
     scale: f32,
     opacity: f32,
+    mx: f64,
+    my: f64,
 ) {
     if !player.panel_enabled || opacity <= 0.0 {
         return;
@@ -49,7 +51,9 @@ pub fn render_music_panel(
     }
 
     // 1. Background
-    let bg_color = ui_primitives::apply_opacity(0x1F1F1F, opacity);
+    // Changed base color and applied a 0.85 alpha multiplier to the global opacity
+    // This allows the desktop background to subtly show through, creating a glassmorphism effect.
+    let bg_color = ui_primitives::apply_opacity(0x151515, opacity * 0.85);
     ui_primitives::draw_rounded_rect(
         buffer,
         win_w,
@@ -77,7 +81,7 @@ pub fn render_music_panel(
         cover_size,
         cover_size,
         cover_size / 2,
-        ui_primitives::apply_opacity(0x111111, opacity),
+        ui_primitives::apply_opacity(0x0A0A0A, opacity), // Darkened disc base
         win_w,
         win_h,
     );
@@ -322,20 +326,19 @@ pub fn render_music_panel(
             }
 
             let is_current = i == player.current_idx();
+            let mut is_hovered = false;
             
-            if is_current {
-                ui_primitives::draw_rect(
-                    buffer,
-                    win_w,
-                    panel_x + (5.0 * scale) as i32,
-                    item_y,
-                    w - (10.0 * scale) as u32,
-                    item_h as u32,
-                    ui_primitives::apply_opacity(0x333333, opacity),
-                    win_w,
-                    win_h,
-                );
+            // Check if mouse is hovering over this list item
+            let rel_x = mx as i32 - panel_x;
+            let rel_y = my as i32 - item_y;
+            if rel_x >= (5.0 * scale) as i32 && rel_x < (w as i32 - (5.0 * scale) as i32) {
+                if rel_y >= 0 && rel_y < item_h {
+                    is_hovered = true;
+                }
             }
+            
+            // Removed: background draw_rect for is_current/is_hovered
+            // We now rely purely on text stylings based on visual cues
 
             let song_name = songs[i].file_name().and_then(|f| f.to_str()).unwrap_or("Unknown");
             let display_name = if let Some(dot_idx) = song_name.rfind('.') {
@@ -364,14 +367,25 @@ pub fn render_music_panel(
                 item_scroll_x = item_scroll_x.min(0.0).max(-overflow);
             }
 
+            let mut target_font_size = 11.0 * scale;
+            let mut target_color = text_color; // Default text color
+
+            if is_current {
+                target_font_size = if is_hovered { 12.0 * scale } else { 11.5 * scale };
+                target_color = ui_primitives::apply_opacity(0xFB7299, opacity); // Pinkish for active
+            } else if is_hovered {
+                target_font_size = 12.0 * scale;
+                target_color = ui_primitives::apply_opacity(0xFFFFFF, opacity * 1.5); // Brighter white for hover
+            }
+
             ui_primitives::draw_text_dw_ex_nowrap(
                 buffer,
                 win_w,
                 &item_text,
                 panel_x + (15.0 * scale) as i32,
                 item_y + (4.0 * scale) as i32,
-                11.0 * scale,
-                if is_current { ui_primitives::apply_opacity(0xFB7299, opacity) } else { text_color },
+                target_font_size,
+                target_color,
                 item_max_w,
                 item_h as u32,
                 0.0,

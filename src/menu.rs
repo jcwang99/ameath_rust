@@ -128,74 +128,60 @@ impl QuickMenu {
         }
     }
 
-    pub fn render(&self, buffer: &mut [u8], win_w: i32, win_h: i32, menu_x: i32, menu_y: i32) {
+    pub fn render(&self, buffer: &mut [u8], win_w: i32, win_h: i32, menu_x: i32, menu_y: i32, mx: f64, my: f64) {
         if self.opacity <= 0.0 {
             return;
         }
 
         let alpha_mult = self.opacity;
 
-        // Draw Background (Glass effect: much more transparent)
-        let bg_r = 0xFA;
-        let bg_g = 0xF5;
-        let bg_b = 0xFF;
-        let bg_a = (60.0 * alpha_mult) as u8;
-
-        for y in 0..self.menu_height {
-            let screen_y = menu_y + y;
-            if screen_y < 0 || screen_y >= win_h {
-                continue;
-            }
-
-            for x in 0..self.menu_width {
-                let screen_x = menu_x + x;
-                if screen_x < 0 || screen_x >= win_w {
-                    continue;
-                }
-
-                let idx = (screen_y * win_w + screen_x) as usize * 4;
-                if idx + 3 < buffer.len() {
-                    if buffer[idx + 3] == 0 {
-                        buffer[idx] = bg_b;
-                        buffer[idx + 1] = bg_g;
-                        buffer[idx + 2] = bg_r;
-                        buffer[idx + 3] = bg_a;
-                    } else {
-                        let src_a = bg_a as u32;
-                        let inv_a = 255 - src_a;
-                        let dst_b = buffer[idx] as u32;
-                        let dst_g = buffer[idx + 1] as u32;
-                        let dst_r = buffer[idx + 2] as u32;
-
-                        buffer[idx] = ((bg_b as u32 * src_a + dst_b * inv_a) / 255) as u8;
-                        buffer[idx + 1] = ((bg_g as u32 * src_a + dst_g * inv_a) / 255) as u8;
-                        buffer[idx + 2] = ((bg_r as u32 * src_a + dst_r * inv_a) / 255) as u8;
-                        buffer[idx + 3] = 255.min(buffer[idx + 3] as u32 + src_a) as u8;
-                    }
-                }
-            }
-        }
+        let hovered_id = self.check_hit(mx, my, menu_x, menu_y);
 
         // Draw Buttons
         for btn in &self.scaled_buttons {
-            let w = btn.rect.2 - btn.rect.0;
-            let h = btn.rect.3 - btn.rect.1;
+            let is_hovered = hovered_id == Some(btn.id);
+            let hover_scale = if is_hovered { 1.2 } else { 1.0 };
+            
+            let btn_center_x = btn.rect.0 + (btn.rect.2 - btn.rect.0) / 2;
+            let btn_center_y = btn.rect.1 + (btn.rect.3 - btn.rect.1) / 2;
 
-            for y in 0..h {
-                let sy = btn.rect.1 + y;
+            let orig_w = btn.rect.2 - btn.rect.0;
+            let orig_h = btn.rect.3 - btn.rect.1;
+
+            let draw_w = (orig_w as f32 * hover_scale) as i32;
+            let draw_h = (orig_h as f32 * hover_scale) as i32;
+
+            let draw_x_offset = btn_center_x - draw_w / 2;
+            let draw_y_offset = btn_center_y - draw_h / 2;
+            
+            // On-the-fly upscale if hovered for crispness
+            let icon_to_draw = if is_hovered {
+                 image::DynamicImage::ImageRgba8(btn.icon.clone())
+                    .resize(
+                        draw_w as u32,
+                        draw_h as u32,
+                        image::imageops::FilterType::Triangle,
+                    )
+                    .to_rgba8()
+            } else {
+                 btn.icon.clone()
+            };
+
+            for y in 0..draw_h {
+                let sy = draw_y_offset + y;
                 let screen_y = menu_y + sy;
                 if screen_y < 0 || screen_y >= win_h {
                     continue;
                 }
 
-                for x in 0..w {
-                    let sx = btn.rect.0 + x;
+                for x in 0..draw_w {
+                    let sx = draw_x_offset + x;
                     let screen_x = menu_x + sx;
                     if screen_x < 0 || screen_x >= win_w {
                         continue;
                     }
 
-                    let pixel = btn.icon.get_pixel(x as u32, y as u32);
+                    let pixel = icon_to_draw.get_pixel(x as u32, y as u32);
                     let src_a = (pixel[3] as f32 * alpha_mult) as u8;
 
                     if src_a > 0 {

@@ -288,6 +288,7 @@ fn main() {
     let mut last_response_segments: Vec<bubble::BubbleContent> = Vec::new();
     let mut last_pure_text_response: String = String::new();
     let mut hover_leave_time: Option<Instant> = None;
+    let mut last_processed_mouse: (f64, f64) = (0.0, 0.0);
     let mut pomodoro_manager = pomodoro::Pomodoro::new();
     let mut menu_manager = menu::QuickMenu::new();
     let mut music_player = music_player::MusicPlayer::new();
@@ -1454,6 +1455,11 @@ fn main() {
                     let now = Instant::now();
                     let any_bubble_animating = bubbles.iter().any(|b| now >= b.next_frame_at());
 
+                    let mouse_moved = (current_mouse.0 - last_processed_mouse.0).abs() > 0.5 || (current_mouse.1 - last_processed_mouse.1).abs() > 0.5;
+                    if mouse_moved && is_hovered {
+                        needs_pet_redraw = true;
+                    }
+
                     if needs_pet_redraw || pet_frame_changed || layout_changed || loading_frame_changed || 
                        any_bubble_animating || now >= pet.next_frame_at() {
                         needs_pet_redraw = true;
@@ -1467,6 +1473,7 @@ fn main() {
                         last_state = pet.state;
                         last_facing_right = pet.facing_right;
                         last_window_pos = target_pos;
+                        last_processed_mouse = current_mouse;
                         
                         // Sync physical window size using request_inner_size (used in chat_window)
                         let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(win_w, win_h));
@@ -1722,7 +1729,10 @@ fn main() {
 
                         // 3. Menu
                         if menu_manager.visible || menu_manager.opacity > 0.0 {
-                            menu_manager.render(composite_data.as_mut_slice(), win_w as i32, win_h as i32, menu_x_f as i32, menu_y_f as i32);
+                            let mx_buffer = mouse_x - pet.position.0 + pet_off_x;
+                            let my_buffer = mouse_y - pet.position.1 + pet_off_y;
+
+                            menu_manager.render(composite_data.as_mut_slice(), win_w as i32, win_h as i32, menu_x_f as i32, menu_y_f as i32, mx_buffer, my_buffer);
                             
                             // 3.5 Music Panel (only when menu is visible/hovering)
                             if music_player.panel_enabled {
@@ -1737,7 +1747,7 @@ fn main() {
                                         composite_data.len() / 4,
                                     )
                                 };
-                                music_panel::render_music_panel(&music_player, comp_u32, win_w, win_h, panel_x, panel_y, pet.scale, menu_manager.opacity);
+                                music_panel::render_music_panel(&music_player, comp_u32, win_w, win_h, panel_x, panel_y, pet.scale, menu_manager.opacity, mx_buffer, my_buffer);
                             }
                         }
 
