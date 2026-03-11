@@ -173,6 +173,7 @@ impl ChatKernel {
             );
 
             let mut final_response = None;
+            let mut fc_traces = Vec::new();
 
             while turns < max_turns {
                 turns += 1;
@@ -185,10 +186,11 @@ impl ChatKernel {
 
                 match response_result {
                     Ok(response_msg) => {
-                        let content_preview = if response_msg.content.as_str().len() > 100 {
-                            format!("{}...", &response_msg.content.as_str()[..100])
+                        let content_str = response_msg.content.as_str();
+                        let content_preview = if content_str.chars().count() > 100 {
+                            format!("{}...", content_str.chars().take(100).collect::<String>())
                         } else {
-                            response_msg.content.as_str().to_string()
+                            content_str.to_string()
                         };
                         
                         tracing::info!("LLM Response Received | Role: {} | Content: \"{}\"", 
@@ -206,10 +208,7 @@ impl ChatKernel {
                         if let Some(tool_calls) = &response_msg.tool_calls {
                             if tool_calls.is_empty() {
                                 tracing::info!("Tool calls field is present but empty. Breaking loop as final response.");
-                                // Completion Phase: Store final response in Layer 1
-                                self.memory.add_message(&user_msg).ok(); 
-                                self.memory.add_message(&response_msg).ok(); 
-                                final_response = Some(response_msg.content);
+                                final_response = Some(response_msg.clone());
                                 break; // Break inner loop
                             }
 
@@ -251,6 +250,11 @@ impl ChatKernel {
                                     e
                                 };
 
+                                fc_traces.push(format!(
+                                    "Tool: {}\nArgs: {}\nOutput: {}",
+                                    skill_name, args_str, result
+                                ));
+
                                 let tool_response = Message {
                                     role: "tool".to_string(),
                                     content: Content::Simple(result),
@@ -270,10 +274,7 @@ impl ChatKernel {
                                 "No tool calls. Final response received. ({} turns)",
                                 turns
                             );
-                            // Completion Phase: Store final response in Layer 1
-                            self.memory.add_message(&user_msg).ok(); // Save initiated user message now
-                            self.memory.add_message(&response_msg).ok(); // This is the final answer
-                            final_response = Some(response_msg.content);
+                            final_response = Some(response_msg.clone());
                             break; // Break inner loop
                         }
                     }
@@ -285,8 +286,49 @@ impl ChatKernel {
                 }
             }
 
-            if let Some(content) = final_response {
-                // Orchestrate summarization (L1 -> L2) if needed
+            if let Some(mut response_msg) = final_response {
+                let original_content = response_msg.content.as_str().to_string();
+                
+                // 1. Process FC Traces
+                let fc_summary = if !fc_traces.is_empty() {
+                    let mut combined_traces = fc_traces.join("\n---\n");
+                    if combined_traces.len() > 2500 {
+                        tracing::info!("FC traces too long ({} chars), summarizing...", combined_traces.len());
+                        let summary_prompt = vec![Message {
+                            role: "system".to_string(),
+                            content: Content::Simple(format!(
+                                "Please summarize the following tool calling process into a concise log within 1000 tokens. \
+                                Focus on what tools were called and what key information was obtained.\n\n[Tool Traces]:\n{}",
+                                combined_traces
+                            )),
+                            tool_calls: None,
+                            tool_call_id: None,
+                        }];
+                        if let Ok(summary_msg) = client.chat(summary_prompt, None).await {
+                            combined_traces = summary_msg.content.as_str().to_string();
+                        }
+                    }
+                    Some(combined_traces)
+                } else {
+                    None
+                };
+
+                // 2. Prepare content for DB (with FC traces)
+                let db_content = if let Some(traces) = fc_summary {
+                    format!("{}\n\n--- FC 调用过程记录 ---\n{}", original_content, traces)
+                } else {
+                    original_content.clone()
+                };
+
+                // 3. Save to Memory (L1)
+                self.memory.add_message(&user_msg).ok();
+                response_msg.content = Content::Simple(db_content);
+                self.memory.add_message(&response_msg).ok();
+
+                // 4. Send to UI (Original content only)
+                let _ = tx.send(AiResponseEvent::Response(original_content));
+
+                // 5. Orchestrate summarization (L1 -> L2)
                 let kernel_clone = Arc::new(Self {
                     config: self.config.clone(),
                     client: self.client.clone(),
@@ -296,7 +338,6 @@ impl ChatKernel {
                 tokio::spawn(async move {
                     kernel_clone.orchestrate_summarization().await.ok();
                 });
-                let _ = tx.send(AiResponseEvent::Response(content.as_str().to_string()));
                 return;
             }
 
@@ -316,10 +357,11 @@ impl ChatKernel {
                 .filter(|m| m.role == "tool" || (m.role == "assistant" && m.tool_calls.is_some()))
                 .take(trace_capture_len)
                 .map(|m| {
-                    let content_preview = if m.content.as_str().len() > 200 {
-                        format!("{}...", &m.content.as_str()[..200])
+                    let content_str = m.content.as_str();
+                    let content_preview = if content_str.chars().count() > 200 {
+                        format!("{}...", content_str.chars().take(200).collect::<String>())
                     } else {
-                        m.content.as_str().to_string()
+                        content_str.to_string()
                     };
                     format!("[{}] {}", m.role, content_preview)
                 })
