@@ -177,14 +177,24 @@ impl ChatKernel {
             while turns < max_turns {
                 turns += 1;
                 tracing::info!("Turn {}/{}", turns, max_turns);
-
                 let _ = tx.send(AiResponseEvent::Status(ThinkingState::Network));
+                
+                tracing::debug!("Requesting LLM with {} messages", messages.len());
                 let response_result = client.chat(messages.clone(), tools_opt.clone()).await;
                 let _ = tx.send(AiResponseEvent::Status(ThinkingState::Standard));
 
                 match response_result {
                     Ok(response_msg) => {
-                        tracing::debug!("LLM Response Role: {}", response_msg.role);
+                        let content_preview = if response_msg.content.as_str().len() > 100 {
+                            format!("{}...", &response_msg.content.as_str()[..100])
+                        } else {
+                            response_msg.content.as_str().to_string()
+                        };
+                        
+                        tracing::info!("LLM Response Received | Role: {} | Content: \"{}\"", 
+                            response_msg.role, 
+                            content_preview.replace("\n", " ")
+                        );
                         if let Some(calls) = &response_msg.tool_calls {
                             if !calls.is_empty() {
                                 tracing::info!("Tool Calls detected: {}", calls.len());
@@ -195,13 +205,15 @@ impl ChatKernel {
 
                         if let Some(tool_calls) = &response_msg.tool_calls {
                             if tool_calls.is_empty() {
-                                tracing::info!("Tool calls exist but are empty. Considering it a final response.");
+                                tracing::info!("Tool calls field is present but empty. Breaking loop as final response.");
                                 // Completion Phase: Store final response in Layer 1
                                 self.memory.add_message(&user_msg).ok(); 
                                 self.memory.add_message(&response_msg).ok(); 
                                 final_response = Some(response_msg.content);
                                 break; // Break inner loop
                             }
+
+                            tracing::info!("Processing {} tool calls...", tool_calls.len());
 
                             // Execution Phase
                             for tool_call in tool_calls {

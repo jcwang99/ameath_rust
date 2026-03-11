@@ -109,8 +109,15 @@ impl OpenAiClient {
         tools: Option<Vec<Value>>,
     ) -> Result<Message, String> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        tracing::info!("Requesting URL: {}", url);
-        tracing::info!("Using Model: {}", self.model);
+        
+        // Detailed request context
+        let role_counts = messages.iter().fold(std::collections::HashMap::new(), |mut acc, m| {
+            *acc.entry(&m.role).or_insert(0) += 1;
+            acc
+        });
+        tracing::info!("AI Request | URL: {} | Model: {} | Messages: {} ({:?})", 
+            url, self.model, messages.len(), role_counts
+        );
 
         let request = ChatRequest {
             model: self.model.clone(),
@@ -126,25 +133,36 @@ impl OpenAiClient {
             .send()
             .await
             .map_err(|e| {
-                tracing::error!("Request failed: {}", e);
+                tracing::error!("Request Transport Error: {}", e);
                 format!("Request failed: {}", e)
             })?;
 
-        tracing::info!("Response Status: {}", response.status());
+        let status = response.status();
+        tracing::info!("AI Response Status: {}", status);
 
-        if !response.status().is_success() {
-            let status_code = response.status();
+        if !status.is_success() {
             let error_text = response
                 .text()
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(format!("API Error ({}): {}", status_code, error_text));
+            tracing::error!("API Error Body: {}", error_text);
+            return Err(format!("API Error ({}): {}", status, error_text));
         }
 
-        let chat_response: ChatResponse = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse response: {}", e))?;
+        let body_text = response.text().await.map_err(|e| {
+            tracing::error!("Failed to get response text: {}", e);
+            format!("Failed to get body: {}", e)
+        })?;
+
+        let chat_response: ChatResponse = serde_json::from_str(&body_text).map_err(|e| {
+            let preview = if body_text.len() > 500 {
+                format!("{}...", &body_text[..500])
+            } else {
+                body_text.clone()
+            };
+            tracing::error!("JSON Parse Error: {} | Body Content: {}", e, preview);
+            format!("Failed to parse response: {}", e)
+        })?;
 
         chat_response
             .choices
