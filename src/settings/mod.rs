@@ -681,7 +681,13 @@ impl SettingsWindow {
             let mut back_buffer = self.render_back_buffer.lock().unwrap();
             if let Some(res) = back_buffer.take() {
                 if res.w == w && res.h == h {
-                    let mut buffer = self.surface.buffer_mut().unwrap();
+                    let mut buffer = match self.surface.buffer_mut() {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::error!("Failed to get surface buffer from background result: {}. Skipping frame.", e);
+                            return;
+                        }
+                    };
                     unsafe {
                         std::ptr::copy_nonoverlapping(
                             res.pixels.as_ptr(),
@@ -752,7 +758,10 @@ impl SettingsWindow {
 
             let mut pixels = {
                 let mut idle = self.idle_buffers.lock().unwrap();
-                idle.pop().unwrap_or_else(|| vec![0u32; (w * h) as usize])
+                idle.pop().unwrap_or_else(|| {
+                    tracing::debug!("Creating new pixel buffer for settings window ({}x{})", w, h);
+                    vec![0u32; (w * h) as usize]
+                })
             };
             if pixels.len() != (w * h) as usize {
                 pixels = vec![0u32; (w * h) as usize];
@@ -765,7 +774,13 @@ impl SettingsWindow {
             });
         }
 
-        let mut buffer = self.surface.buffer_mut().unwrap();
+        let mut buffer = match self.surface.buffer_mut() {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("Failed to get surface buffer for composition: {}. Skipping frame.", e);
+                return;
+            }
+        };
 
         // 1.5 Restore background if no new background frame was just copied
         // (This happens during smooth scrolling dragging between worker frames)
@@ -788,7 +803,13 @@ impl SettingsWindow {
                     && (cx + cw as i32) <= w as i32
                     && (cy + ch as i32) <= h as i32
                 {
-                    let mut buffer = self.surface.buffer_mut().unwrap();
+                    let mut buffer = match self.surface.buffer_mut() {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::error!("Failed to get surface buffer for cursor restoration: {}. Skipping frame.", e);
+                            return;
+                        }
+                    };
                     // Restore
                     if !self.cursor_save_under.is_empty()
                         && self.cursor_save_under.len() == (cw * ch) as usize

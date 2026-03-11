@@ -1,3 +1,4 @@
+// DEPRECATED: This file is no longer used. Please use `src/settings/mod.rs` instead.
 use crate::types::PersistentConfig;
 use rusttype::{point, Font, Scale};
 use softbuffer::{Context, Surface};
@@ -910,8 +911,18 @@ impl SettingsWindow {
         let size = self.window.inner_size();
         if let Some(width) = NonZeroU32::new(size.width) {
             if let Some(height) = NonZeroU32::new(size.height) {
-                let _ = self.surface.resize(width, height);
-                let mut buffer = self.surface.buffer_mut().unwrap();
+                if let Err(e) = self.surface.resize(width, height) {
+                    tracing::error!("Failed to resize surface: {}", e);
+                    return;
+                }
+                
+                let mut buffer = match self.surface.buffer_mut() {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!("Failed to get surface buffer: {}. This can happen during rapid window resizing or screen changes.", e);
+                        return;
+                    }
+                };
                 let w = width.get();
                 let h = height.get();
 
