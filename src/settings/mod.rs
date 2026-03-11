@@ -480,6 +480,22 @@ impl SettingsWindow {
     }
 
     pub fn focus(&self) {
+        #[cfg(target_os = "windows")]
+        {
+            use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
+            use windows::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, ShowWindow, SW_RESTORE};
+            use windows::Win32::Foundation::HWND;
+
+            if let RawWindowHandle::Win32(handle) = self.window.raw_window_handle() {
+                let hwnd = HWND(handle.hwnd as isize);
+                unsafe {
+                    // 如果窗口被最小化了，先恢复它
+                    let _ = ShowWindow(hwnd, SW_RESTORE);
+                    // 强制设为前台窗口
+                    let _ = SetForegroundWindow(hwnd);
+                }
+            }
+        }
         self.window.focus_window();
     }
 
