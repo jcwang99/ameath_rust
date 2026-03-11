@@ -170,10 +170,10 @@ pub fn render_music_panel(
         font_size,
         text_color,
         title_max_w,
-        25,
+        (25.0 * scale) as u32,
         0.0,
         scroll_x,
-        2000,
+        (2000.0 * scale) as u32,
     );
 
     // List toggle button (≡)
@@ -186,11 +186,11 @@ pub fn render_music_panel(
         panel_y + (8.0 * scale) as i32,
         18.0 * scale,
         if player.list_visible { ui_primitives::apply_opacity(0xFB7299, opacity) } else { ui_primitives::apply_opacity(0x888888, opacity) },
-        25,
-        25,
+        (25.0 * scale) as u32,
+        (25.0 * scale) as u32,
         0.0,
         0.0,
-        25,
+        (25.0 * scale) as u32,
     );
 
     // 4. Controls (Shifted right to make room for cover)
@@ -207,11 +207,11 @@ pub fn render_music_panel(
         ctrl_y,
         16.0 * scale,
         ui_primitives::apply_opacity(0xCCCCCC, opacity),
-        25,
-        25,
+        (25.0 * scale) as u32,
+        (25.0 * scale) as u32,
         0.0,
         0.0,
-        25,
+        (25.0 * scale) as u32,
     );
     // Play/Pause
     let pp_icon = if player.is_playing() { "⏸" } else { "▶" };
@@ -223,11 +223,11 @@ pub fn render_music_panel(
         ctrl_y,
         16.0 * scale,
         ui_primitives::apply_opacity(0xFFFFFF, opacity),
-        25,
-        25,
+        (25.0 * scale) as u32,
+        (25.0 * scale) as u32,
         0.0,
         0.0,
-        25,
+        (25.0 * scale) as u32,
     );
     // Next
     ui_primitives::draw_text_dw_ex(
@@ -238,11 +238,11 @@ pub fn render_music_panel(
         ctrl_y,
         16.0 * scale,
         ui_primitives::apply_opacity(0xCCCCCC, opacity),
-        25,
-        25,
+        (25.0 * scale) as u32,
+        (25.0 * scale) as u32,
         0.0,
         0.0,
-        25,
+        (25.0 * scale) as u32,
     );
 
     // 5. Progress Bar
@@ -288,11 +288,11 @@ pub fn render_music_panel(
         prog_y + (6.0 * scale) as i32, // Moved closer to bar from 10
         9.0 * scale,
         ui_primitives::apply_opacity(0x888888, opacity),
-        70,
-        15,
+        (70.0 * scale) as u32,
+        (15.0 * scale) as u32,
         0.0,
         0.0,
-        70,
+        (70.0 * scale) as u32,
     );
 
     // 5. Playlist
@@ -315,8 +315,9 @@ pub fn render_music_panel(
             let ry_f = (i as f32 * BASE_LIST_ITEM_HEIGHT as f32 - player.list_scroll_offset) * scale;
             let item_y = list_y + ry_f as i32;
             
-            // Clip items outside of the list area with 2px buffer
-            if item_y < list_y - 2 || item_y >= list_y + (visible_items as i32 * item_h) - 2 {
+            // Clip items outside of the list area with small buffer
+            let clip_buffer = (2.0 * scale) as i32;
+            if item_y < list_y - clip_buffer || item_y >= list_y + (visible_items as i32 * item_h) - clip_buffer {
                 continue;
             }
 
@@ -375,7 +376,7 @@ pub fn render_music_panel(
                 item_h as u32,
                 0.0,
                 item_scroll_x,
-                2000,
+                (2000.0 * scale) as u32,
             );
         }
 

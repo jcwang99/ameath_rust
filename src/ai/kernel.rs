@@ -186,12 +186,23 @@ impl ChatKernel {
                     Ok(response_msg) => {
                         tracing::debug!("LLM Response Role: {}", response_msg.role);
                         if let Some(calls) = &response_msg.tool_calls {
-                            tracing::info!("Tool Calls detected: {}", calls.len());
+                            if !calls.is_empty() {
+                                tracing::info!("Tool Calls detected: {}", calls.len());
+                            }
                         }
 
                         messages.push(response_msg.clone());
 
                         if let Some(tool_calls) = &response_msg.tool_calls {
+                            if tool_calls.is_empty() {
+                                tracing::info!("Tool calls exist but are empty. Considering it a final response.");
+                                // Completion Phase: Store final response in Layer 1
+                                self.memory.add_message(&user_msg).ok(); 
+                                self.memory.add_message(&response_msg).ok(); 
+                                final_response = Some(response_msg.content);
+                                break; // Break inner loop
+                            }
+
                             // Execution Phase
                             for tool_call in tool_calls {
                                 let skill_name = &tool_call.function.name;
