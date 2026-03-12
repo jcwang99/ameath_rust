@@ -94,14 +94,23 @@ trait SettingsRendererBackend {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsGpuPrototypeInitStatus {
     Uninitialized,
+    Initializing,
     Ready,
     FailedFallback,
+}
+
+#[derive(Debug, Clone)]
+struct SettingsGpuPrototypeResources {
+    backend_label: String,
+    logical_surface_size: (u32, u32),
 }
 
 struct SettingsGpuPrototypeState {
     init_status: SettingsGpuPrototypeInitStatus,
     initialized: bool,
     last_frame_size: Option<(u32, u32)>,
+    resources: Option<SettingsGpuPrototypeResources>,
+    last_error: Option<String>,
 }
 
 impl SettingsGpuPrototypeState {
@@ -110,19 +119,34 @@ impl SettingsGpuPrototypeState {
             init_status: SettingsGpuPrototypeInitStatus::Uninitialized,
             initialized: false,
             last_frame_size: None,
+            resources: None,
+            last_error: None,
         }
     }
 
     fn ensure_initialized(&mut self, input: &SettingsRenderInput) -> bool {
         if self.init_status == SettingsGpuPrototypeInitStatus::Ready {
             self.last_frame_size = Some((input.w, input.h));
+            if let Some(resources) = &mut self.resources {
+                resources.logical_surface_size = (input.w, input.h);
+            }
             return true;
         }
 
+        self.init_status = SettingsGpuPrototypeInitStatus::Initializing;
+
         if cfg!(target_os = "windows") {
             self.init_status = SettingsGpuPrototypeInitStatus::Ready;
+            self.last_error = None;
+            self.resources = Some(SettingsGpuPrototypeResources {
+                backend_label: "windows-gpu-prototype".to_string(),
+                logical_surface_size: (input.w, input.h),
+            });
         } else {
             self.init_status = SettingsGpuPrototypeInitStatus::FailedFallback;
+            self.last_error =
+                Some("GPU prototype currently only scaffolded for Windows".to_string());
+            self.resources = None;
         }
 
         self.prepare(input);
@@ -139,6 +163,14 @@ impl SettingsGpuPrototypeState {
             init_status: self.init_status,
             initialized: self.initialized,
             last_frame_size: self.last_frame_size,
+            has_resources: self.resources.is_some(),
+            backend_label: self.resources.as_ref().map(|resources| {
+                match resources.backend_label.as_str() {
+                    "windows-gpu-prototype" => "windows-gpu-prototype",
+                    _ => "custom-gpu-prototype",
+                }
+            }),
+            has_error: self.last_error.is_some(),
         }
     }
 }
@@ -148,6 +180,9 @@ struct SettingsGpuPrototypeSnapshot {
     init_status: SettingsGpuPrototypeInitStatus,
     initialized: bool,
     last_frame_size: Option<(u32, u32)>,
+    has_resources: bool,
+    backend_label: Option<&'static str>,
+    has_error: bool,
 }
 
 struct SettingsWorkerRuntime {
@@ -692,11 +727,14 @@ impl SettingsWindow {
                 let res = runtime.render_request(&mut req);
                 let gpu_snapshot = runtime.gpu_snapshot();
                 tracing::debug!(
-                    "Settings worker rendered with {:?}; gpu prototype init_status={:?}, initialized={}, last_frame_size={:?}",
+                    "Settings worker rendered with {:?}; gpu prototype init_status={:?}, initialized={}, last_frame_size={:?}, has_resources={}, backend_label={:?}, has_error={}",
                     runtime.last_renderer_kind,
                     gpu_snapshot.init_status,
                     gpu_snapshot.initialized,
-                    gpu_snapshot.last_frame_size
+                    gpu_snapshot.last_frame_size,
+                    gpu_snapshot.has_resources,
+                    gpu_snapshot.backend_label,
+                    gpu_snapshot.has_error
                 );
                 {
                     let mut lock = rb_ptr.lock().unwrap();
