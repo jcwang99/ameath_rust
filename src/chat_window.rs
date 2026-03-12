@@ -76,6 +76,15 @@ pub enum ChatAction {
     Close,
 }
 
+struct ChatRenderScene {
+    width: usize,
+    height: usize,
+    bg_color: u32,
+    border_color: u32,
+    text_color: u32,
+    cursor_color: u32,
+}
+
 impl ChatWindow {
     pub fn new<T>(
         event_loop: &EventLoopWindowTarget<T>,
@@ -789,7 +798,7 @@ impl ChatWindow {
         });
     }
 
-    fn redraw(&mut self) {
+    fn prepare_render_scene(&mut self) -> ChatRenderScene {
         let scale = Scale::uniform(24.0);
         let v_metrics = self.font.v_metrics(scale);
         let padding = 10.0;
@@ -878,8 +887,22 @@ impl ChatWindow {
         }
 
         let size = self.window.inner_size();
-        let buf_w = size.width as usize;
-        let buf_h = size.height as usize;
+        ChatRenderScene {
+            width: size.width as usize,
+            height: size.height as usize,
+            bg_color: 0xFF2D2D2D,
+            border_color: 0xFF444444,
+            text_color: 0xFFFFFFFF,
+            cursor_color: 0xFF00FF00,
+        }
+    }
+
+    fn present_render_scene(&mut self, scene: &ChatRenderScene) {
+        let scale = Scale::uniform(24.0);
+        let v_metrics = self.font.v_metrics(scale);
+        let padding = 10.0;
+        let buf_w = scene.width;
+        let buf_h = scene.height;
 
         let mut buffer = self.surface.buffer_mut().unwrap();
 
@@ -890,11 +913,6 @@ impl ChatWindow {
         }
 
         // Colors
-        let bg_color: u32 = 0xFF2D2D2D;
-        let border_color: u32 = 0xFF444444;
-        let text_color: u32 = 0xFFFFFFFF;
-        let cursor_color: u32 = 0xFF00FF00;
-
         // Optimized Background Fill with Rounded Corners
         buffer.fill(0); // Transparent outer
 
@@ -910,9 +928,9 @@ impl ChatWindow {
 
             if !is_near_top && !is_near_bottom {
                 // Middle section: fast row fill (except borders)
-                buffer[row_start] = border_color;
-                buffer[row_start + 1..row_start + buf_w - 1].fill(bg_color);
-                buffer[row_start + buf_w - 1] = border_color;
+                buffer[row_start] = scene.border_color;
+                buffer[row_start + 1..row_start + buf_w - 1].fill(scene.bg_color);
+                buffer[row_start + buf_w - 1] = scene.border_color;
             } else {
                 // Top or bottom sections: still need corner checks
                 for x in 0..buf_w {
@@ -938,9 +956,9 @@ impl ChatWindow {
 
                     if draw_bg {
                         if x == 0 || x == buf_w - 1 || y == 0 || y == buf_h - 1 {
-                            buffer[row_start + x] = border_color;
+                            buffer[row_start + x] = scene.border_color;
                         } else {
-                            buffer[row_start + x] = bg_color;
+                            buffer[row_start + x] = scene.bg_color;
                         }
                     }
                 }
@@ -1090,7 +1108,7 @@ impl ChatWindow {
                 let alpha = (color_with_alpha >> 24) & 0xFF;
                 if alpha > 0 {
                     if alpha == 255 {
-                        buffer[row_start + px] = text_color;
+                        buffer[row_start + px] = scene.text_color;
                     } else {
                         // Blend with background
                         let bg = buffer[row_start + px];
@@ -1146,7 +1164,7 @@ impl ChatWindow {
             for y in cy..(cy + 24) {
                 for x in cx..(cx + 2) {
                     if x >= 0 && x < buf_w as i32 && y >= 0 && y < buf_h as i32 {
-                        buffer[y as usize * buf_w + x as usize] = cursor_color;
+                        buffer[y as usize * buf_w + x as usize] = scene.cursor_color;
                     }
                 }
             }
@@ -1159,5 +1177,10 @@ impl ChatWindow {
         );
 
         buffer.present().unwrap();
+    }
+
+    fn redraw(&mut self) {
+        let scene = self.prepare_render_scene();
+        self.present_render_scene(&scene);
     }
 }

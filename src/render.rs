@@ -43,6 +43,35 @@ pub struct RenderContext {
 }
 
 #[cfg(target_os = "windows")]
+pub struct LayeredFrame<'a> {
+    pub data: &'a [u8],
+    pub width: i32,
+    pub height: i32,
+    pub pos: Option<POINT>,
+}
+
+#[cfg(target_os = "windows")]
+pub struct LayeredWindowPresenter {
+    context: RenderContext,
+}
+
+#[cfg(target_os = "windows")]
+impl LayeredWindowPresenter {
+    pub fn new(hwnd: HWND) -> Self {
+        Self {
+            context: RenderContext::new(hwnd),
+        }
+    }
+
+    pub fn present(&mut self, frame: LayeredFrame<'_>) {
+        unsafe {
+            self.context
+                .update(frame.data, frame.width, frame.height, frame.pos);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
 impl RenderContext {
     pub fn new(hwnd: HWND) -> Self {
         unsafe {

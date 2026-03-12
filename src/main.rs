@@ -265,6 +265,400 @@ fn finalize_stream_bubbles(
     enqueue_response_bubbles(bubbles, segments, pet_scale);
 }
 
+struct PetRenderScene<'a> {
+    win_w: u32,
+    win_h: u32,
+    target_pos: POINT,
+    draw_scale: f32,
+    pet_scale: f32,
+    pet_off_x: f64,
+    pet_off_y: f64,
+    cur_pw: f64,
+    cur_ph: f64,
+    is_thinking: bool,
+    loading_frame_idx: usize,
+    loading_x_f: f64,
+    loading_y_f: f64,
+    loading_w_f: f64,
+    loading_h_f: f64,
+    gap_between: f64,
+    mouse_x: f64,
+    mouse_y: f64,
+    menu_x_f: f64,
+    menu_y_f: f64,
+    current_pomodoro_w_f: f64,
+    current_pomodoro_h_f: f64,
+    pomodoro_y_f: f64,
+    pomodoro_x_f: f64,
+    frame: PreprocessedFrame,
+    frame_pixels: Arc<[u8]>,
+    loading_frames: &'a [(i32, i32, Vec<u8>)],
+}
+
+fn build_pet_render_scene<'a>(
+    win_w: u32,
+    win_h: u32,
+    target_pos: POINT,
+    draw_scale: f32,
+    pet_scale: f32,
+    pet_off_x: f64,
+    pet_off_y: f64,
+    cur_pw: f64,
+    cur_ph: f64,
+    is_thinking: bool,
+    loading_frame_idx: usize,
+    loading_x_f: f64,
+    loading_y_f: f64,
+    loading_w_f: f64,
+    loading_h_f: f64,
+    gap_between: f64,
+    mouse_x: f64,
+    mouse_y: f64,
+    menu_x_f: f64,
+    menu_y_f: f64,
+    current_pomodoro_w_f: f64,
+    current_pomodoro_h_f: f64,
+    pomodoro_y_f: f64,
+    pomodoro_x_f: f64,
+    frame: PreprocessedFrame,
+    frame_pixels: Arc<[u8]>,
+    loading_frames: &'a [(i32, i32, Vec<u8>)],
+) -> PetRenderScene<'a> {
+    PetRenderScene {
+        win_w,
+        win_h,
+        target_pos,
+        draw_scale,
+        pet_scale,
+        pet_off_x,
+        pet_off_y,
+        cur_pw,
+        cur_ph,
+        is_thinking,
+        loading_frame_idx,
+        loading_x_f,
+        loading_y_f,
+        loading_w_f,
+        loading_h_f,
+        gap_between,
+        mouse_x,
+        mouse_y,
+        menu_x_f,
+        menu_y_f,
+        current_pomodoro_w_f,
+        current_pomodoro_h_f,
+        pomodoro_y_f,
+        pomodoro_x_f,
+        frame,
+        frame_pixels,
+        loading_frames,
+    }
+}
+
+fn render_pet_scene_cpu(
+    scene: &PetRenderScene<'_>,
+    composite_data: &mut Vec<u8>,
+    bubbles: &mut [bubble::SpeechBubble],
+    pet: &Pet,
+    menu_manager: &mut menu::QuickMenu,
+    pomodoro_manager: &mut pomodoro::Pomodoro,
+    pomodoro_data: &mut Vec<u8>,
+    music_player: &music_player::MusicPlayer,
+) {
+    menu_manager.update_layout(scene.draw_scale);
+
+    let total_size = scene.win_w as usize * scene.win_h as usize * 4usize;
+    if composite_data.len() != total_size {
+        composite_data.resize(total_size, 0);
+    }
+    composite_data.fill(0);
+
+    let win_w_usize = scene.win_w as usize;
+    let win_h_usize = scene.win_h as usize;
+    let facing_right = pet.facing_right;
+    let dest_y_start = scene.pet_off_y as usize;
+    let dest_x_start = scene.pet_off_x as usize;
+
+    if (scene.draw_scale - 1.0).abs() < 0.001 {
+        let fw = scene.frame.width as usize;
+        let fh = scene.frame.height as usize;
+        composite_data
+            .par_chunks_mut(win_w_usize * 4)
+            .enumerate()
+            .skip(dest_y_start)
+            .take(fh)
+            .for_each(|(dy, dest_row): (usize, &mut [u8])| {
+                let y = dy - dest_y_start;
+                let (start_x_unflipped, end_x_unflipped) = scene.frame.opaque_rows[y];
+                if start_x_unflipped < end_x_unflipped {
+                    let src_row = &scene.frame_pixels[y * fw * 4..(y + 1) * fw * 4];
+                    let (start_x, end_x) = if facing_right {
+                        (start_x_unflipped, end_x_unflipped)
+                    } else {
+                        (fw - end_x_unflipped, fw - start_x_unflipped)
+                    };
+                    for x in start_x..end_x {
+                        let src_x = if facing_right { x } else { fw - 1 - x };
+                        let s_idx = src_x * 4;
+                        if src_row[s_idx + 3] > 0 {
+                            let d_idx = (dest_x_start + x) * 4;
+                            if d_idx + 4 <= dest_row.len() {
+                                dest_row[d_idx..d_idx + 4]
+                                    .copy_from_slice(&src_row[s_idx..s_idx + 4]);
+                            }
+                        }
+                    }
+                }
+            });
+    } else {
+        let fw = scene.frame.width as usize;
+        let fh = scene.frame.height as usize;
+        let inv_scale = 1.0 / scene.draw_scale;
+
+        composite_data
+            .par_chunks_mut(win_w_usize * 4)
+            .enumerate()
+            .for_each(|(dy, dest_row): (usize, &mut [u8])| {
+                let y_f32 = (dy as f64 - scene.pet_off_y) as f32;
+                if y_f32 < 0.0 || y_f32 >= scene.cur_ph as f32 {
+                    return;
+                }
+                let y = y_f32 as usize;
+                let src_y = (y as f32 * inv_scale) as usize;
+                if src_y >= fh {
+                    return;
+                }
+
+                let (start_x_src_unflipped, end_x_src_unflipped) = scene.frame.opaque_rows[src_y];
+                if start_x_src_unflipped >= end_x_src_unflipped {
+                    return;
+                }
+
+                let scaled_start_x = (start_x_src_unflipped as f32 * scene.draw_scale)
+                    .floor()
+                    .max(0.0) as usize;
+                let scaled_end_x = (end_x_src_unflipped as f32 * scene.draw_scale)
+                    .ceil()
+                    .min(scene.cur_pw as f32) as usize;
+                let (start_x_dest, end_x_dest) = if facing_right {
+                    (scaled_start_x, scaled_end_x)
+                } else {
+                    (
+                        scene.cur_pw as usize - scaled_end_x,
+                        scene.cur_pw as usize - scaled_start_x,
+                    )
+                };
+                let src_row_idx = src_y * fw * 4;
+
+                for x in start_x_dest..end_x_dest {
+                    let src_x_f32 = x as f32 * inv_scale;
+                    let src_x = if facing_right {
+                        src_x_f32 as usize
+                    } else {
+                        (fw as f32 - 1.0 - src_x_f32) as usize
+                    };
+
+                    if src_x >= fw {
+                        continue;
+                    }
+                    let s_idx = src_row_idx + src_x * 4;
+                    let a = scene.frame_pixels[s_idx + 3];
+                    if a > 0 {
+                        let d_idx = (dest_x_start + x) * 4;
+                        if d_idx + 4 <= dest_row.len() {
+                            dest_row[d_idx..d_idx + 4]
+                                .copy_from_slice(&scene.frame_pixels[s_idx..s_idx + 4]);
+                        }
+                    }
+                }
+            });
+    }
+
+    if scene.is_thinking && !scene.loading_frames.is_empty() {
+        let f_idx = scene.loading_frame_idx % scene.loading_frames.len();
+        let (f_width, f_height, loading_data) = &scene.loading_frames[f_idx];
+        let ly = scene.loading_y_f as i32;
+        let lw = scene.loading_w_f as i32;
+        let lh = scene.loading_h_f as i32;
+        if ly >= 0 && lw > 0 && lh > 0 {
+            let sx = *f_width as f32 / lw as f32;
+            let sy = *f_height as f32 / lh as f32;
+            for y in 0..lh as usize {
+                let src_y = (y as f32 * sy) as usize;
+                if src_y >= *f_height as usize {
+                    continue;
+                }
+                let dy_i32 = ly + y as i32;
+                if dy_i32 < 0 || dy_i32 >= scene.win_h as i32 {
+                    continue;
+                }
+
+                let src_row_off = src_y * *f_width as usize * 4;
+                let dest_row_off = dy_i32 as usize * win_w_usize * 4;
+
+                for x in 0..lw as usize {
+                    let src_x = (x as f32 * sx) as usize;
+                    if src_x < *f_width as usize {
+                        let s_idx = src_row_off + src_x * 4;
+                        let dx_i32 = scene.loading_x_f as i32 + x as i32;
+                        if dx_i32 >= 0 && dx_i32 < scene.win_w as i32 {
+                            let d_idx = dest_row_off + dx_i32 as usize * 4;
+                            let alpha = loading_data[s_idx + 3];
+                            if alpha > 0 {
+                                composite_data[d_idx..d_idx + 3]
+                                    .copy_from_slice(&loading_data[s_idx..s_idx + 3]);
+                                composite_data[d_idx + 3] =
+                                    composite_data[d_idx + 3].saturating_add(alpha);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut stack_bottom_y = if scene.is_thinking {
+        scene.loading_y_f - scene.gap_between
+    } else {
+        scene.pet_off_y - scene.gap_between
+    };
+
+    for b in bubbles.iter_mut().rev() {
+        b.render_to_buffer(std::ptr::null_mut(), scene.pet_scale);
+
+        if let Some(b_pixels) = b.pixel_data() {
+            let bw = b.current_width as u32;
+            let bh = b.current_height as u32;
+            let pet_center_x = scene.pet_off_x + scene.cur_pw / 2.0;
+            let bx = (pet_center_x - (bw as f64 / 2.0)) as i32;
+            let mut by = stack_bottom_y as i32 - bh as i32;
+            if by < 0 {
+                by = by.max(0);
+            }
+
+            let expected_len = (bw * bh * 4) as usize;
+            if b_pixels.len() == expected_len {
+                let b_u32 = unsafe {
+                    std::slice::from_raw_parts(b_pixels.as_ptr() as *const u32, b_pixels.len() / 4)
+                };
+                let comp_u32 = unsafe {
+                    std::slice::from_raw_parts_mut(
+                        composite_data.as_mut_ptr() as *mut u32,
+                        composite_data.len() / 4,
+                    )
+                };
+
+                ui_primitives::blit_32bit_premultiplied(
+                    comp_u32,
+                    scene.win_w,
+                    scene.win_h,
+                    b_u32,
+                    bx,
+                    by,
+                    bw,
+                    bh,
+                );
+
+                stack_bottom_y -= bh as f64 + (10.0 * scene.pet_scale as f64);
+                b.update_rect(bx, by, bw, bh);
+            }
+        }
+    }
+
+    if pomodoro_manager.visible {
+        let p_size =
+            (scene.current_pomodoro_w_f * scene.current_pomodoro_h_f * 4.0) as usize;
+        if pomodoro_data.len() != p_size {
+            pomodoro_data.resize(p_size, 0);
+        }
+        pomodoro_manager.render_to_buffer(pomodoro_data.as_mut_ptr(), scene.pet_scale);
+        let py = scene.pomodoro_y_f as i32;
+        let px = scene.pomodoro_x_f as i32;
+        if py >= 0 {
+            let pw = scene.current_pomodoro_w_f as usize;
+            let ph = scene.current_pomodoro_h_f as usize;
+            for y in 0..ph {
+                let dy = py as usize + y;
+                if dy < win_h_usize {
+                    let src_row_off = y * pw * 4;
+                    let dest_row_off = dy * win_w_usize * 4;
+                    for x in 0..pw {
+                        let s = src_row_off + x * 4;
+                        let a = pomodoro_data[s + 3];
+                        if a > 0 {
+                            let dx = px as usize + x;
+                            if dx < win_w_usize {
+                                let d = dest_row_off + dx * 4;
+                                composite_data[d..d + 3]
+                                    .copy_from_slice(&pomodoro_data[s..s + 3]);
+                                composite_data[d + 3] =
+                                    (composite_data[d + 3] as u16 + a as u16).min(255) as u8;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if menu_manager.visible || menu_manager.opacity > 0.0 {
+        let mx_buffer = scene.mouse_x - pet.position.0 + scene.pet_off_x;
+        let my_buffer = scene.mouse_y - pet.position.1 + scene.pet_off_y;
+
+        menu_manager.render(
+            composite_data.as_mut_slice(),
+            scene.win_w as i32,
+            scene.win_h as i32,
+            scene.menu_x_f as i32,
+            scene.menu_y_f as i32,
+            mx_buffer,
+            my_buffer,
+        );
+
+        if music_player.panel_enabled {
+            let panel_w = (music_panel::BASE_PANEL_WIDTH as f32 * scene.pet_scale) as f64;
+            let panel_x =
+                (scene.pet_off_x + scene.cur_pw / 2.0 - panel_w / 2.0 - 2.0 * scene.pet_scale as f64)
+                    as i32;
+            let panel_y = (scene.pet_off_y + scene.cur_ph + 10.0 * scene.pet_scale as f64) as i32;
+            let comp_u32 = unsafe {
+                std::slice::from_raw_parts_mut(
+                    composite_data.as_mut_ptr() as *mut u32,
+                    composite_data.len() / 4,
+                )
+            };
+            music_panel::render_music_panel(
+                music_player,
+                comp_u32,
+                scene.win_w,
+                scene.win_h,
+                panel_x,
+                panel_y,
+                scene.pet_scale,
+                menu_manager.opacity,
+                mx_buffer,
+                my_buffer,
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn present_pet_scene(
+    presenter: &mut Option<render::LayeredWindowPresenter>,
+    scene: &PetRenderScene<'_>,
+    composite_data: &[u8],
+) {
+    if let Some(presenter) = presenter {
+        presenter.present(render::LayeredFrame {
+            data: composite_data,
+            width: scene.win_w as i32,
+            height: scene.win_h as i32,
+            pos: Some(scene.target_pos),
+        });
+    }
+}
+
 fn main() {
     // 【修复开机自启动】强制将工作目录设置为可执行文件所在目录，
     // 防止 Windows 注册表启动时工作目录在 System32 导致无权限写日志或找不到相对路径的 assets。
@@ -484,7 +878,7 @@ fn main() {
         if let RawWindowHandle::Win32(handle) = window.raw_window_handle() {
             let hwnd = HWND(handle.hwnd as isize);
             apply_window_styles(hwnd, true); // Initial application
-            Some(render::RenderContext::new(hwnd))
+            Some(render::LayeredWindowPresenter::new(hwnd))
         } else {
             None
         }
@@ -1723,293 +2117,67 @@ fn main() {
                         let _ = window.id();
                         
                         // --- SYNCHRONOUS RENDER START ---
-                        menu_manager.update_layout(draw_scale);
-
-
-                        let total_size = win_w as usize * win_h as usize * 4usize;
-                        if composite_data.len() != total_size { composite_data.resize(total_size, 0); }
-                        composite_data.fill(0);
-
-                        let win_w_usize = win_w as usize;
-                        let win_h_usize = win_h as usize;
-
-                        let facing_right = pet.facing_right;
-                        
-                        // Frame cache lookup - get key values first
                         let cache_key = (pet.state, pet.current_anim_variant, pet.current_frame_idx);
-                        let decompressed_frame_buffer: Arc<[u8]> = if let Some(cached_data) = frame_cache.get(&cache_key) {
-                            cached_data.clone()
-                        } else {
-                            // Cache miss: decompress and store
-                            let frame = pet.current_frame();
-                            if let Ok(data) = lz4_flex::decompress_size_prepended(&frame.lz4_data) {
-                                let data: Arc<[u8]> = Arc::from(data);
-                                frame_cache.put(cache_key, data.clone());
-                                data
+                        let decompressed_frame_buffer: Arc<[u8]> =
+                            if let Some(cached_data) = frame_cache.get(&cache_key) {
+                                cached_data.clone()
                             } else {
-                                // Fallback if decompression fails
-                                Arc::from(vec![0; (frame.width * frame.height * 4) as usize])
-                            }
-                        };
-                        
-                        // Get frame reference for rendering (it's the same frame we just cached)
-                        let frame = pet.current_frame();
-                        
-                        let dest_y_start = pet_off_y as usize;
-                        let dest_x_start = pet_off_x as usize;
-                        
-                        if (draw_scale - 1.0).abs() < 0.001 {
-                            let fw = frame.width as usize;
-                            let fh = frame.height as usize;
-                                        // Parallelized source copy using rayon
-                                        composite_data
-                                            .par_chunks_mut(win_w_usize * 4)
-                                            .enumerate()
-                                            .skip(dest_y_start)
-                                            .take(fh)
-                                            .for_each(|(dy, dest_row): (usize, &mut [u8])| {
-                                                let y = dy - dest_y_start;
-                                                let (start_x_unflipped, end_x_unflipped) = frame.opaque_rows[y];
-                                                if start_x_unflipped < end_x_unflipped {
-                                                    let src_row = &decompressed_frame_buffer[y * fw * 4..(y + 1) * fw * 4];
-                                                    let (start_x, end_x) = if facing_right {
-                                                        (start_x_unflipped, end_x_unflipped)
-                                                    } else {
-                                                        (fw - end_x_unflipped, fw - start_x_unflipped)
-                                                    };
-                                                    for x in start_x..end_x {
-                                                        let src_x = if facing_right { x } else { fw - 1 - x };
-                                                        let s_idx = src_x * 4;
-                                                        if src_row[s_idx + 3] > 0 {
-                                                            let d_idx = (dest_x_start + x) * 4;
-                                                            if d_idx + 4 <= dest_row.len() {
-                                                                dest_row[d_idx..d_idx+4].copy_from_slice(&src_row[s_idx..s_idx+4]);
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            });
-                        } else {
-                            let fw = frame.width as usize;
-                            let fh = frame.height as usize;
-                            let inv_scale = 1.0 / draw_scale;
-                            
-                                // Parallelized scaled source copy using rayon
-                                composite_data
-                                    .par_chunks_mut(win_w_usize * 4)
-                                    .enumerate()
-                                    .for_each(|(dy, dest_row): (usize, &mut [u8])| {
-                                        let y_f32 = (dy as f64 - pet_off_y) as f32;
-                                        if y_f32 < 0.0 || y_f32 >= cur_ph as f32 { return; }
-                                        let y = y_f32 as usize;
-                                        let src_y = (y as f32 * inv_scale) as usize;
-                                        if src_y >= fh { return; }
-
-                                        let (start_x_src_unflipped, end_x_src_unflipped) = frame.opaque_rows[src_y];
-                                        if start_x_src_unflipped >= end_x_src_unflipped { return; }
-
-                                        let scaled_start_x = (start_x_src_unflipped as f32 * draw_scale)
-                                            .floor()
-                                            .max(0.0) as usize;
-                                        let scaled_end_x = (end_x_src_unflipped as f32 * draw_scale)
-                                            .ceil()
-                                            .min(cur_pw as f32) as usize;
-                                        let (start_x_dest, end_x_dest) = if facing_right {
-                                            (scaled_start_x, scaled_end_x)
-                                        } else {
-                                            (
-                                                cur_pw as usize - scaled_end_x,
-                                                cur_pw as usize - scaled_start_x,
-                                            )
-                                        };
-                                        let src_row_idx = src_y * fw * 4;
-
-                                        for x in start_x_dest..end_x_dest {
-                                            let src_x_f32 = x as f32 * inv_scale;
-                                            let src_x = if facing_right {
-                                                src_x_f32 as usize
-                                            } else {
-                                                (fw as f32 - 1.0 - src_x_f32) as usize
-                                            };
-
-                                            if src_x >= fw { continue; }
-                                            let s_idx = src_row_idx + src_x * 4;
-                                            let a = decompressed_frame_buffer[s_idx + 3];
-                                            if a > 0 {
-                                                let d_idx = (dest_x_start + x) * 4;
-                                                if d_idx + 4 <= dest_row.len() {
-                                                    dest_row[d_idx..d_idx+4].copy_from_slice(&decompressed_frame_buffer[s_idx..s_idx+4]);
-                                                }
-                                            }
-                                        }
-                                    });
-                        }
-
-                        // 1.5 Loading (uses pre-decompressed frames)
-                        if is_thinking && !curr_loading_frames.is_empty() {
-                             let f_idx = loading_frame_idx % curr_loading_frames.len();
-                             let (f_width, f_height, loading_data) = &curr_loading_frames[f_idx];
-                             
-                             let ly = loading_y_f as i32;
-                             let lw = loading_w_f as i32;
-                             let lh = loading_h_f as i32;
-                              if ly >= 0 && lw > 0 && lh > 0 {
-                                  let sx = *f_width as f32 / lw as f32;
-                                  let sy = *f_height as f32 / lh as f32;
-                                  for y in 0..lh as usize {
-                                      let src_y = (y as f32 * sy) as usize;
-                                      if src_y >= *f_height as usize { continue; }
-                                      let dy_i32 = ly + y as i32;
-                                      if dy_i32 < 0 || dy_i32 >= win_h as i32 { continue; }
-                                      
-                                      let src_row_off = src_y * *f_width as usize * 4;
-                                      let dest_row_off = dy_i32 as usize * win_w_usize * 4;
-                                      
-                                      for x in 0..lw as usize {
-                                          let src_x = (x as f32 * sx) as usize;
-                                          if src_x < *f_width as usize {
-                                              let s_idx = src_row_off + src_x * 4;
-                                              let dx_i32 = loading_x_f as i32 + x as i32;
-                                              if dx_i32 >= 0 && dx_i32 < win_w as i32 {
-                                                  let d_idx = dest_row_off + dx_i32 as usize * 4;
-                                                  let alpha = loading_data[s_idx + 3];
-                                                  if alpha > 0 {
-                                                      composite_data[d_idx..d_idx+3].copy_from_slice(&loading_data[s_idx..s_idx+3]);
-                                                      composite_data[d_idx + 3] = composite_data[d_idx + 3].saturating_add(alpha);
-                                                  }
-                                              }
-                                          }
-                                      }
-                                  }
-                              }
-                        }
-
-                        // 2. Bubbles
-                        let mut stack_bottom_y = if is_thinking { 
-                            loading_y_f - gap_between 
-                        } else { 
-                            pet_off_y - gap_between 
-                        };
-
-                        if !bubbles.is_empty() {
-                            // Render from newest (bottom) to oldest (top)
-                            for b in bubbles.iter_mut().rev() {
-                                b.render_to_buffer(std::ptr::null_mut(), pet.scale);
-                                
-                                if let Some(b_pixels) = b.pixel_data() {
-                                    let bw = b.current_width as u32;
-                                    let bh = b.current_height as u32;
-                                    
-                                    // Base center coordinate for the pet
-                                    let pet_center_x = pet_off_x + cur_pw / 2.0;
-                                    let bx = (pet_center_x - (bw as f64 / 2.0)) as i32;
-                                    
-                                    
-                                    // Calculate top Y coordinate of this bubble
-                                    let mut by = stack_bottom_y as i32 - bh as i32;
-                                    
-                                    // if it's pushed off screen top, we just stop drawing or clip it
-                                    if by < 0 {
-                                        by = by.max(0);
-                                    }
-                                    
-                                    let expected_len = (bw * bh * 4) as usize;
-                                    if b_pixels.len() == expected_len {
-                                        let b_u32 = unsafe {
-                                            std::slice::from_raw_parts(
-                                                b_pixels.as_ptr() as *const u32,
-                                                b_pixels.len() / 4,
-                                            )
-                                        };
-                                        let comp_u32 = unsafe {
-                                            std::slice::from_raw_parts_mut(
-                                                composite_data.as_mut_ptr() as *mut u32,
-                                                composite_data.len() / 4,
-                                            )
-                                        };
-
-                                        ui_primitives::blit_32bit_premultiplied(
-                                            comp_u32,
-                                            win_w as u32,
-                                            win_h as u32,
-                                            b_u32,
-                                            bx,
-                                            by,
-                                            bw,
-                                            bh,
-                                        );
-                                        
-                                        // Move the stack bottom up for the next older bubble
-                                        stack_bottom_y = stack_bottom_y - bh as f64 - (10.0 * pet.scale as f64);
-                                        
-                                        // Tell the bubble where it ended up for hit detection
-                                        b.update_rect(bx, by, bw, bh);
-                                    }
+                                let frame = pet.current_frame();
+                                if let Ok(data) =
+                                    lz4_flex::decompress_size_prepended(&frame.lz4_data)
+                                {
+                                    let data: Arc<[u8]> = Arc::from(data);
+                                    frame_cache.put(cache_key, data.clone());
+                                    data
+                                } else {
+                                    Arc::from(vec![0; (frame.width * frame.height * 4) as usize])
                                 }
-                            }
-                        }
+                            };
 
-                        // 2.5 Pomodoro
-                        if pomodoro_manager.visible {
-                            let p_size = (current_pomodoro_w_f * current_pomodoro_h_f * 4.0) as usize;
-                            if pomodoro_data.len() != p_size { pomodoro_data.resize(p_size, 0); }
-                            pomodoro_manager.render_to_buffer(pomodoro_data.as_mut_ptr(), pet.scale);
-                            let py = pomodoro_y_f as i32;
-                            let px = px_f as i32;
-                            if py >= 0 {
-                                let pw = current_pomodoro_w_f as usize;
-                                let ph = current_pomodoro_h_f as usize;
-                                for y in 0..ph {
-                                    let dy = py as usize + y;
-                                    if dy < win_h_usize {
-                                        let src_row_off = y * pw * 4;
-                                        let dest_row_off = dy * win_w_usize * 4;
-                                        for x in 0..pw {
-                                            let s = src_row_off + x * 4;
-                                            let a = pomodoro_data[s + 3];
-                                            if a > 0 {
-                                                let dx = px as usize + x;
-                                                if dx < win_w_usize {
-                                                    let d = dest_row_off + dx * 4;
-                                                    composite_data[d..d+3].copy_from_slice(&pomodoro_data[s..s+3]);
-                                                    composite_data[d+3] = (composite_data[d+3] as u16 + a as u16).min(255) as u8;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // 3. Menu
-                        if menu_manager.visible || menu_manager.opacity > 0.0 {
-                            let mx_buffer = mouse_x - pet.position.0 + pet_off_x;
-                            let my_buffer = mouse_y - pet.position.1 + pet_off_y;
-
-                            menu_manager.render(composite_data.as_mut_slice(), win_w as i32, win_h as i32, menu_x_f as i32, menu_y_f as i32, mx_buffer, my_buffer);
-                            
-                            // 3.5 Music Panel (only when menu is visible/hovering)
-                            if music_player.panel_enabled {
-                                let (cur_pw, _cur_ph) = pet.get_scaled_size();
-                                let panel_w = (music_panel::BASE_PANEL_WIDTH as f32 * pet.scale) as f64;
-                                // Visual adjustment: -2px offset to compensate for asymmetrical pet gif assets
-                                let panel_x = (pet_off_x + cur_pw/2.0 - panel_w/2.0 - 2.0 * pet.scale as f64) as i32;
-                                let panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
-                                let comp_u32 = unsafe {
-                                    std::slice::from_raw_parts_mut(
-                                        composite_data.as_mut_ptr() as *mut u32,
-                                        composite_data.len() / 4,
-                                    )
-                                };
-                                music_panel::render_music_panel(&music_player, comp_u32, win_w, win_h, panel_x, panel_y, pet.scale, menu_manager.opacity, mx_buffer, my_buffer);
-                            }
-                        }
+                        let frame = pet.current_frame().clone();
+                        let scene = build_pet_render_scene(
+                            win_w,
+                            win_h,
+                            target_pos,
+                            draw_scale,
+                            pet.scale,
+                            pet_off_x,
+                            pet_off_y,
+                            cur_pw,
+                            cur_ph,
+                            is_thinking,
+                            loading_frame_idx,
+                            loading_x_f,
+                            loading_y_f,
+                            loading_w_f,
+                            loading_h_f,
+                            gap_between,
+                            mouse_x,
+                            mouse_y,
+                            menu_x_f,
+                            menu_y_f,
+                            current_pomodoro_w_f,
+                            current_pomodoro_h_f,
+                            pomodoro_y_f,
+                            px_f,
+                            frame,
+                            decompressed_frame_buffer,
+                            curr_loading_frames,
+                        );
+                        render_pet_scene_cpu(
+                            &scene,
+                            &mut composite_data,
+                            &mut bubbles,
+                            &pet,
+                            &mut menu_manager,
+                            &mut pomodoro_manager,
+                            &mut pomodoro_data,
+                            &music_player,
+                        );
 
                         #[cfg(target_os = "windows")]
-                        {
-                            if let RawWindowHandle::Win32(_) = window.raw_window_handle() {
-                                unsafe { if let Some(ctx) = &mut render_ctx { ctx.update(&composite_data, win_w as i32, win_h as i32, Some(target_pos)); } }
-                            }
+                        if let RawWindowHandle::Win32(_) = window.raw_window_handle() {
+                            present_pet_scene(&mut render_ctx, &scene, &composite_data);
                         }
                         // --- SYNCHRONOUS RENDER END ---
                     } else if pos_changed {

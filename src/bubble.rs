@@ -17,7 +17,7 @@ use windows::Win32::Graphics::Direct2D::Common::{
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::{
     ID2D1Bitmap, ID2D1DCRenderTarget, ID2D1DeviceContext, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
-    D2D1_RENDER_TARGET_PROPERTIES, D2D1_ROUNDED_RECT,
+    D2D1_RENDER_TARGET_PROPERTIES, D2D1_ROUNDED_RECT, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::DirectWrite::IDWriteTextLayout;
@@ -690,6 +690,7 @@ fn render_bubble_internal(
                 if let Ok(rt) = dc_rt.cast::<ID2D1DeviceContext>() {
                     rt.BeginDraw();
                     rt.Clear(None);
+                    rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 
                     let bg_color = D2D1_COLOR_F {
                         r: 1.0,
@@ -845,7 +846,13 @@ fn render_bubble_internal(
             let total_bytes = width as usize * height as usize * 4;
             let mut frame_buffer = vec![0u8; total_bytes];
             if !pixel_ptr.is_null() {
-                std::ptr::copy_nonoverlapping(pixel_ptr, frame_buffer.as_mut_ptr(), total_bytes);
+                let src_stride = state.bitmap_capacity.0.max(width) as usize * 4;
+                let dst_stride = width as usize * 4;
+                for row in 0..height as usize {
+                    let src_row = pixel_ptr.add(row * src_stride);
+                    let dst_row = frame_buffer.as_mut_ptr().add(row * dst_stride);
+                    std::ptr::copy_nonoverlapping(src_row, dst_row, dst_stride);
+                }
             }
             let delay = if decoded_image_frames.is_none() {
                 Duration::from_secs(1)

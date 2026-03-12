@@ -63,6 +63,13 @@ pub struct RenderRequest {
     pub buffer: Vec<u32>,
 }
 
+struct SettingsRedrawPlan {
+    width: u32,
+    height: u32,
+    base_state_hash: u64,
+    current_hash: u64,
+}
+
 fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) -> RenderResult {
     let w = input.w;
     let h = input.h;
@@ -571,6 +578,80 @@ impl SettingsWindow {
         }
     }
 
+    fn take_background_result(&mut self, width: u32, height: u32) -> Option<RenderResult> {
+        let mut back_buffer = self.render_back_buffer.lock().unwrap();
+        if let Some(res) = back_buffer.take() {
+            if res.w == width && res.h == height {
+                return Some(res);
+            }
+        }
+        None
+    }
+
+    fn queue_background_render(
+        &mut self,
+        plan: &SettingsRedrawPlan,
+        current_scale: f32,
+        current_mode: &str,
+        current_music_path: Option<&std::path::Path>,
+        current_layer: crate::types::WindowLayer,
+        run_on_startup: bool,
+        ai_config: &crate::types::AiConfig,
+    ) {
+        let hash_mismatch = plan.base_state_hash != self.last_base_state_hash;
+        if !(self.is_dirty || hash_mismatch) || plan.base_state_hash == self.last_sent_hash {
+            return;
+        }
+
+        if self.current_tab == 3 && self.history_metrics_cache.len() != self.history.len() {
+            self.history_metrics_cache.resize(self.history.len(), 0.0);
+            self.history_hashes.resize(self.history.len(), 0);
+            self.history_scroll_states.resize(self.history.len(), 0.0);
+            let scale = (plan.width as f32 / 800.0).min(plan.height as f32 / 750.0);
+            let max_text_w = (450.0 * scale) as u32;
+            for i in 0..self.history.len() {
+                if self.history_metrics_cache[i] == 0.0 {
+                    let (_, content) = &self.history[i];
+                    let (_, mh) =
+                        crate::ui_primitives::get_metrics_dw(content, 16.0 * scale, max_text_w);
+                    self.history_metrics_cache[i] = mh;
+                }
+            }
+        }
+
+        self.render_in_progress.store(true, Ordering::SeqCst);
+        self.last_sent_hash = plan.base_state_hash;
+        let input = self.create_render_input(
+            current_scale,
+            current_mode,
+            current_music_path,
+            current_layer,
+            run_on_startup,
+            ai_config,
+        );
+
+        let mut pixels = {
+            let mut idle = self.idle_buffers.lock().unwrap();
+            idle.pop().unwrap_or_else(|| {
+                tracing::debug!(
+                    "Creating new pixel buffer for settings window ({}x{})",
+                    plan.width,
+                    plan.height
+                );
+                vec![0u32; (plan.width * plan.height) as usize]
+            })
+        };
+        if pixels.len() != (plan.width * plan.height) as usize {
+            pixels = vec![0u32; (plan.width * plan.height) as usize];
+        }
+
+        let _ = self.render_tx.send(RenderRequest {
+            input,
+            hash: plan.base_state_hash,
+            buffer: pixels,
+        });
+    }
+
     pub fn redraw(
         &mut self,
         current_scale: f32,
@@ -700,109 +781,46 @@ impl SettingsWindow {
             is_cursor_on.hash(&mut transient_hasher);
         }
         let current_hash = transient_hasher.finish();
+        let plan = SettingsRedrawPlan {
+            width: w,
+            height: h,
+            base_state_hash,
+            current_hash,
+        };
 
         // 1. Check Background Result
-        let mut consumed_background = false;
-        {
-            let mut back_buffer = self.render_back_buffer.lock().unwrap();
-            if let Some(res) = back_buffer.take() {
-                if res.w == w && res.h == h {
-                    let mut buffer = match self.surface.buffer_mut() {
-                        Ok(b) => b,
-                        Err(e) => {
-                            tracing::error!("Failed to get surface buffer from background result: {}. Skipping frame.", e);
-                            return;
-                        }
-                    };
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            res.pixels.as_ptr(),
-                            buffer.as_mut_ptr(),
-                            (w * h) as usize,
-                        );
-                    }
-                    self.last_background_pixels = res.pixels.clone(); // Arc clone (shallow copy)
-                    self.viewport_height = res.vh;
-                    self.content_height = res.ch;
-                    self.cursor_cache = res.cursor_rect;
-                    self.active_sys_prompt_rect = res.active_sys_prompt_rect;
-                    self.active_sys_prompt_content_height = res.active_sys_prompt_content_height;
-                    self.history_item_rects = res.history_item_rects;
+        let background_result = self.take_background_result(plan.width, plan.height);
+        let consumed_background = background_result.is_some();
 
-                    if res.hash == base_state_hash {
-                        self.last_base_state_hash = base_state_hash;
-                        self.is_dirty = false;
-                    }
-                    consumed_background = true;
+        if let Some(res) = &background_result {
+            self.last_background_pixels = res.pixels.clone();
+            self.viewport_height = res.vh;
+            self.content_height = res.ch;
+            self.cursor_cache = res.cursor_rect;
+            self.active_sys_prompt_rect = res.active_sys_prompt_rect;
+            self.active_sys_prompt_content_height = res.active_sys_prompt_content_height;
+            self.history_item_rects = res.history_item_rects.clone();
 
-                    // Recycle pixels back to idle pool if possible
-                    // Since pixels is Arc, we can only recycle if we're the only owner
-                    let mut idle = self.idle_buffers.lock().unwrap();
-                    if idle.len() < 2 {
-                        if let Ok(pixels_vec) = std::sync::Arc::try_unwrap(res.pixels) {
-                            idle.push(pixels_vec);
-                        }
-                    }
-                }
+            if res.hash == plan.base_state_hash {
+                self.last_base_state_hash = plan.base_state_hash;
+                self.is_dirty = false;
             }
         }
 
-        if !consumed_background && !self.is_dirty && self.last_state_hash == current_hash {
+        if !consumed_background && !self.is_dirty && self.last_state_hash == plan.current_hash {
             return;
         }
 
         // 3. Trigger Async Redraw if needed
-        let hash_mismatch = base_state_hash != self.last_base_state_hash;
-        if (self.is_dirty || hash_mismatch) && base_state_hash != self.last_sent_hash {
-            // Update history metadata before spawning if needed (Main Thread)
-            if self.current_tab == 3 && self.history_metrics_cache.len() != self.history.len() {
-                self.history_metrics_cache.resize(self.history.len(), 0.0);
-                self.history_hashes.resize(self.history.len(), 0);
-                self.history_scroll_states.resize(self.history.len(), 0.0);
-                let scale = (w as f32 / 800.0).min(h as f32 / 750.0);
-                let max_text_w = (450.0 * scale) as u32;
-                for i in 0..self.history.len() {
-                    if self.history_metrics_cache[i] == 0.0 {
-                        let (_, content) = &self.history[i];
-                        let (_, mh) =
-                            crate::ui_primitives::get_metrics_dw(content, 16.0 * scale, max_text_w);
-                        self.history_metrics_cache[i] = mh;
-                    }
-                }
-            }
-
-            self.render_in_progress.store(true, Ordering::SeqCst);
-            self.last_sent_hash = base_state_hash;
-            let input = self.create_render_input(
-                current_scale,
-                current_mode,
-                current_music_path,
-                current_layer,
-                run_on_startup,
-                ai_config,
-            );
-
-            let mut pixels = {
-                let mut idle = self.idle_buffers.lock().unwrap();
-                idle.pop().unwrap_or_else(|| {
-                    tracing::debug!(
-                        "Creating new pixel buffer for settings window ({}x{})",
-                        w,
-                        h
-                    );
-                    vec![0u32; (w * h) as usize]
-                })
-            };
-            if pixels.len() != (w * h) as usize {
-                pixels = vec![0u32; (w * h) as usize];
-            }
-
-            let _ = self.render_tx.send(RenderRequest {
-                input,
-                hash: base_state_hash,
-                buffer: pixels,
-            });
-        }
+        self.queue_background_render(
+            &plan,
+            current_scale,
+            current_mode,
+            current_music_path,
+            current_layer,
+            run_on_startup,
+            ai_config,
+        );
 
         let mut buffer = match self.surface.buffer_mut() {
             Ok(b) => b,
@@ -814,6 +832,23 @@ impl SettingsWindow {
                 return;
             }
         };
+
+        if let Some(res) = background_result {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    res.pixels.as_ptr(),
+                    buffer.as_mut_ptr(),
+                    (plan.width * plan.height) as usize,
+                );
+            }
+
+            let mut idle = self.idle_buffers.lock().unwrap();
+            if idle.len() < 2 {
+                if let Ok(pixels_vec) = std::sync::Arc::try_unwrap(res.pixels) {
+                    idle.push(pixels_vec);
+                }
+            }
+        }
 
         // 1.5 Restore background if no new background frame was just copied
         // (This happens during smooth scrolling dragging between worker frames)
