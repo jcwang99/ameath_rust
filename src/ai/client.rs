@@ -138,6 +138,7 @@ impl OpenAiClient {
             .http_client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Accept", "application/json")
             .json(&request)
             .send()
             .await
@@ -147,7 +148,16 @@ impl OpenAiClient {
             })?;
 
         let status = response.status();
+        let headers = response.headers().clone();
         tracing::info!("AI Response Status: {}", status);
+
+        // Defensive check: If server sends event-stream, we must reject it early
+        if let Some(ct) = headers.get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()) {
+            if ct.contains("text/event-stream") {
+                tracing::error!("Server ignored stream:false and sent text/event-stream");
+                return Err("API error: Received unexpected streaming response (text/event-stream).".to_string());
+            }
+        }
 
         if !status.is_success() {
             let error_text = response
@@ -164,6 +174,12 @@ impl OpenAiClient {
         })?;
 
         tracing::debug!("AI Raw Response: {}", body_text);
+
+        // Defensive check: heuristic detection of legacy/malformed stream data
+        if body_text.trim_start().starts_with("data:") {
+            tracing::error!("Detected 'data:' prefix in response body, likely a stream");
+            return Err("API error: Response body contains streaming data markers.".to_string());
+        }
 
         let chat_response: ChatResponse = serde_json::from_str(&body_text).map_err(|e| {
             let preview = if body_text.chars().count() > 500 {
