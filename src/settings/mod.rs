@@ -6,6 +6,7 @@ use crate::ui_primitives::*;
 use softbuffer::{Context, Surface};
 // use windows::core::ComInterface;
 // use windows::Win32::Graphics::Direct2D::ID2D1DCRenderTarget;
+use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -338,6 +339,7 @@ pub struct SettingsWindow {
     pub last_background_pixels: std::sync::Arc<Vec<u32>>,
     pub render_tx: Sender<RenderRequest>,
     pub _proxy: EventLoopProxy<()>,
+    redraw_pending: Cell<bool>,
 }
 
 impl SettingsWindow {
@@ -472,6 +474,7 @@ impl SettingsWindow {
             last_background_pixels: std::sync::Arc::new(Vec::new()),
             render_tx,
             _proxy: proxy,
+            redraw_pending: Cell::new(false),
         }
     }
 
@@ -502,10 +505,13 @@ impl SettingsWindow {
     }
 
     pub fn request_redraw(&self) {
-        self.window.request_redraw();
+        if !self.redraw_pending.replace(true) {
+            self.window.request_redraw();
+        }
     }
 
     pub fn request_redraw_actual(&self) {
+        self.redraw_pending.set(true);
         self.window.request_redraw();
     }
 
@@ -574,6 +580,7 @@ impl SettingsWindow {
         run_on_startup: bool,
         ai_config: &crate::types::AiConfig,
     ) {
+        self.redraw_pending.set(false);
         let size = self.window.inner_size();
         let w = size.width;
         let h = size.height;

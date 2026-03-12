@@ -143,14 +143,11 @@ fn update_stream_preview_bubble(
 
 fn should_flush_stream_preview(
     chunk: &str,
-    preview_text: &str,
+    preview_char_len: usize,
     last_rendered_len: usize,
     last_render_elapsed: Duration,
 ) -> bool {
-    let new_chars = preview_text
-        .chars()
-        .count()
-        .saturating_sub(last_rendered_len);
+    let new_chars = preview_char_len.saturating_sub(last_rendered_len);
     let has_breakpoint = chunk.contains('\n')
         || chunk.ends_with('.')
         || chunk.ends_with('!')
@@ -500,6 +497,7 @@ fn main() {
     let mut stream_preview_bubble_idx: Option<usize> = None;
     let mut stream_in_progress = false;
     let mut stream_preview_dirty = false;
+    let mut stream_preview_char_len = 0usize;
     let mut stream_preview_last_rendered_len = 0usize;
     let mut last_stream_preview_render = Instant::now();
     let mut hover_leave_time: Option<Instant> = None;
@@ -1219,17 +1217,19 @@ fn main() {
                                 stream_preview_text.clear();
                                 stream_preview_bubble_idx = None;
                                 stream_preview_dirty = false;
+                                stream_preview_char_len = 0;
                                 stream_preview_last_rendered_len = 0;
                                 last_stream_preview_render = Instant::now() - Duration::from_millis(34);
                                 needs_pet_redraw = true;
                             }
                             AiResponseEvent::StreamChunk(chunk) => {
                                 stream_in_progress = true;
+                                stream_preview_char_len += chunk.chars().count();
                                 stream_preview_text.push_str(&chunk);
 
                                 let should_flush = should_flush_stream_preview(
                                     &chunk,
-                                    &stream_preview_text,
+                                    stream_preview_char_len,
                                     stream_preview_last_rendered_len,
                                     last_stream_preview_render.elapsed(),
                                 );
@@ -1243,8 +1243,7 @@ fn main() {
                                     )
                                 {
                                     last_stream_preview_render = Instant::now();
-                                    stream_preview_last_rendered_len =
-                                        stream_preview_text.chars().count();
+                                    stream_preview_last_rendered_len = stream_preview_char_len;
                                     stream_preview_dirty = false;
                                     needs_pet_redraw = true;
                                 } else {
@@ -1272,6 +1271,7 @@ fn main() {
                                 stream_preview_text.clear();
                                 stream_in_progress = false;
                                 stream_preview_dirty = false;
+                                stream_preview_char_len = 0;
                                 stream_preview_last_rendered_len = 0;
                                 thinking_state = ThinkingState::None;
                                 thinking_start = None;
@@ -1312,7 +1312,7 @@ fn main() {
                         )
                     {
                         last_stream_preview_render = Instant::now();
-                        stream_preview_last_rendered_len = stream_preview_text.chars().count();
+                        stream_preview_last_rendered_len = stream_preview_char_len;
                         stream_preview_dirty = false;
                         needs_pet_redraw = true;
                     }

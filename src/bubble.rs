@@ -4,6 +4,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
+use std::collections::HashMap;
+
+#[cfg(target_os = "windows")]
 use windows::core::ComInterface;
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{HANDLE, HWND, RECT};
@@ -13,7 +16,7 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::{
-    ID2D1DCRenderTarget, ID2D1DeviceContext, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+    ID2D1Bitmap, ID2D1DCRenderTarget, ID2D1DeviceContext, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
     D2D1_RENDER_TARGET_PROPERTIES, D2D1_ROUNDED_RECT,
 };
 #[cfg(target_os = "windows")]
@@ -331,6 +334,8 @@ struct WorkerState {
     #[cfg(target_os = "windows")]
     cached_rt: Option<ID2D1DCRenderTarget>,
     #[cfg(target_os = "windows")]
+    image_bitmap_cache: HashMap<String, Vec<ID2D1Bitmap>>,
+    #[cfg(target_os = "windows")]
     hdc_mem: HDC,
     #[cfg(target_os = "windows")]
     hdc_screen: HDC,
@@ -348,6 +353,7 @@ fn worker_loop(rx: Receiver<BubbleRenderJob>) {
         WorkerState {
             cached_layout: None,
             cached_rt: None,
+            image_bitmap_cache: HashMap::new(),
             hdc_mem,
             hdc_screen,
             h_bitmap: windows::Win32::Graphics::Gdi::HBITMAP(0),
@@ -463,6 +469,53 @@ fn get_or_decode_image_frames(path: &str) -> Option<Arc<Vec<DecodedImageFrame>>>
         .unwrap()
         .insert(cache_key, decoded_frames.clone());
     Some(decoded_frames)
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_cached_bitmaps(
+    state: &mut WorkerState,
+    rt: &ID2D1DeviceContext,
+    path: &str,
+    frames: &[DecodedImageFrame],
+) {
+    let should_rebuild = state
+        .image_bitmap_cache
+        .get(path)
+        .map(|cached| cached.len() != frames.len())
+        .unwrap_or(true);
+
+    if !should_rebuild {
+        return;
+    }
+
+    let bmp_props = windows::Win32::Graphics::Direct2D::D2D1_BITMAP_PROPERTIES {
+        pixelFormat: D2D1_PIXEL_FORMAT {
+            format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+        },
+        dpiX: 96.0,
+        dpiY: 96.0,
+    };
+
+    let mut bitmaps = Vec::with_capacity(frames.len());
+    for frame in frames {
+        let Ok(bitmap) = (unsafe {
+            rt.CreateBitmap(
+                windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U {
+                    width: frame.width,
+                    height: frame.height,
+                },
+                Some(frame.bgra.as_ptr() as *const _),
+                frame.width * 4,
+                &bmp_props,
+            )
+        }) else {
+            return;
+        };
+        bitmaps.push(bitmap);
+    }
+
+    state.image_bitmap_cache.insert(path.to_string(), bitmaps);
 }
 
 #[cfg(target_os = "windows")]
@@ -733,19 +786,16 @@ fn render_bubble_internal(
 
                     if let Some(frames) = &decoded_image_frames {
                         let frame = &frames[i];
-                        let bmp_props = windows::Win32::Graphics::Direct2D::D2D1_BITMAP_PROPERTIES {
-                            pixelFormat: D2D1_PIXEL_FORMAT { format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
-                            dpiX: 96.0, dpiY: 96.0
-                        };
-                        if let Ok(bmp) = rt.CreateBitmap(
-                            windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U {
-                                width: frame.width,
-                                height: frame.height,
-                            },
-                            Some(frame.bgra.as_ptr() as *const _),
-                            frame.width * 4,
-                            &bmp_props,
-                        ) {
+                        if let BubbleContent::Image(path) = &req.content {
+                            ensure_cached_bitmaps(state, &rt, path, frames);
+                        }
+                        if let Some(bmp) = match &req.content {
+                            BubbleContent::Image(path) => state
+                                .image_bitmap_cache
+                                .get(path)
+                                .and_then(|cached| cached.get(i)),
+                            BubbleContent::Text(_) => None,
+                        } {
                             let mut dw = frame.width as f32 * scale;
                             let mut dh = frame.height as f32 * scale;
                             if dw > (width - padding * 2) as f32 {
@@ -766,7 +816,7 @@ fn render_bubble_internal(
                                 right: padding as f32 + ox + dw,
                                 bottom: padding as f32 + oy + dh,
                             };
-                            rt.DrawBitmap(&bmp, Some(&dest), 1.0, windows::Win32::Graphics::Direct2D::D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None);
+                            rt.DrawBitmap(bmp, Some(&dest), 1.0, windows::Win32::Graphics::Direct2D::D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None);
                         }
                     } else if let Some(layout) = &state.cached_layout {
                         rt.DrawTextLayout(

@@ -1,6 +1,7 @@
 use rusttype::PositionedGlyph;
 use rusttype::{point, Font, Scale};
 use softbuffer::{Context, Surface};
+use std::cell::Cell;
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use winit::{
@@ -66,6 +67,7 @@ pub struct ChatWindow {
     text_buffer_h: u32,
     ignore_next_char: bool,
     is_selecting: bool,
+    redraw_pending: Cell<bool>,
 }
 
 pub enum ChatAction {
@@ -131,6 +133,7 @@ impl ChatWindow {
             text_buffer_h: 0,
             ignore_next_char: false,
             is_selecting: false,
+            redraw_pending: Cell::new(false),
         }
     }
 
@@ -163,21 +166,24 @@ impl ChatWindow {
         self.slots.clear();
         self.ignore_next_char = true; // Use this to swallow the hotkey leak
         self.cursor_blink_start = std::time::Instant::now();
+        self.redraw_pending.set(false);
         self.request_redraw();
     }
 
     pub fn hide(&mut self) {
         self.window.set_visible(false);
         self.is_visible = false;
+        self.redraw_pending.set(false);
     }
 
     pub fn request_redraw(&self) {
-        if self.is_visible {
+        if self.is_visible && !self.redraw_pending.replace(true) {
             self.window.request_redraw();
         }
     }
 
     pub fn request_redraw_actual(&self) {
+        self.redraw_pending.set(true);
         self.window.request_redraw();
     }
 
@@ -427,6 +433,7 @@ impl ChatWindow {
                 self.add_image_from_path(path.clone());
             }
             WindowEvent::RedrawRequested => {
+                self.redraw_pending.set(false);
                 self.redraw();
             }
             _ => {}
