@@ -86,6 +86,7 @@ pub struct OpenAiClient {
 pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<Message>,
+    pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Value>>,
 }
@@ -129,6 +130,7 @@ impl OpenAiClient {
         let request = ChatRequest {
             model: self.model.clone(),
             messages,
+            stream: false,
             tools,
         };
 
@@ -160,6 +162,8 @@ impl OpenAiClient {
             tracing::error!("Failed to get response text: {}", e);
             format!("Failed to get body: {}", e)
         })?;
+
+        tracing::debug!("AI Raw Response: {}", body_text);
 
         let chat_response: ChatResponse = serde_json::from_str(&body_text).map_err(|e| {
             let preview = if body_text.chars().count() > 500 {
