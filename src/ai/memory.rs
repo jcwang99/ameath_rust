@@ -123,7 +123,7 @@ impl MemoryManager {
     }
 
     pub fn add_message(&self, msg: &Message) -> Result<()> {
-        self.add_conversation_item(&msg.role, msg.content.as_str(), 1)
+        self.add_conversation_item(&msg.role, msg.content_as_str(), 1)
     }
 
     pub fn add_conversation_item(&self, role: &str, content: &str, layer: i32) -> Result<()> {
@@ -140,7 +140,7 @@ impl MemoryManager {
         let content = if let Some(tc) = &msg.tool_calls {
             serde_json::to_string(tc).unwrap_or_default()
         } else {
-            msg.content.as_str().to_string()
+            msg.content_as_str().to_string()
         };
 
         conn.execute(
@@ -178,7 +178,7 @@ impl MemoryManager {
                 .join("\n");
             context.push(Message {
                 role: "system".to_string(),
-                content: Content::Simple(format!("Known Facts about User:\n{}", facts_str)),
+                content: Some(Content::Simple(format!("Known Facts about User:\n{}", facts_str))),
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -196,7 +196,7 @@ impl MemoryManager {
         if let Some(l3) = l3_opt {
             context.push(Message {
                 role: "system".to_string(),
-                content: Content::Simple(format!("Long-term Summary:\n{}", l3)),
+                content: Some(Content::Simple(format!("Long-term Summary:\n{}", l3))),
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -217,15 +217,15 @@ impl MemoryManager {
         }
         if !l2_summaries.is_empty() {
             l2_summaries.reverse();
-            context.push(Message {
-                role: "system".to_string(),
-                content: Content::Simple(format!(
-                    "Recent Context Summary:\n{}",
-                    l2_summaries.join("\n")
-                )),
-                tool_calls: None,
-                tool_call_id: None,
-            });
+                context.push(Message {
+                    role: "system".to_string(),
+                    content: Some(Content::Simple(format!(
+                        "Recent Context Summary:\n{}",
+                        l2_summaries.join("\n")
+                    ))),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
         }
 
         // 4. Get Active Tool Traces (Volatile)
@@ -236,7 +236,7 @@ impl MemoryManager {
             let trace_rows = stmt.query_map([], |row| {
                 Ok(Message {
                     role: row.get(0)?,
-                    content: Content::Simple(row.get(1)?),
+                    content: Some(Content::Simple(row.get(1)?)),
                     tool_calls: None, // Simplified for now
                     tool_call_id: row.get(2)?,
                 })
@@ -248,14 +248,14 @@ impl MemoryManager {
         if !traces.is_empty() {
             context.push(Message {
                 role: "system".to_string(),
-                content: Content::Simple("--- START OF CURRENT TOOL EXECUTION LOG ---".to_string()),
+                content: Some(Content::Simple("--- START OF CURRENT TOOL EXECUTION LOG ---".to_string())),
                 tool_calls: None,
                 tool_call_id: None,
             });
             context.extend(traces);
             context.push(Message {
                 role: "system".to_string(),
-                content: Content::Simple("--- END OF TOOL EXECUTION LOG ---".to_string()),
+                content: Some(Content::Simple("--- END OF TOOL EXECUTION LOG ---".to_string())),
                 tool_calls: None,
                 tool_call_id: None,
             });
@@ -271,7 +271,7 @@ impl MemoryManager {
             let rows = stmt.query_map(params![limit], |row| {
                 Ok(Message {
                     role: row.get(0)?,
-                    content: Content::Simple(row.get(1)?),
+                    content: Some(Content::Simple(row.get(1)?)),
                     tool_calls: None,
                     tool_call_id: None,
                 })
@@ -280,10 +280,9 @@ impl MemoryManager {
             for row in rows {
                 let msg = row?;
                 if msg.role == "user" {
-                    if let Content::Simple(text) = &msg.content {
-                        recent_user_text.push_str(text);
-                        recent_user_text.push(' ');
-                    }
+                    let text = msg.content_as_str();
+                    recent_user_text.push_str(text);
+                    recent_user_text.push(' ');
                 }
                 history.push(msg);
             }
@@ -330,10 +329,10 @@ impl MemoryManager {
                     }
                     context.push(Message {
                         role: "system".to_string(),
-                        content: Content::Simple(format!(
+                        content: Some(Content::Simple(format!(
                             "Relevant Graph Connections:\n{}",
                             graph_ctx
-                        )),
+                        ))),
                         tool_calls: None,
                         tool_call_id: None,
                     });

@@ -4,11 +4,18 @@ use serde_json::Value;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Message {
     pub role: String,
-    pub content: Content,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Content>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+}
+
+impl Message {
+    pub fn content_as_str(&self) -> &str {
+        self.content.as_ref().map(|c| c.as_str()).unwrap_or("")
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

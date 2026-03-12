@@ -107,7 +107,7 @@ impl ChatKernel {
 
         let user_msg = Message {
             role: "user".to_string(),
-            content: user_msg_content,
+            content: Some(user_msg_content),
             tool_calls: None,
             tool_call_id: None,
         };
@@ -132,7 +132,7 @@ impl ChatKernel {
                     0,
                     Message {
                         role: "system".to_string(),
-                        content: Content::Simple(self.config.system_prompt.clone()),
+                        content: Some(Content::Simple(self.config.system_prompt.clone())),
                         tool_calls: None,
                         tool_call_id: None,
                     },
@@ -143,7 +143,7 @@ impl ChatKernel {
             if let Some(ctx) = &handover_context {
                 messages.push(Message {
                     role: "system".to_string(),
-                    content: Content::Simple(ctx.clone()),
+                    content: Some(Content::Simple(ctx.clone())),
                     tool_calls: None,
                     tool_call_id: None,
                 });
@@ -186,7 +186,7 @@ impl ChatKernel {
 
                 match response_result {
                     Ok(response_msg) => {
-                        let content_str = response_msg.content.as_str();
+                        let content_str = response_msg.content_as_str();
                         let content_preview = if content_str.chars().count() > 100 {
                             format!("{}...", content_str.chars().take(100).collect::<String>())
                         } else {
@@ -257,7 +257,7 @@ impl ChatKernel {
 
                                 let tool_response = Message {
                                     role: "tool".to_string(),
-                                    content: Content::Simple(result),
+                                    content: Some(Content::Simple(result)),
                                     tool_calls: None,
                                     tool_call_id: Some(tool_call.id.clone()),
                                 };
@@ -287,7 +287,7 @@ impl ChatKernel {
             }
 
             if let Some(mut response_msg) = final_response {
-                let original_content = response_msg.content.as_str().to_string();
+                let original_content = response_msg.content_as_str().to_string();
                 
                 // 1. Process FC Traces
                 let fc_summary = if !fc_traces.is_empty() {
@@ -296,16 +296,16 @@ impl ChatKernel {
                         tracing::info!("FC traces too long ({} chars), summarizing...", combined_traces.len());
                         let summary_prompt = vec![Message {
                             role: "system".to_string(),
-                            content: Content::Simple(format!(
+                            content: Some(Content::Simple(format!(
                                 "Please summarize the following tool calling process into a concise log within 1000 tokens. \
                                 Focus on what tools were called and what key information was obtained.\n\n[Tool Traces]:\n{}",
                                 combined_traces
-                            )),
+                            ))),
                             tool_calls: None,
                             tool_call_id: None,
                         }];
                         if let Ok(summary_msg) = client.chat(summary_prompt, None).await {
-                            combined_traces = summary_msg.content.as_str().to_string();
+                            combined_traces = summary_msg.content_as_str().to_string();
                         }
                     }
                     Some(combined_traces)
@@ -322,7 +322,7 @@ impl ChatKernel {
 
                 // 3. Save to Memory (L1)
                 self.memory.add_message(&user_msg).ok();
-                response_msg.content = Content::Simple(db_content);
+                response_msg.content = Some(Content::Simple(db_content));
                 self.memory.add_message(&response_msg).ok();
 
                 // 4. Send to UI (Original content only)
@@ -357,7 +357,7 @@ impl ChatKernel {
                 .filter(|m| m.role == "tool" || (m.role == "assistant" && m.tool_calls.is_some()))
                 .take(trace_capture_len)
                 .map(|m| {
-                    let content_str = m.content.as_str();
+                    let content_str = m.content_as_str();
                     let content_preview = if content_str.chars().count() > 200 {
                         format!("{}...", content_str.chars().take(200).collect::<String>())
                     } else {
@@ -376,7 +376,7 @@ impl ChatKernel {
             // Generate Handover Summary
             let summary_prompt = Message {
                 role: "system".to_string(),
-                content: Content::Simple("You have reached the maximum reasoning steps. Summarize your current progress, what you have learned from the tool outputs, and what explicitly needs to be done next. Be concise.".to_string()),
+                content: Some(Content::Simple("You have reached the maximum reasoning steps. Summarize your current progress, what you have learned from the tool outputs, and what explicitly needs to be done next. Be concise.".to_string())),
                 tool_calls: None,
                 tool_call_id: None,
             };
@@ -386,7 +386,7 @@ impl ChatKernel {
                 // Construct Handover Context (In-Memory Only)
                 handover_context = Some(format!(
                     "--- COGNITIVE HANDOVER (Step Limit Reached) ---\n\n[Previous Progress Summary]:\n{}\n\n[Recent Tool Execution Log (Raw Context)]:\n{}\n\n--- END OF HANDOVER ---",
-                    last_summary.content.as_str(),
+                    last_summary.content_as_str(),
                     recent_history_str
                 ));
 
@@ -440,14 +440,14 @@ impl ChatKernel {
             let mut prompt = context.clone();
             prompt.push(Message {
                 role: "system".to_string(),
-                content: Content::Simple("Summarize the above conversation into a concise cognitive trace for long-term memory. Focus on key facts, user preferences, and important outcomes.".to_string()),
+                content: Some(Content::Simple("Summarize the above conversation into a concise cognitive trace for long-term memory. Focus on key facts, user preferences, and important outcomes.".to_string())),
                 tool_calls: None,
                 tool_call_id: None,
             });
 
             if let Ok(summary) = client.chat(prompt, None).await {
                 self.memory
-                    .add_conversation_item("assistant", summary.content.as_str(), 2)
+                    .add_conversation_item("assistant", summary.content_as_str(), 2)
                     .ok();
 
                 // 1. Mark L1 messages as summarized
@@ -494,13 +494,13 @@ impl ChatKernel {
                 while attempts < 3 {
                     let prompt = vec![Message {
                         role: "system".to_string(),
-                        content: Content::Simple(prompt_content.clone()),
+                        content: Some(Content::Simple(prompt_content.clone())),
                         tool_calls: None,
                         tool_call_id: None,
                     }];
 
                     if let Ok(summary) = client.chat(prompt, None).await {
-                        let summary_text = summary.content.as_str();
+                        let summary_text = summary.content_as_str();
                         if summary_text.chars().count() <= 1500 {
                             // Success! Save to Layer 3
                             self.memory.add_summary(summary_text, 3).ok();
