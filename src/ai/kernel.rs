@@ -182,16 +182,7 @@ impl ChatKernel {
                 let _ = tx.send(AiResponseEvent::Status(ThinkingState::Network));
                 
                 tracing::debug!("Requesting LLM with {} messages", messages.len());
-                let response_result = client
-                    .chat(messages.clone(), tools_opt.clone(), |event| match event {
-                        crate::ai::client::ClientStreamEvent::Start => {
-                            let _ = tx.send(AiResponseEvent::StreamStart);
-                        }
-                        crate::ai::client::ClientStreamEvent::TextDelta(delta) => {
-                            let _ = tx.send(AiResponseEvent::StreamChunk(delta));
-                        }
-                    })
-                    .await;
+                let response_result = client.chat(messages.clone(), tools_opt.clone(), |_| {}).await;
                 let _ = tx.send(AiResponseEvent::Status(ThinkingState::Standard));
 
                 match response_result {
@@ -298,6 +289,9 @@ impl ChatKernel {
 
             if let Some(mut response_msg) = final_response {
                 let original_content = response_msg.content_as_str();
+                let display_content = crate::ai::memory::MemoryManager::strip_auxiliary_for_display(
+                    &original_content,
+                );
                 
                 // 1. Process FC Traces
                 let fc_summary = if !fc_traces.is_empty() {
@@ -323,20 +317,20 @@ impl ChatKernel {
                     None
                 };
 
-                // 2. Prepare content for DB (with FC traces)
+                // 2. Prepare content for DB (keep FC log for future context)
                 let db_content = if let Some(traces) = fc_summary {
                     format!("{}\n\n--- FC 调用过程记录 ---\n{}", original_content, traces)
                 } else {
                     original_content.clone()
                 };
 
-                // 3. Save to Memory (L1)
+                // 3. Save dialogue to Memory (L1)
                 self.memory.add_message(&user_msg).ok();
                 response_msg.content = Some(Content::Simple(db_content));
                 self.memory.add_message(&response_msg).ok();
 
                 // 4. Send to UI (Original content only)
-                let _ = tx.send(AiResponseEvent::StreamEnd(original_content));
+                let _ = tx.send(AiResponseEvent::StreamEnd(display_content));
 
                 // 5. Orchestrate summarization (L1 -> L2)
                 let kernel_clone = Arc::new(Self {

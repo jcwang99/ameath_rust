@@ -138,6 +138,7 @@ pub struct SpeechBubble {
     pub rect: Option<(i32, i32, i32, i32)>,
     pub is_ai_response: bool,
     pub is_hover_recall: bool,
+    pub is_stream_preview: bool,
 
     // Animation state
     pub frames: Vec<(Vec<u8>, Duration)>,
@@ -164,6 +165,7 @@ impl SpeechBubble {
             rect: None,
             is_ai_response: false,
             is_hover_recall: false,
+            is_stream_preview: false,
             frames: Vec::new(),
             current_frame_idx: 0,
             last_frame_time: Instant::now(),
@@ -255,6 +257,9 @@ impl SpeechBubble {
     }
 
     pub fn is_visible(&self) -> bool {
+        if self.is_working {
+            return true;
+        }
         if let Some(until) = self.show_until {
             Instant::now() < until
         } else {
@@ -264,13 +269,7 @@ impl SpeechBubble {
 
     pub fn render_to_buffer(&mut self, buffer_ptr: *mut u8, _scale: f32) {
         while let Ok(res) = self.rx.try_recv() {
-            self.frames = res.frames.into_iter().map(|(b, d)| (*b, d)).collect();
-            self.current_width = res.width;
-            self.current_height = res.height;
-            self.last_rendered_hash = res.render_hash;
-            self.is_working = false;
-            self.current_frame_idx = 0;
-            self.last_frame_time = Instant::now();
+            self.apply_render_result(res);
         }
 
         if self.frames.len() > 1 {
@@ -298,6 +297,42 @@ impl SpeechBubble {
                     std::ptr::copy_nonoverlapping(pixels.as_ptr(), buffer_ptr, pixels.len());
                 }
             }
+        }
+    }
+
+    fn apply_render_result(&mut self, res: BubbleRenderResult) {
+        self.frames = res.frames.into_iter().map(|(b, d)| (*b, d)).collect();
+        self.current_width = res.width;
+        self.current_height = res.height;
+        self.last_rendered_hash = res.render_hash;
+        self.is_working = false;
+        self.current_frame_idx = 0;
+        self.last_frame_time = Instant::now();
+    }
+
+    pub fn wait_for_render(&mut self, timeout: Duration) {
+        if !self.is_working {
+            return;
+        }
+
+        match self.rx.recv_timeout(timeout) {
+            Ok(res) => {
+                self.apply_render_result(res);
+                while let Ok(extra) = self.rx.try_recv() {
+                    self.apply_render_result(extra);
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                self.is_working = false;
+            }
+        }
+    }
+
+    pub fn wait_until_rendered(&mut self, max_wait: Duration) {
+        let start = Instant::now();
+        while self.is_working && start.elapsed() < max_wait {
+            self.wait_for_render(Duration::from_millis(250));
         }
     }
 

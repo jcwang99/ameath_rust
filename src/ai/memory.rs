@@ -165,6 +165,43 @@ impl MemoryManager {
         Ok(())
     }
 
+    fn remove_system_reminders(content: &str) -> String {
+        let mut cleaned = content.to_string();
+        while let Some(start) = cleaned.find("<system-reminder>") {
+            if let Some(end_rel) = cleaned[start..].find("</system-reminder>") {
+                let end = start + end_rel + "</system-reminder>".len();
+                cleaned.replace_range(start..end, "");
+            } else {
+                cleaned.truncate(start);
+                break;
+            }
+        }
+
+        cleaned.trim().to_string()
+    }
+
+    pub fn split_auxiliary_content(content: &str) -> (String, Option<String>) {
+        const FC_MARKER: &str = "\n\n--- FC 调用过程记录 ---\n";
+        let cleaned = Self::remove_system_reminders(content);
+        if let Some((visible, fc_log)) = cleaned.split_once(FC_MARKER) {
+            let visible = visible.trim().to_string();
+            let fc_log = fc_log.trim();
+            let fc_log = if fc_log.is_empty() {
+                None
+            } else {
+                Some(fc_log.to_string())
+            };
+            (visible, fc_log)
+        } else {
+            (cleaned, None)
+        }
+    }
+
+    pub fn strip_auxiliary_for_display(content: &str) -> String {
+        let (visible, _) = Self::split_auxiliary_content(content);
+        visible
+    }
+
     pub fn get_context(&self, limit: usize) -> Result<Vec<Message>> {
         let mut context = Vec::new();
 
@@ -270,22 +307,32 @@ impl MemoryManager {
 
         // 5. Get Recent L1 Core Dialogue (Limit to recent N)
         let mut history: Vec<Message> = Vec::new();
+        let mut historical_fc_notes = Vec::new();
         let mut recent_user_text = String::new();
         {
             let mut stmt = conn.prepare(
                 "SELECT role, content FROM conversations WHERE layer = 1 ORDER BY id DESC LIMIT ?",
             )?;
             let rows = stmt.query_map(params![limit], |row| {
-                Ok(Message {
-                    role: row.get(0)?,
-                    content: Some(Content::Simple(row.get(1)?)),
-                    tool_calls: None,
-                    tool_call_id: None,
-                })
+                let role: String = row.get(0)?;
+                let raw_content: String = row.get(1)?;
+                let (visible_content, fc_note) = Self::split_auxiliary_content(&raw_content);
+                Ok((role, visible_content, fc_note))
             })?;
 
             for row in rows {
-                let msg = row?;
+                let (role, visible_content, fc_note) = row?;
+                if role == "assistant" {
+                    if let Some(fc_note) = fc_note {
+                        historical_fc_notes.push(fc_note);
+                    }
+                }
+                let msg = Message {
+                    role,
+                    content: Some(Content::Simple(visible_content)),
+                    tool_calls: None,
+                    tool_call_id: None,
+                };
                 if msg.role == "user" {
                     let text = msg.content_as_str();
                     recent_user_text.push_str(&text);
@@ -295,6 +342,30 @@ impl MemoryManager {
             }
         } // `stmt` for L1 dialogue is dropped here
         history.reverse();
+
+        if !historical_fc_notes.is_empty() {
+            historical_fc_notes.reverse();
+            let fc_context = historical_fc_notes
+                .into_iter()
+                .rev()
+                .take(3)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .enumerate()
+                .map(|(idx, note)| format!("[Historical FC Note {}]\n{}", idx + 1, note))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            context.push(Message {
+                role: "system".to_string(),
+                content: Some(Content::Simple(format!(
+                    "Historical tool-derived notes from prior completed turns. These notes may be stale and should be verified before acting on them.\n\n{}",
+                    fc_context
+                ))),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+        }
 
         // --- 5.5 Entity Graph Retrieval (Lightweight Mem0-like) ---
         // We drop locks early to call our own connection again if needed.
@@ -509,7 +580,11 @@ impl MemoryManager {
             ) ORDER BY id ASC",
         )?;
 
-        let rows = stmt.query_map(params![limit], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let rows = stmt.query_map(params![limit], |row| {
+            let role: String = row.get(0)?;
+            let content: String = row.get(1)?;
+            Ok((role, Self::strip_auxiliary_for_display(&content)))
+        })?;
 
         let mut history = Vec::new();
         for row in rows {

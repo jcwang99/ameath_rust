@@ -78,15 +78,15 @@ fn parse_response_segments(response: &str) -> (Vec<bubble::BubbleContent>, Strin
 
         remaining = &remaining[idx + 5..];
         let path_end = remaining
-            .find(|c: char| c.is_whitespace())
+            .find(|c: char| c.is_whitespace() || c == ']')
             .unwrap_or(remaining.len());
-        let path = &remaining[..path_end];
+        let path = remaining[..path_end].trim().trim_end_matches(']');
 
         if !path.is_empty() {
             segments.push(bubble::BubbleContent::Image(path.to_string()));
         }
 
-        remaining = &remaining[path_end..];
+        remaining = remaining[path_end..].trim_start_matches(|c: char| c.is_whitespace() || c == ']');
     }
 
     if !remaining.trim().is_empty() {
@@ -96,6 +96,30 @@ fn parse_response_segments(response: &str) -> (Vec<bubble::BubbleContent>, Strin
     }
 
     (segments, pure_text_accum.trim().to_string())
+}
+
+fn preview_text_from_response(response: &str) -> String {
+    let cleaned = crate::ai::memory::MemoryManager::strip_auxiliary_for_display(response);
+    let (segments, _) = parse_response_segments(&cleaned);
+    segments
+        .into_iter()
+        .filter_map(|seg| match seg {
+            bubble::BubbleContent::Text(text) => {
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }
+            bubble::BubbleContent::Image(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn response_contains_image_marker(response: &str) -> bool {
+    crate::ai::memory::MemoryManager::strip_auxiliary_for_display(response).contains("[IMG]")
 }
 
 fn stream_preview_display_text(text: &str) -> String {
@@ -114,31 +138,71 @@ fn stream_preview_display_text(text: &str) -> String {
 
 fn update_stream_preview_bubble(
     bubbles: &mut Vec<bubble::SpeechBubble>,
-    preview_idx: &mut Option<usize>,
     preview_text: &str,
     pet_scale: f32,
 ) -> bool {
-    let display_text = stream_preview_display_text(preview_text);
+    let preview_visible_text = preview_text_from_response(preview_text);
+    let display_text = stream_preview_display_text(&preview_visible_text);
     if display_text.trim().is_empty() {
         return false;
     }
 
-    match *preview_idx {
-        Some(idx) if idx < bubbles.len() => {
-            if let Some(bubble) = bubbles.get_mut(idx) {
-                bubble.show(&display_text, Duration::from_secs(6), pet_scale);
-            }
-        }
-        _ => {
-            let mut new_bubble = bubble::SpeechBubble::new();
-            new_bubble.is_ai_response = true;
-            new_bubble.show(&display_text, Duration::from_secs(6), pet_scale);
-            bubbles.push(new_bubble);
-            *preview_idx = Some(bubbles.len() - 1);
-        }
+    if let Some(bubble) = bubbles.iter_mut().find(|bubble| bubble.is_stream_preview) {
+        bubble.show(&display_text, Duration::from_secs(6), pet_scale);
+    } else {
+        let mut new_bubble = bubble::SpeechBubble::new();
+        new_bubble.is_ai_response = true;
+        new_bubble.is_stream_preview = true;
+        new_bubble.show(&display_text, Duration::from_secs(6), pet_scale);
+        bubbles.push(new_bubble);
     }
 
     true
+}
+
+fn clear_stream_preview_bubbles(bubbles: &mut Vec<bubble::SpeechBubble>) {
+    bubbles.retain(|bubble| !bubble.is_stream_preview);
+}
+
+fn build_response_bubbles(
+    segments: &[bubble::BubbleContent],
+    pet_scale: f32,
+    hover_recall: bool,
+) -> Vec<bubble::SpeechBubble> {
+    let mut built = Vec::new();
+
+    for seg in segments {
+        let mut bubble = bubble::SpeechBubble::new();
+        bubble.is_ai_response = true;
+        bubble.is_hover_recall = hover_recall;
+        match seg {
+            bubble::BubbleContent::Text(text) => {
+                bubble.show(text, Duration::from_secs(6), pet_scale);
+            }
+            bubble::BubbleContent::Image(path) => {
+                bubble.show_image(path, pet_scale);
+            }
+        }
+        bubble.wait_until_rendered(Duration::from_secs(5));
+        built.push(bubble);
+    }
+
+    let mut total_duration = Duration::from_secs(0);
+    for bubble in &mut built {
+        let base_dur = if let Some(until) = bubble.show_until {
+            until.duration_since(Instant::now())
+        } else {
+            Duration::from_secs(4)
+        };
+        total_duration += base_dur;
+    }
+
+    let common_end = Instant::now() + total_duration;
+    for bubble in &mut built {
+        bubble.show_until = Some(common_end);
+    }
+
+    built
 }
 
 fn should_flush_stream_preview(
@@ -173,96 +237,19 @@ fn enqueue_response_bubbles(
     segments: &[bubble::BubbleContent],
     pet_scale: f32,
 ) {
-    let mut cumulative_duration = Duration::from_secs(0);
-    for seg in segments {
-        let mut new_bubble = bubble::SpeechBubble::new();
-        new_bubble.is_ai_response = true;
-        match seg {
-            bubble::BubbleContent::Text(text) => {
-                new_bubble.show(text, Duration::from_secs(6), pet_scale);
-            }
-            bubble::BubbleContent::Image(path) => {
-                new_bubble.show_image(path, pet_scale);
-            }
-        }
-
-        let base_dur = if let Some(until) = new_bubble.show_until {
-            until.duration_since(Instant::now())
-        } else {
-            Duration::from_secs(4)
-        };
-
-        new_bubble.show_until = Some(Instant::now() + cumulative_duration + base_dur);
-        cumulative_duration += base_dur;
-        bubbles.push(new_bubble);
-    }
+    bubbles.extend(build_response_bubbles(segments, pet_scale, false));
 }
 
 fn finalize_stream_bubbles(
     bubbles: &mut Vec<bubble::SpeechBubble>,
-    preview_idx: Option<usize>,
     segments: &[bubble::BubbleContent],
     pet_scale: f32,
 ) {
-    if segments.is_empty() {
-        if let Some(idx) = preview_idx {
-            if idx < bubbles.len() {
-                bubbles.remove(idx);
-            }
-        }
-        return;
+    clear_stream_preview_bubbles(bubbles);
+
+    if !segments.is_empty() {
+        enqueue_response_bubbles(bubbles, segments, pet_scale);
     }
-
-    if let Some(idx) = preview_idx {
-        if idx < bubbles.len() {
-            let mut cumulative_duration = Duration::from_secs(0);
-
-            match &segments[0] {
-                bubble::BubbleContent::Text(text) => {
-                    if let Some(bubble) = bubbles.get_mut(idx) {
-                        bubble.show(text, Duration::from_secs(6), pet_scale);
-                        bubble.show_until = bubble
-                            .show_until
-                            .or(Some(Instant::now() + Duration::from_secs(4)));
-                        if let Some(until) = bubble.show_until {
-                            cumulative_duration = until.duration_since(Instant::now());
-                        }
-                    }
-                }
-                bubble::BubbleContent::Image(_) => {
-                    bubbles.remove(idx);
-                    enqueue_response_bubbles(bubbles, segments, pet_scale);
-                    return;
-                }
-            }
-
-            for seg in segments.iter().skip(1) {
-                let mut new_bubble = bubble::SpeechBubble::new();
-                new_bubble.is_ai_response = true;
-                match seg {
-                    bubble::BubbleContent::Text(text) => {
-                        new_bubble.show(text, Duration::from_secs(6), pet_scale);
-                    }
-                    bubble::BubbleContent::Image(path) => {
-                        new_bubble.show_image(path, pet_scale);
-                    }
-                }
-
-                let base_dur = if let Some(until) = new_bubble.show_until {
-                    until.duration_since(Instant::now())
-                } else {
-                    Duration::from_secs(4)
-                };
-
-                new_bubble.show_until = Some(Instant::now() + cumulative_duration + base_dur);
-                cumulative_duration += base_dur;
-                bubbles.push(new_bubble);
-            }
-            return;
-        }
-    }
-
-    enqueue_response_bubbles(bubbles, segments, pet_scale);
 }
 
 struct PetRenderScene<'a> {
@@ -295,71 +282,98 @@ struct PetRenderScene<'a> {
     loading_frames: &'a [(i32, i32, Vec<u8>)],
 }
 
+trait PetRendererBackend {
+    type Scene<'a>;
+
+    fn build_scene<'a>(args: PetRenderSceneBuildArgs<'a>) -> Self::Scene<'a>;
+    fn render(
+        scene: &Self::Scene<'_>,
+        composite_data: &mut Vec<u8>,
+        bubbles: &mut [bubble::SpeechBubble],
+        pet: &Pet,
+        menu_manager: &mut menu::QuickMenu,
+        pomodoro_manager: &mut pomodoro::Pomodoro,
+        pomodoro_data: &mut Vec<u8>,
+        music_player: &music_player::MusicPlayer,
+    );
+
+    #[cfg(target_os = "windows")]
+    fn present(
+        presenter: &mut Option<render::LayeredWindowPresenter>,
+        scene: &Self::Scene<'_>,
+        composite_data: &[u8],
+    );
+}
+
+struct PetRenderSceneBuildArgs<'a> {
+    win_w: u32,
+    win_h: u32,
+    target_pos: POINT,
+    draw_scale: f32,
+    pet_scale: f32,
+    pet_off_x: f64,
+    pet_off_y: f64,
+    cur_pw: f64,
+    cur_ph: f64,
+    is_thinking: bool,
+    loading_frame_idx: usize,
+    loading_x_f: f64,
+    loading_y_f: f64,
+    loading_w_f: f64,
+    loading_h_f: f64,
+    gap_between: f64,
+    mouse_x: f64,
+    mouse_y: f64,
+    menu_x_f: f64,
+    menu_y_f: f64,
+    current_pomodoro_w_f: f64,
+    current_pomodoro_h_f: f64,
+    pomodoro_y_f: f64,
+    pomodoro_x_f: f64,
+    frame: PreprocessedFrame,
+    frame_pixels: Arc<[u8]>,
+    loading_frames: &'a [(i32, i32, Vec<u8>)],
+}
+
 struct CpuPetRenderer;
 
-impl CpuPetRenderer {
-    fn build_scene<'a>(
-        win_w: u32,
-        win_h: u32,
-        target_pos: POINT,
-        draw_scale: f32,
-        pet_scale: f32,
-        pet_off_x: f64,
-        pet_off_y: f64,
-        cur_pw: f64,
-        cur_ph: f64,
-        is_thinking: bool,
-        loading_frame_idx: usize,
-        loading_x_f: f64,
-        loading_y_f: f64,
-        loading_w_f: f64,
-        loading_h_f: f64,
-        gap_between: f64,
-        mouse_x: f64,
-        mouse_y: f64,
-        menu_x_f: f64,
-        menu_y_f: f64,
-        current_pomodoro_w_f: f64,
-        current_pomodoro_h_f: f64,
-        pomodoro_y_f: f64,
-        pomodoro_x_f: f64,
-        frame: PreprocessedFrame,
-        frame_pixels: Arc<[u8]>,
-        loading_frames: &'a [(i32, i32, Vec<u8>)],
-    ) -> PetRenderScene<'a> {
+impl PetRendererBackend for CpuPetRenderer {
+    type Scene<'a> = PetRenderScene<'a>;
+
+    fn build_scene<'a>(args: PetRenderSceneBuildArgs<'a>) -> Self::Scene<'a> {
         build_pet_render_scene(
-            win_w,
-            win_h,
-            target_pos,
-            draw_scale,
-            pet_scale,
-            pet_off_x,
-            pet_off_y,
-            cur_pw,
-            cur_ph,
-            is_thinking,
-            loading_frame_idx,
-            loading_x_f,
-            loading_y_f,
-            loading_w_f,
-            loading_h_f,
-            gap_between,
-            mouse_x,
-            mouse_y,
-            menu_x_f,
-            menu_y_f,
-            current_pomodoro_w_f,
-            current_pomodoro_h_f,
-            pomodoro_y_f,
-            pomodoro_x_f,
-            frame,
-            frame_pixels,
-            loading_frames,
+            args.win_w,
+            args.win_h,
+            args.target_pos,
+            args.draw_scale,
+            args.pet_scale,
+            args.pet_off_x,
+            args.pet_off_y,
+            args.cur_pw,
+            args.cur_ph,
+            args.is_thinking,
+            args.loading_frame_idx,
+            args.loading_x_f,
+            args.loading_y_f,
+            args.loading_w_f,
+            args.loading_h_f,
+            args.gap_between,
+            args.mouse_x,
+            args.mouse_y,
+            args.menu_x_f,
+            args.menu_y_f,
+            args.current_pomodoro_w_f,
+            args.current_pomodoro_h_f,
+            args.pomodoro_y_f,
+            args.pomodoro_x_f,
+            args.frame,
+            args.frame_pixels,
+            args.loading_frames,
         )
     }
 
     fn render(
-        scene: &PetRenderScene<'_>,
+        scene: &Self::Scene<'_>,
         composite_data: &mut Vec<u8>,
         bubbles: &mut [bubble::SpeechBubble],
         pet: &Pet,
@@ -383,11 +397,36 @@ impl CpuPetRenderer {
     #[cfg(target_os = "windows")]
     fn present(
         presenter: &mut Option<render::LayeredWindowPresenter>,
-        scene: &PetRenderScene<'_>,
+        scene: &Self::Scene<'_>,
         composite_data: &[u8],
     ) {
         present_pet_scene(presenter, scene, composite_data);
     }
+}
+
+fn render_with_backend<'a, B: PetRendererBackend>(
+    args: PetRenderSceneBuildArgs<'a>,
+    composite_data: &mut Vec<u8>,
+    bubbles: &mut [bubble::SpeechBubble],
+    pet: &Pet,
+    menu_manager: &mut menu::QuickMenu,
+    pomodoro_manager: &mut pomodoro::Pomodoro,
+    pomodoro_data: &mut Vec<u8>,
+    music_player: &music_player::MusicPlayer,
+    presenter: &mut Option<render::LayeredWindowPresenter>,
+) {
+    let scene = B::build_scene(args);
+    B::render(
+        &scene,
+        composite_data,
+        bubbles,
+        pet,
+        menu_manager,
+        pomodoro_manager,
+        pomodoro_data,
+        music_player,
+    );
+    B::present(presenter, &scene, composite_data);
 }
 
 fn build_pet_render_scene<'a>(
@@ -621,16 +660,19 @@ fn render_pet_scene_cpu(
     for b in bubbles.iter_mut().rev() {
         b.render_to_buffer(std::ptr::null_mut(), scene.pet_scale);
 
-        if let Some(b_pixels) = b.pixel_data() {
-            let bw = b.current_width as u32;
-            let bh = b.current_height as u32;
-            let pet_center_x = scene.pet_off_x + scene.cur_pw / 2.0;
-            let bx = (pet_center_x - (bw as f64 / 2.0)) as i32;
-            let mut by = stack_bottom_y as i32 - bh as i32;
-            if by < 0 {
-                by = by.max(0);
-            }
+        let bw = b.current_width.max(1) as u32;
+        let bh = b.current_height.max(1) as u32;
+        let pet_center_x = scene.pet_off_x + scene.cur_pw / 2.0;
+        let bx = (pet_center_x - (bw as f64 / 2.0)) as i32;
 
+        let mut by = stack_bottom_y as i32 - bh as i32;
+        if by < 0 {
+            by = by.max(0);
+        }
+
+        b.update_rect(bx, by, bw, bh);
+
+        if let Some(b_pixels) = b.pixel_data() {
             let expected_len = (bw * bh * 4) as usize;
             if b_pixels.len() == expected_len {
                 let b_u32 = unsafe {
@@ -653,11 +695,10 @@ fn render_pet_scene_cpu(
                     bw,
                     bh,
                 );
-
-                stack_bottom_y -= bh as f64 + (10.0 * scene.pet_scale as f64);
-                b.update_rect(bx, by, bw, bh);
             }
         }
+
+        stack_bottom_y -= bh as f64 + (10.0 * scene.pet_scale as f64);
     }
 
     if pomodoro_manager.visible {
@@ -983,8 +1024,8 @@ fn main() {
     let mut last_response_segments: Vec<bubble::BubbleContent> = Vec::new();
     let mut last_pure_text_response: String = String::new();
     let mut stream_preview_text = String::new();
-    let mut stream_preview_bubble_idx: Option<usize> = None;
     let mut stream_in_progress = false;
+    let mut stream_preview_suppressed = false;
     let mut stream_preview_dirty = false;
     let mut stream_preview_char_len = 0usize;
     let mut stream_preview_last_rendered_len = 0usize;
@@ -1702,9 +1743,10 @@ fn main() {
                                 needs_pet_redraw = true;
                             }
                             AiResponseEvent::StreamStart => {
+                                clear_stream_preview_bubbles(&mut bubbles);
                                 stream_in_progress = true;
+                                stream_preview_suppressed = false;
                                 stream_preview_text.clear();
-                                stream_preview_bubble_idx = None;
                                 stream_preview_dirty = false;
                                 stream_preview_char_len = 0;
                                 stream_preview_last_rendered_len = 0;
@@ -1716,6 +1758,16 @@ fn main() {
                                 stream_preview_char_len += chunk.chars().count();
                                 stream_preview_text.push_str(&chunk);
 
+                                if response_contains_image_marker(&stream_preview_text) {
+                                    if !stream_preview_suppressed {
+                                        clear_stream_preview_bubbles(&mut bubbles);
+                                        needs_pet_redraw = true;
+                                    }
+                                    stream_preview_suppressed = true;
+                                    stream_preview_dirty = false;
+                                    continue;
+                                }
+
                                 let should_flush = should_flush_stream_preview(
                                     &chunk,
                                     stream_preview_char_len,
@@ -1726,7 +1778,6 @@ fn main() {
                                 if should_flush
                                     && update_stream_preview_bubble(
                                         &mut bubbles,
-                                        &mut stream_preview_bubble_idx,
                                         &stream_preview_text,
                                         pet.scale,
                                     )
@@ -1752,13 +1803,13 @@ fn main() {
 
                                 finalize_stream_bubbles(
                                     &mut bubbles,
-                                    stream_preview_bubble_idx.take(),
                                     &segments,
                                     pet.scale,
                                 );
 
                                 stream_preview_text.clear();
                                 stream_in_progress = false;
+                                stream_preview_suppressed = false;
                                 stream_preview_dirty = false;
                                 stream_preview_char_len = 0;
                                 stream_preview_last_rendered_len = 0;
@@ -1791,11 +1842,11 @@ fn main() {
                     }
 
                     if stream_in_progress
+                        && !stream_preview_suppressed
                         && stream_preview_dirty
                         && last_stream_preview_render.elapsed() >= Duration::from_millis(33)
                         && update_stream_preview_bubble(
                             &mut bubbles,
-                            &mut stream_preview_bubble_idx,
                             &stream_preview_text,
                             pet.scale,
                         )
@@ -1907,30 +1958,7 @@ fn main() {
                     if is_hovered {
                         if bubbles.is_empty() && !last_response_segments.is_empty() && !is_thinking && pomodoro_manager.visible == false {
                             // Re-create the last response segments when hovering over the empty pet
-                            let mut cumulative_duration = Duration::from_secs(0);
-                            for seg in &last_response_segments {
-                                let mut new_bubble = bubble::SpeechBubble::new();
-                                new_bubble.is_hover_recall = true;
-                                new_bubble.is_ai_response = true;
-                                match seg {
-                                    bubble::BubbleContent::Text(t) => {
-                                        new_bubble.show(t, Duration::from_secs(6), pet.scale);
-                                    }
-                                    bubble::BubbleContent::Image(p) => {
-                                        new_bubble.show_image(p, pet.scale);
-                                    }
-                                }
-                                
-                                let base_dur = if let Some(until) = new_bubble.show_until {
-                                    until.duration_since(Instant::now())
-                                } else {
-                                    Duration::from_secs(4)
-                                };
-                                
-                                new_bubble.show_until = Some(Instant::now() + cumulative_duration + base_dur);
-                                cumulative_duration += base_dur;
-                                bubbles.push(new_bubble);
-                            }
+                            bubbles.extend(build_response_bubbles(&last_response_segments, pet.scale, true));
                         }
                         
                         for b in bubbles.iter_mut() {
@@ -2230,37 +2258,36 @@ fn main() {
                             };
 
                         let frame = pet.current_frame().clone();
-                        let scene = CpuPetRenderer::build_scene(
-                            win_w,
-                            win_h,
-                            target_pos,
-                            draw_scale,
-                            pet.scale,
-                            pet_off_x,
-                            pet_off_y,
-                            cur_pw,
-                            cur_ph,
-                            is_thinking,
-                            loading_frame_idx,
-                            loading_x_f,
-                            loading_y_f,
-                            loading_w_f,
-                            loading_h_f,
-                            gap_between,
-                            mouse_x,
-                            mouse_y,
-                            menu_x_f,
-                            menu_y_f,
-                            current_pomodoro_w_f,
-                            current_pomodoro_h_f,
-                            pomodoro_y_f,
-                            px_f,
-                            frame,
-                            decompressed_frame_buffer,
-                            curr_loading_frames,
-                        );
-                        CpuPetRenderer::render(
-                            &scene,
+                        render_with_backend::<CpuPetRenderer>(
+                            PetRenderSceneBuildArgs {
+                                win_w,
+                                win_h,
+                                target_pos,
+                                draw_scale,
+                                pet_scale: pet.scale,
+                                pet_off_x,
+                                pet_off_y,
+                                cur_pw,
+                                cur_ph,
+                                is_thinking,
+                                loading_frame_idx,
+                                loading_x_f,
+                                loading_y_f,
+                                loading_w_f,
+                                loading_h_f,
+                                gap_between,
+                                mouse_x,
+                                mouse_y,
+                                menu_x_f,
+                                menu_y_f,
+                                current_pomodoro_w_f,
+                                current_pomodoro_h_f,
+                                pomodoro_y_f,
+                                pomodoro_x_f: px_f,
+                                frame,
+                                frame_pixels: decompressed_frame_buffer,
+                                loading_frames: curr_loading_frames,
+                            },
                             &mut composite_data,
                             &mut bubbles,
                             &pet,
@@ -2268,12 +2295,8 @@ fn main() {
                             &mut pomodoro_manager,
                             &mut pomodoro_data,
                             &music_player,
+                            &mut render_ctx,
                         );
-
-                        #[cfg(target_os = "windows")]
-                        if let RawWindowHandle::Win32(_) = window.raw_window_handle() {
-                            CpuPetRenderer::present(&mut render_ctx, &scene, &composite_data);
-                        }
                         // --- SYNCHRONOUS RENDER END ---
                     } else if pos_changed {
                         // Only move if we didn't redraw (atomic move is handled in ctx.update above)

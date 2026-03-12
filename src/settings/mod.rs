@@ -61,6 +61,14 @@ pub struct RenderRequest {
     pub input: SettingsRenderInput,
     pub hash: u64,
     pub buffer: Vec<u32>,
+    renderer_kind: SettingsRendererKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+enum SettingsRendererKind {
+    Cpu,
+    GpuPrototype,
 }
 
 struct SettingsRedrawPlan {
@@ -179,6 +187,8 @@ impl SettingsSurfacePresenter {
 }
 
 struct SettingsCpuRenderer;
+
+struct SettingsGpuPrototypeRenderer;
 
 impl SettingsRendererBackend for SettingsCpuRenderer {
     type Scene = SettingsRenderScene;
@@ -378,6 +388,18 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
     }
 }
 
+impl SettingsRendererBackend for SettingsGpuPrototypeRenderer {
+    type Scene = SettingsRenderScene;
+
+    fn build_scene(input: SettingsRenderInput, hash: u64) -> Self::Scene {
+        SettingsCpuRenderer::build_scene(input, hash)
+    }
+
+    fn render(buffer: &mut [u32], scene: Self::Scene) -> RenderResult {
+        SettingsCpuRenderer::render(buffer, scene)
+    }
+}
+
 fn render_with_backend<B: SettingsRendererBackend>(
     buffer: &mut [u32],
     input: SettingsRenderInput,
@@ -385,6 +407,22 @@ fn render_with_backend<B: SettingsRendererBackend>(
 ) -> RenderResult {
     let scene = B::build_scene(input, hash);
     B::render(buffer, scene)
+}
+
+fn render_with_renderer_kind(
+    renderer_kind: SettingsRendererKind,
+    buffer: &mut [u32],
+    input: SettingsRenderInput,
+    hash: u64,
+) -> RenderResult {
+    match renderer_kind {
+        SettingsRendererKind::Cpu => {
+            render_with_backend::<SettingsCpuRenderer>(buffer, input, hash)
+        }
+        SettingsRendererKind::GpuPrototype => {
+            render_with_backend::<SettingsGpuPrototypeRenderer>(buffer, input, hash)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -476,6 +514,7 @@ pub struct SettingsWindow {
     pub last_background_pixels: std::sync::Arc<Vec<u32>>,
     pub render_tx: Sender<RenderRequest>,
     pub _proxy: EventLoopProxy<()>,
+    renderer_kind: SettingsRendererKind,
     redraw_pending: Cell<bool>,
 }
 
@@ -550,7 +589,8 @@ impl SettingsWindow {
                     req = next_req;
                 }
 
-                let res = render_with_backend::<SettingsCpuRenderer>(
+                let res = render_with_renderer_kind(
+                    req.renderer_kind,
                     &mut req.buffer,
                     req.input,
                     req.hash,
@@ -615,6 +655,7 @@ impl SettingsWindow {
             last_background_pixels: std::sync::Arc::new(Vec::new()),
             render_tx,
             _proxy: proxy,
+            renderer_kind: SettingsRendererKind::Cpu,
             redraw_pending: Cell::new(false),
         }
     }
@@ -654,6 +695,15 @@ impl SettingsWindow {
     pub fn request_redraw_actual(&self) {
         self.redraw_pending.set(true);
         self.window.request_redraw();
+    }
+
+    #[allow(dead_code)]
+    fn set_renderer_kind(&mut self, renderer_kind: SettingsRendererKind) {
+        if self.renderer_kind != renderer_kind {
+            self.renderer_kind = renderer_kind;
+            self.is_dirty = true;
+            self.request_redraw();
+        }
     }
 
     pub fn next_blink_at(&self) -> std::time::Instant {
@@ -783,6 +833,7 @@ impl SettingsWindow {
             input,
             hash: plan.base_state_hash,
             buffer: pixels,
+            renderer_kind: self.renderer_kind,
         });
     }
 

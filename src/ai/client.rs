@@ -99,6 +99,7 @@ pub struct ChatRequest {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum ClientStreamEvent {
     Start,
     TextDelta(String),
