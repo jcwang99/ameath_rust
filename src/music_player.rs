@@ -3,6 +3,14 @@ use std::fs;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use rand::Rng;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayMode {
+    Sequential,
+    LoopSingle,
+    Random,
+}
 
 pub struct MusicPlayer {
     _stream: Option<OutputStream>,
@@ -15,6 +23,7 @@ pub struct MusicPlayer {
     pub panel_enabled: bool,
     pub list_visible: bool,
     pub list_scroll_offset: f32,
+    pub play_mode: PlayMode,
 }
 
 impl MusicPlayer {
@@ -41,6 +50,7 @@ impl MusicPlayer {
             panel_enabled: false,
             list_visible: false,
             list_scroll_offset: 0.0,
+            play_mode: PlayMode::Sequential,
         }
     }
 
@@ -157,6 +167,14 @@ impl MusicPlayer {
         }
     }
 
+    pub fn toggle_mode(&mut self) {
+        self.play_mode = match self.play_mode {
+            PlayMode::Sequential => PlayMode::LoopSingle,
+            PlayMode::LoopSingle => PlayMode::Random,
+            PlayMode::Random => PlayMode::Sequential,
+        };
+    }
+
     pub fn songs(&self) -> &[PathBuf] {
         &self.songs
     }
@@ -204,7 +222,24 @@ impl MusicPlayer {
         // ONLY trigger auto-next if the panel is enabled. 
         // This prevents sink.stop() (called when closing panel) from triggering a seek and bubble.
         if self.panel_enabled && !sink.is_paused() && sink.empty() && !self.songs.is_empty() {
-            self.current_song_idx = (self.current_song_idx + 1) % self.songs.len();
+            match self.play_mode {
+                PlayMode::Sequential => {
+                    self.current_song_idx = (self.current_song_idx + 1) % self.songs.len();
+                }
+                PlayMode::LoopSingle => {
+                    // Stay on current index
+                }
+                PlayMode::Random => {
+                    if self.songs.len() > 1 {
+                        let mut next_idx = self.current_song_idx;
+                        let mut rng = rand::thread_rng();
+                        while next_idx == self.current_song_idx {
+                            next_idx = rng.gen_range(0..self.songs.len());
+                        }
+                        self.current_song_idx = next_idx;
+                    }
+                }
+            }
             self.play_current();
             let name = self.current_song_name().unwrap_or_default();
             return Some(format!("Now Playing: {}", name));

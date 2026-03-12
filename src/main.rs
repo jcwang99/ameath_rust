@@ -560,6 +560,7 @@ fn main() {
                                                                 music_panel::MusicPanelAction::Seek(f) => music_player.seek_to(f),
                                                                 music_panel::MusicPanelAction::ToggleList => music_player.toggle_list(),
                                                                 music_panel::MusicPanelAction::SelectSong(idx) => music_player.play_index(idx),
+                                                                music_panel::MusicPanelAction::ToggleMode => music_player.toggle_mode(),
                                                             }
                                                             window.request_redraw();
                                                         }

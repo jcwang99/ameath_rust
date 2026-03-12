@@ -1491,3 +1491,77 @@ pub fn blit_32bit_premultiplied(
         }
     }
 }
+
+pub fn draw_triangle(
+    buffer: &mut [u32],
+    surface_w: u32,
+    x: i32,
+    y: i32,
+    base: u32,
+    height: u32,
+    color: u32,
+    direction_right: bool,
+    max_w: u32,
+    max_h: u32,
+) {
+    if base == 0 || height == 0 {
+        return;
+    }
+
+    let alpha = (color >> 24) & 0xFF;
+    if alpha == 0 {
+        return;
+    }
+    
+    let rb_src = color & 0x00FF00FF;
+    let g_src = color & 0x0000FF00;
+
+    let start_y = y.max(0);
+    let end_y = (y + height as i32).min(max_h as i32);
+    
+    let start_x = x.max(0);
+    let end_x = (x + base as i32).min(max_w as i32);
+    
+    if start_y >= end_y || start_x >= end_x { return; }
+
+    let half_h = height as f32 / 2.0;
+
+    for cur_y in start_y..end_y {
+        let dy = (cur_y - y) as f32;
+        // distance from center Y
+        let dist = (dy - half_h).abs();
+        
+        // Triangle shape: wider at center, narrow at edges. Or inverted depending on direction.
+        let ratio = 1.0 - (dist / half_h).clamp(0.0, 1.0);
+        let max_w_at_y = (base as f32 * ratio) as i32;
+        
+        let (row_start_x, row_end_x) = if direction_right {
+            // Flat on left |>. X starts at `x`, ends at `x + max_w_at_y`
+            (x, x + max_w_at_y)
+        } else {
+            // Flat on right <|. X starts at `x + base - max_w_at_y`, ends at `x + base`
+            (x + base as i32 - max_w_at_y, x + base as i32)
+        };
+        
+        let c_start_x = row_start_x.max(start_x).min(end_x);
+        let c_end_x = row_end_x.max(c_start_x).min(end_x);
+        
+        if c_start_x >= c_end_x { continue; }
+        
+        let row_idx = cur_y as usize * surface_w as usize;
+        for cur_x in c_start_x..c_end_x {
+            let idx = row_idx + cur_x as usize;
+            if alpha == 255 {
+                buffer[idx] = color;
+            } else {
+                let d = buffer[idx];
+                let inv_a = 255 - alpha;
+                let rb_dest = d & 0x00FF00FF;
+                let g_dest = d & 0x0000FF00;
+                let rb_res = rb_src + ((rb_dest * inv_a) >> 8);
+                let g_res = g_src + ((g_dest * inv_a) >> 8);
+                buffer[idx] = (alpha << 24) | (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
+            }
+        }
+    }
+}

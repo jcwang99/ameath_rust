@@ -20,6 +20,7 @@ pub enum MusicPanelAction {
     Seek(f32),
     ToggleList,
     SelectSong(usize),
+    ToggleMode,
 }
 
 pub fn render_music_panel(
@@ -182,71 +183,146 @@ pub fn render_music_panel(
 
     // List toggle button (≡)
     let list_btn_text = "≡";
+    let list_btn_x = panel_x + w as i32 - (28.0 * scale) as i32;
+    let list_btn_y = panel_y + (8.0 * scale) as i32;
+    let rx_list = mx as i32 - panel_x;
+    let ry_list = my as i32 - panel_y;
+    let list_hovered = rx_list >= w as i32 - (40.0 * scale) as i32 && ry_list < (35.0 * scale) as i32;
+    
+    let list_font_scale = if list_hovered { 1.2 } else { 1.0 };
+    let list_color = if list_hovered { 
+        ui_primitives::apply_opacity(0xFFFFFF, opacity) 
+    } else if player.list_visible { 
+        ui_primitives::apply_opacity(0xFB7299, opacity) 
+    } else { 
+        ui_primitives::apply_opacity(0x888888, opacity) 
+    };
+
     ui_primitives::draw_text_dw_ex(
         buffer,
         win_w,
         list_btn_text,
-        panel_x + w as i32 - (28.0 * scale) as i32,
-        panel_y + (8.0 * scale) as i32,
-        18.0 * scale,
-        if player.list_visible { ui_primitives::apply_opacity(0xFB7299, opacity) } else { ui_primitives::apply_opacity(0x888888, opacity) },
-        (25.0 * scale) as u32,
-        (25.0 * scale) as u32,
+        list_btn_x,
+        list_btn_y,
+        (18.0 * scale) * list_font_scale,
+        list_color,
+        (25.0 * scale * list_font_scale) as u32,
+        (25.0 * scale * list_font_scale) as u32,
         0.0,
         0.0,
-        (25.0 * scale) as u32,
+        (25.0 * scale * list_font_scale) as u32,
     );
 
-    // 4. Controls (Shifted right to make room for cover)
+    // 4. Controls (Shifted right to make room for cover, and added Mode Toggle on left)
     let ctrl_y = panel_y + (45.0 * scale) as i32;
-    let btn_gap = (35.0 * scale) as i32;
-    let ctrl_start_x = title_x + (5.0 * scale) as i32;
+    let btn_gap = (30.0 * scale) as i32; // slightly reduced gap to fit 4 buttons
+    let mut ctrl_start_x = title_x + (2.0 * scale) as i32;
+
+    // Check hit for controls (using absolute coords)
+    let mx_i = mx as i32;
+    let my_i = my as i32;
+    
+    let in_ctrl_row = my_i >= ctrl_y - (5.0 * scale) as i32 && my_i < ctrl_y + (25.0 * scale) as i32;
+
+    // Mode Toggle
+    let mode_hovered = in_ctrl_row && mx_i >= ctrl_start_x && mx_i < ctrl_start_x + (25.0 * scale) as i32;
+    let mode_icon = match player.play_mode {
+        crate::music_player::PlayMode::Sequential => "⮂", // Rightwards Arrow Over Leftwards Arrow
+        crate::music_player::PlayMode::LoopSingle => "↻",  // Clockwise Open Circle Arrow
+        crate::music_player::PlayMode::Random => "⤮",       // Rightwards Arrow with Lower Hook
+    };
+    let mode_font_scale = if mode_hovered { 1.2 } else { 1.0 };
+    let mode_color = if mode_hovered { ui_primitives::apply_opacity(0xFFFFFF, opacity) } else { ui_primitives::apply_opacity(0x999999, opacity) };
+    ui_primitives::draw_text_dw_ex(
+        buffer,
+        win_w,
+        mode_icon,
+        ctrl_start_x,
+        ctrl_y, 
+        (16.0 * scale) * mode_font_scale,
+        mode_color,
+        (25.0 * scale * mode_font_scale) as u32,
+        (25.0 * scale * mode_font_scale) as u32,
+        0.0,
+        0.0,
+        (25.0 * scale * mode_font_scale) as u32,
+    );
+    
+    ctrl_start_x += btn_gap;
 
     // Prev
-    ui_primitives::draw_text_dw_ex(
-        buffer,
-        win_w,
-        "⏮",
-        ctrl_start_x,
-        ctrl_y,
-        16.0 * scale,
-        ui_primitives::apply_opacity(0xCCCCCC, opacity),
-        (25.0 * scale) as u32,
-        (25.0 * scale) as u32,
-        0.0,
-        0.0,
-        (25.0 * scale) as u32,
+    let prev_hovered = in_ctrl_row && mx_i >= ctrl_start_x && mx_i < ctrl_start_x + (25.0 * scale) as i32;
+    let prev_font_scale = if prev_hovered { 1.2 } else { 1.0 };
+    let prev_color = if prev_hovered { ui_primitives::apply_opacity(0xFFFFFF, opacity) } else { ui_primitives::apply_opacity(0xCCCCCC, opacity) };
+    let prev_w = (14.0 * scale * prev_font_scale) as u32;
+    let prev_h = (14.0 * scale * prev_font_scale) as u32;
+    // draw two left-pointing triangles
+    ui_primitives::draw_triangle(
+        buffer, win_w,
+        ctrl_start_x + (2.0 * scale) as i32, ctrl_y + (5.0 * scale) as i32,
+        prev_w / 2, prev_h,
+        prev_color, false,
+        win_w, (buffer.len() as u32 / win_w),
     );
+    ui_primitives::draw_triangle(
+        buffer, win_w,
+        ctrl_start_x + (10.0 * scale) as i32, ctrl_y + (5.0 * scale) as i32,
+        prev_w / 2, prev_h,
+        prev_color, false,
+        win_w, (buffer.len() as u32 / win_w),
+    );
+    
     // Play/Pause
-    let pp_icon = if player.is_playing() { "⏸" } else { "▶" };
-    ui_primitives::draw_text_dw_ex(
-        buffer,
-        win_w,
-        pp_icon,
-        ctrl_start_x + btn_gap,
-        ctrl_y,
-        16.0 * scale,
-        ui_primitives::apply_opacity(0xFFFFFF, opacity),
-        (25.0 * scale) as u32,
-        (25.0 * scale) as u32,
-        0.0,
-        0.0,
-        (25.0 * scale) as u32,
-    );
+    let pp_hovered = in_ctrl_row && mx_i >= ctrl_start_x + btn_gap && mx_i < ctrl_start_x + btn_gap + (25.0 * scale) as i32;
+    let pp_font_scale = if pp_hovered { 1.2 } else { 1.0 };
+    let pp_color = if pp_hovered { ui_primitives::apply_opacity(0xFFFFFF, opacity) } else { ui_primitives::apply_opacity(0xEEEEEE, opacity) };
+    let pp_w = (16.0 * scale * pp_font_scale) as u32;
+    let pp_h = (16.0 * scale * pp_font_scale) as u32;
+    if player.is_playing() {
+        // draw two vertical bars
+        ui_primitives::draw_rounded_rect(
+            buffer, win_w,
+            ctrl_start_x + btn_gap + (2.0 * scale) as i32, ctrl_y + (4.0 * scale) as i32,
+            pp_w / 3, pp_h, 
+            0, pp_color, win_w, (buffer.len() as u32 / win_w)
+        );
+        ui_primitives::draw_rounded_rect(
+            buffer, win_w,
+            ctrl_start_x + btn_gap + (10.0 * scale) as i32, ctrl_y + (4.0 * scale) as i32,
+            pp_w / 3, pp_h, 
+            0, pp_color, win_w, (buffer.len() as u32 / win_w)
+        );
+    } else {
+        // draw one right-pointing triangle
+        ui_primitives::draw_triangle(
+            buffer, win_w,
+            ctrl_start_x + btn_gap + (4.0 * scale) as i32, ctrl_y + (4.0 * scale) as i32,
+            pp_w, pp_h,
+            pp_color, true,
+            win_w, (buffer.len() as u32 / win_w),
+        );
+    }
+    
     // Next
-    ui_primitives::draw_text_dw_ex(
-        buffer,
-        win_w,
-        "⏭",
-        ctrl_start_x + btn_gap * 2,
-        ctrl_y,
-        16.0 * scale,
-        ui_primitives::apply_opacity(0xCCCCCC, opacity),
-        (25.0 * scale) as u32,
-        (25.0 * scale) as u32,
-        0.0,
-        0.0,
-        (25.0 * scale) as u32,
+    let next_hovered = in_ctrl_row && mx_i >= ctrl_start_x + btn_gap * 2 && mx_i < ctrl_start_x + btn_gap * 2 + (25.0 * scale) as i32;
+    let next_font_scale = if next_hovered { 1.2 } else { 1.0 };
+    let next_color = if next_hovered { ui_primitives::apply_opacity(0xFFFFFF, opacity) } else { ui_primitives::apply_opacity(0xCCCCCC, opacity) };
+    let next_w = (14.0 * scale * next_font_scale) as u32;
+    let next_h = (14.0 * scale * next_font_scale) as u32;
+    // draw two right-pointing triangles
+    ui_primitives::draw_triangle(
+        buffer, win_w,
+        ctrl_start_x + btn_gap * 2 + (5.0 * scale) as i32, ctrl_y + (5.0 * scale) as i32,
+        next_w / 2, next_h,
+        next_color, true,
+        win_w, (buffer.len() as u32 / win_w),
+    );
+    ui_primitives::draw_triangle(
+        buffer, win_w,
+        ctrl_start_x + btn_gap * 2 + (13.0 * scale) as i32, ctrl_y + (5.0 * scale) as i32,
+        next_w / 2, next_h,
+        next_color, true,
+        win_w, (buffer.len() as u32 / win_w),
     );
 
     // 5. Progress Bar
@@ -519,16 +595,18 @@ pub fn check_music_panel_hit(
     // 2. Controls - Right of cover art
     let cover_size = (45.0 * scale) as i32;
     let title_x = (12.0 * scale) as i32 + cover_size + (10.0 * scale) as i32;
-    let ctrl_start_x = title_x + (5.0 * scale) as i32;
+    let ctrl_start_x = title_x + (2.0 * scale) as i32; // Mode Toggle shift
     let ctrl_y = (45.0 * scale) as i32;
-    let btn_gap = (35.0 * scale) as i32;
+    let btn_gap = (30.0 * scale) as i32;
 
     if ry >= ctrl_y - (5.0 * scale) as i32 && ry < ctrl_y + (25.0 * scale) as i32 {
         if rx >= ctrl_start_x && rx < ctrl_start_x + (25.0 * scale) as i32 {
-            return Some(MusicPanelAction::Prev);
+            return Some(MusicPanelAction::ToggleMode);
         } else if rx >= ctrl_start_x + btn_gap && rx < ctrl_start_x + btn_gap + (25.0 * scale) as i32 {
-            return Some(MusicPanelAction::PlayPause);
+            return Some(MusicPanelAction::Prev);
         } else if rx >= ctrl_start_x + btn_gap * 2 && rx < ctrl_start_x + btn_gap * 2 + (25.0 * scale) as i32 {
+            return Some(MusicPanelAction::PlayPause);
+        } else if rx >= ctrl_start_x + btn_gap * 3 && rx < ctrl_start_x + btn_gap * 3 + (25.0 * scale) as i32 {
             return Some(MusicPanelAction::Next);
         }
     }
