@@ -410,8 +410,8 @@ impl ChatKernel {
     ) {
         let prompt = format!(
             "{}\n\n[SYSTEM INSTRUCTION] This is an autonomous system event. You are proactive. \
-            Based on the context and everything you know, decide if you should use tools (e.g. search weather, check news, update_fact_board) to help the user or record new insights, \
-            or just provide emotional value. If the context implies a need or a new fact about the user, use the tools immediately. \
+            Based on the context and everything you know, decide if you should use tools (e.g. search weather, check news, send_notification) to help the user or record new insights. \
+            YOU HAVE AUTONOMY: if you find something critical or a task completes, you can proactively use 'send_notification' to alert the user even if they are in other apps. \
             Do not mention you are an AI or 'system event'. Act naturally as Aemeath.",
             input_data.text
         );

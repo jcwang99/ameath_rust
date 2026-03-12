@@ -63,7 +63,7 @@ impl Skill for NotificationSkill {
     }
 
     fn description(&self) -> &str {
-        "Sends a system-level notification (toast/balloon tip) to the Windows taskbar. Use this for important alerts, task completions, or when the user needs to be notified while the app is in the background."
+        "Sends a persistent system-level notification (Toast) to the Windows taskbar. You should use your own judgment to decide if a piece of information or a reminder is critical enough to warrant a system-level alert. Use this when the user is away or when you need to provide a hard-to-miss signal."
     }
 
     async fn execute(&self, args: Value) -> Result<String, String> {

@@ -403,8 +403,8 @@ pub fn draw(
             h,
         );
 
-        let display_name = if name.len() > 8 {
-            format!("{}...", &name[..5])
+        let display_name = if name.chars().count() > 8 {
+            format!("{}...", name.chars().take(5).collect::<String>())
         } else {
             name.clone()
         };

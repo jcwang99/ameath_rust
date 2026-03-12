@@ -1532,7 +1532,11 @@ impl SettingsWindow {
                             );
 
                             // Truncate name if too long?
-                            let disp_name = if name.len() > 10 { &name[..10] } else { name };
+                            let disp_name = if name.chars().count() > 10 { 
+                                name.chars().take(10).collect::<String>() 
+                            } else { 
+                                name.clone() 
+                            };
                             Self::draw_text(
                                 &mut buffer,
                                 w,

@@ -155,8 +155,8 @@ impl OpenAiClient {
         })?;
 
         let chat_response: ChatResponse = serde_json::from_str(&body_text).map_err(|e| {
-            let preview = if body_text.len() > 500 {
-                format!("{}...", &body_text[..500])
+            let preview = if body_text.chars().count() > 500 {
+                format!("{}...", body_text.chars().take(500).collect::<String>())
             } else {
                 body_text.clone()
             };

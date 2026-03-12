@@ -457,7 +457,7 @@ impl InteractionManager {
         if let Some(memo) = self.scheduler.poll() {
             self.last_interaction = now; // Reset routine timer too
             return Some(crate::types::ChatInput {
-                text: format!("[SYSTEM_EVENT] Scheduled Reminder: {}", memo),
+                text: format!("[SYSTEM_EVENT] Scheduled Reminder triggered: '{}'. If you deem this reminder critical or the user won't notice your speech bubble, use 'send_notification' to alert them.", memo),
                 images: vec![],
             });
         }
@@ -501,7 +501,7 @@ impl InteractionManager {
                 }
 
                 return Some(crate::types::ChatInput {
-                    text: format!("[SYSTEM_EVENT] Routine Check. Context: {}", context),
+                    text: format!("[SYSTEM_EVENT] Routine Check. Context: {}. Observe current activities and decide if you need to use tools or send a system notification for important findings.", context),
                     images,
                 });
             }
