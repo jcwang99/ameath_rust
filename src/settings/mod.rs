@@ -70,190 +70,195 @@ struct SettingsRedrawPlan {
     current_hash: u64,
 }
 
-fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) -> RenderResult {
-    let w = input.w;
-    let h = input.h;
-    let mut vh = 0.0;
-    let mut ch = 0.0;
-    let mut cursor_rect = None;
-    let mut active_sys_prompt_rect = None;
-    let mut active_sys_prompt_content_height = 0.0f32;
-    let mut history_item_rects = Vec::new();
+struct SettingsCpuRenderer;
 
-    buffer.fill(COLOR_BG_APP);
+impl SettingsCpuRenderer {
+    fn render(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) -> RenderResult {
+        let w = input.w;
+        let h = input.h;
+        let mut vh = 0.0;
+        let mut ch = 0.0;
+        let mut cursor_rect = None;
+        let mut active_sys_prompt_rect = None;
+        let mut active_sys_prompt_content_height = 0.0f32;
+        let mut history_item_rects = Vec::new();
 
-    let scale = (w as f32 / 800.0).min(h as f32 / 750.0);
-    let off_x = (w as f32 - 800.0 * scale) / 2.0;
-    let off_y = (h as f32 - 750.0 * scale) / 2.0;
+        buffer.fill(COLOR_BG_APP);
 
-    let sc = |val: f32| -> f32 { val * scale };
-    let s = |val: u32| -> u32 { (val as f32 * scale + off_x) as u32 };
-    let sy_val = |val: u32| -> u32 { (val as f32 * scale + off_y) as u32 };
+        let scale = (w as f32 / 800.0).min(h as f32 / 750.0);
+        let off_x = (w as f32 - 800.0 * scale) / 2.0;
+        let off_y = (h as f32 - 750.0 * scale) / 2.0;
 
-    // Sidebar
-    draw_rect(buffer, w, 0, 0, s(180), h, COLOR_BG_SIDEBAR, w, h);
-    let icons = ["🏠", "🎨", "🧠", "📜", "ℹ️"];
-    for i in 0..5 {
-        let color = if input.current_tab == i {
-            COLOR_PRIMARY
-        } else {
-            COLOR_TEXT_SEC
+        let sc = |val: f32| -> f32 { val * scale };
+        let s = |val: u32| -> u32 { (val as f32 * scale + off_x) as u32 };
+        let sy_val = |val: u32| -> u32 { (val as f32 * scale + off_y) as u32 };
+
+        // Sidebar
+        draw_rect(buffer, w, 0, 0, s(180), h, COLOR_BG_SIDEBAR, w, h);
+        let icons = ["🏠", "🎨", "🧠", "📜", "ℹ️"];
+        for i in 0..5 {
+            let color = if input.current_tab == i {
+                COLOR_PRIMARY
+            } else {
+                COLOR_TEXT_SEC
+            };
+            draw_text(
+                buffer,
+                w,
+                &[],
+                icons[i],
+                s(75) as i32,
+                sy_val(60 + i as u32 * 80) as i32,
+                sc(32.0),
+                color,
+            );
+        }
+
+        // Header
+        let (title, sub) = match input.current_tab {
+            0 => ("Home", "Welcome to Ameath!"),
+            1 => ("Appearance", "Customize your pet's look"),
+            2 => ("AI Brain", "Connect Ameath to the cloud"),
+            3 => ("History", "Recent Local Memory (Last 50)"),
+            _ => ("About", "Ameath v0.1.0"),
         };
+        let header_h = sy_val(120);
+        draw_rect(
+            buffer,
+            w,
+            s(180) as i32,
+            0,
+            w - s(180),
+            header_h,
+            COLOR_BG_APP,
+            w,
+            h,
+        );
         draw_text(
             buffer,
             w,
             &[],
-            icons[i],
-            s(75) as i32,
-            sy_val(60 + i as u32 * 80) as i32,
+            title,
+            s(220) as i32,
+            sy_val(40) as i32,
             sc(32.0),
-            color,
+            COLOR_TEXT_MAIN,
         );
-    }
+        draw_text(
+            buffer,
+            w,
+            &[],
+            sub,
+            s(220) as i32,
+            sy_val(85) as i32,
+            sc(16.0),
+            COLOR_TEXT_SEC,
+        );
 
-    // Header
-    let (title, sub) = match input.current_tab {
-        0 => ("Home", "Welcome to Ameath!"),
-        1 => ("Appearance", "Customize your pet's look"),
-        2 => ("AI Brain", "Connect Ameath to the cloud"),
-        3 => ("History", "Recent Local Memory (Last 50)"),
-        _ => ("About", "Ameath v0.1.0"),
-    };
-    let header_h = sy_val(120);
-    draw_rect(
-        buffer,
-        w,
-        s(180) as i32,
-        0,
-        w - s(180),
-        header_h,
-        COLOR_BG_APP,
-        w,
-        h,
-    );
-    draw_text(
-        buffer,
-        w,
-        &[],
-        title,
-        s(220) as i32,
-        sy_val(40) as i32,
-        sc(32.0),
-        COLOR_TEXT_MAIN,
-    );
-    draw_text(
-        buffer,
-        w,
-        &[],
-        sub,
-        s(220) as i32,
-        sy_val(85) as i32,
-        sc(16.0),
-        COLOR_TEXT_SEC,
-    );
+        // Tab Content
+        match input.current_tab {
+            0 => {
+                let (v, c, _) = tabs::home::draw(buffer, w, h, scale, off_x, off_y);
+                vh = v;
+                ch = c;
+            }
+            1 => {
+                let mut gen_state = tabs::general::GeneralTabState {
+                    current_scale: input.current_scale,
+                    current_mode: &input.current_mode,
+                    current_music_path: input.current_music_path.as_deref(),
+                    current_layer: input.current_layer,
+                    run_on_startup: input.run_on_startup,
+                    scroll_offset: input.scroll_offset,
+                    available_monitors: &input.available_monitors,
+                    current_monitor_name: input.current_monitor_name.as_deref(),
+                };
+                let (v, c, _) =
+                    tabs::general::draw(buffer, w, h, scale, off_x, off_y, &mut gen_state);
+                vh = v;
+                ch = c;
+            }
+            2 => {
+                let mut sys_metrics = input.system_prompt_metrics_cache;
+                let mut local_sys_rect = None;
+                let mut local_sys_content_h = 0.0f32;
+                let lx = (input.mouse_pos.0 as f32 - off_x) / scale;
+                let ly = (input.mouse_pos.1 as f32 - off_y) / scale;
+                let dly = ly - 120.0 - input.scroll_offset;
 
-    // Tab Content
-    match input.current_tab {
-        0 => {
-            let (v, c, _) = tabs::home::draw(buffer, w, h, scale, off_x, off_y);
-            vh = v;
-            ch = c;
+                let mut ai_state = tabs::ai::AiTabState {
+                    focused_field: input.focused_field,
+                    show_api_key: input.show_api_key,
+                    cursor_pos: input.cursor_pos,
+                    selection_start: input.selection_start,
+                    last_cursor_action: input.last_cursor_action,
+                    system_prompt_scroll_offset: input.system_prompt_scroll_offset,
+                    active_sys_prompt_content_height: &mut local_sys_content_h,
+                    active_sys_prompt_rect: &mut local_sys_rect,
+                    system_prompt_metrics_cache: &mut sys_metrics,
+                    system_prompt_hash: input.system_prompt_hash,
+                    draw_cursor: false,
+                    mouse_pos: (lx, ly),
+                    content_mouse_pos: (lx, dly),
+                    pressed_btn: input.pressed_btn,
+                    show_delete_dialog: input.show_delete_dialog,
+                    notification: input.notification,
+                    field_scroll_offsets: input.field_scroll_offsets,
+                };
+                let (v, c, rect) = tabs::ai::draw(
+                    buffer,
+                    w,
+                    h,
+                    scale,
+                    off_x,
+                    off_y,
+                    input.scroll_offset,
+                    &input.ai_config,
+                    &mut ai_state,
+                );
+                vh = v;
+                ch = c;
+                cursor_rect = rect;
+                active_sys_prompt_rect = local_sys_rect;
+                active_sys_prompt_content_height = local_sys_content_h;
+            }
+            3 => {
+                let mut scroll_states = input.history_scroll_states.clone();
+                let mut local_rects = Vec::new();
+                let mut history_state = tabs::history::HistoryTabState {
+                    history: &input.history,
+                    history_scroll_states: &mut scroll_states,
+                    history_item_rects: &mut local_rects,
+                    scroll_offset: input.scroll_offset * scale,
+                };
+                let (v, c, _) =
+                    tabs::history::draw(buffer, w, h, scale, off_x, off_y, &mut history_state);
+                vh = v;
+                ch = c;
+                history_item_rects = local_rects;
+            }
+            4 => {
+                let (v, c, _) = tabs::about::draw(buffer, w, h, scale, off_x, off_y);
+                vh = v;
+                ch = c;
+            }
+            _ => {}
         }
-        1 => {
-            let mut gen_state = tabs::general::GeneralTabState {
-                current_scale: input.current_scale,
-                current_mode: &input.current_mode,
-                current_music_path: input.current_music_path.as_deref(),
-                current_layer: input.current_layer,
-                run_on_startup: input.run_on_startup,
-                scroll_offset: input.scroll_offset,
-                available_monitors: &input.available_monitors,
-                current_monitor_name: input.current_monitor_name.as_deref(),
-            };
-            let (v, c, _) = tabs::general::draw(buffer, w, h, scale, off_x, off_y, &mut gen_state);
-            vh = v;
-            ch = c;
-        }
-        2 => {
-            let mut sys_metrics = input.system_prompt_metrics_cache;
-            let mut local_sys_rect = None;
-            let mut local_sys_content_h = 0.0f32;
-            let lx = (input.mouse_pos.0 as f32 - off_x) / scale;
-            let ly = (input.mouse_pos.1 as f32 - off_y) / scale;
-            let dly = ly - 120.0 - input.scroll_offset;
 
-            let mut ai_state = tabs::ai::AiTabState {
-                focused_field: input.focused_field,
-                show_api_key: input.show_api_key,
-                cursor_pos: input.cursor_pos,
-                selection_start: input.selection_start,
-                last_cursor_action: input.last_cursor_action,
-                system_prompt_scroll_offset: input.system_prompt_scroll_offset,
-                active_sys_prompt_content_height: &mut local_sys_content_h,
-                active_sys_prompt_rect: &mut local_sys_rect,
-                system_prompt_metrics_cache: &mut sys_metrics,
-                system_prompt_hash: input.system_prompt_hash,
-                draw_cursor: false,
-                mouse_pos: (lx, ly),
-                content_mouse_pos: (lx, dly),
-                pressed_btn: input.pressed_btn,
-                show_delete_dialog: input.show_delete_dialog,
-                notification: input.notification,
-                field_scroll_offsets: input.field_scroll_offsets,
-            };
-            let (v, c, rect) = tabs::ai::draw(
-                buffer,
-                w,
-                h,
-                scale,
-                off_x,
-                off_y,
-                input.scroll_offset,
-                &input.ai_config,
-                &mut ai_state,
-            );
-            vh = v;
-            ch = c;
-            cursor_rect = rect;
-            active_sys_prompt_rect = local_sys_rect;
-            active_sys_prompt_content_height = local_sys_content_h;
-        }
-        3 => {
-            let mut scroll_states = input.history_scroll_states.clone();
-            let mut local_rects = Vec::new();
-            let mut history_state = tabs::history::HistoryTabState {
-                history: &input.history,
-                history_scroll_states: &mut scroll_states,
-                history_item_rects: &mut local_rects,
-                scroll_offset: input.scroll_offset * scale,
-            };
-            let (v, c, _) =
-                tabs::history::draw(buffer, w, h, scale, off_x, off_y, &mut history_state);
-            vh = v;
-            ch = c;
-            history_item_rects = local_rects;
-        }
-        4 => {
-            let (v, c, _) = tabs::about::draw(buffer, w, h, scale, off_x, off_y);
-            vh = v;
-            ch = c;
-        }
-        _ => {}
-    }
+        // Scrollbar (Relocated to main thread)
 
-    // Scrollbar (Relocated to main thread)
-
-    RenderResult {
-        pixels: std::sync::Arc::new(buffer.to_vec()),
-        vh,
-        ch,
-        cursor_rect,
-        w,
-        h,
-        hash,
-        active_sys_prompt_rect,
-        active_sys_prompt_content_height,
-        history_item_rects,
+        RenderResult {
+            pixels: std::sync::Arc::new(buffer.to_vec()),
+            vh,
+            ch,
+            cursor_rect,
+            w,
+            h,
+            hash,
+            active_sys_prompt_rect,
+            active_sys_prompt_content_height,
+            history_item_rects,
+        }
     }
 }
 
@@ -420,7 +425,7 @@ impl SettingsWindow {
                     req = next_req;
                 }
 
-                let res = render_internal(&mut req.buffer, req.input, req.hash);
+                let res = SettingsCpuRenderer::render(&mut req.buffer, req.input, req.hash);
                 {
                     let mut lock = rb_ptr.lock().unwrap();
                     *lock = Some(res);

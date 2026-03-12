@@ -295,6 +295,101 @@ struct PetRenderScene<'a> {
     loading_frames: &'a [(i32, i32, Vec<u8>)],
 }
 
+struct CpuPetRenderer;
+
+impl CpuPetRenderer {
+    fn build_scene<'a>(
+        win_w: u32,
+        win_h: u32,
+        target_pos: POINT,
+        draw_scale: f32,
+        pet_scale: f32,
+        pet_off_x: f64,
+        pet_off_y: f64,
+        cur_pw: f64,
+        cur_ph: f64,
+        is_thinking: bool,
+        loading_frame_idx: usize,
+        loading_x_f: f64,
+        loading_y_f: f64,
+        loading_w_f: f64,
+        loading_h_f: f64,
+        gap_between: f64,
+        mouse_x: f64,
+        mouse_y: f64,
+        menu_x_f: f64,
+        menu_y_f: f64,
+        current_pomodoro_w_f: f64,
+        current_pomodoro_h_f: f64,
+        pomodoro_y_f: f64,
+        pomodoro_x_f: f64,
+        frame: PreprocessedFrame,
+        frame_pixels: Arc<[u8]>,
+        loading_frames: &'a [(i32, i32, Vec<u8>)],
+    ) -> PetRenderScene<'a> {
+        build_pet_render_scene(
+            win_w,
+            win_h,
+            target_pos,
+            draw_scale,
+            pet_scale,
+            pet_off_x,
+            pet_off_y,
+            cur_pw,
+            cur_ph,
+            is_thinking,
+            loading_frame_idx,
+            loading_x_f,
+            loading_y_f,
+            loading_w_f,
+            loading_h_f,
+            gap_between,
+            mouse_x,
+            mouse_y,
+            menu_x_f,
+            menu_y_f,
+            current_pomodoro_w_f,
+            current_pomodoro_h_f,
+            pomodoro_y_f,
+            pomodoro_x_f,
+            frame,
+            frame_pixels,
+            loading_frames,
+        )
+    }
+
+    fn render(
+        scene: &PetRenderScene<'_>,
+        composite_data: &mut Vec<u8>,
+        bubbles: &mut [bubble::SpeechBubble],
+        pet: &Pet,
+        menu_manager: &mut menu::QuickMenu,
+        pomodoro_manager: &mut pomodoro::Pomodoro,
+        pomodoro_data: &mut Vec<u8>,
+        music_player: &music_player::MusicPlayer,
+    ) {
+        render_pet_scene_cpu(
+            scene,
+            composite_data,
+            bubbles,
+            pet,
+            menu_manager,
+            pomodoro_manager,
+            pomodoro_data,
+            music_player,
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    fn present(
+        presenter: &mut Option<render::LayeredWindowPresenter>,
+        scene: &PetRenderScene<'_>,
+        composite_data: &[u8],
+    ) {
+        present_pet_scene(presenter, scene, composite_data);
+    }
+}
+
 fn build_pet_render_scene<'a>(
     win_w: u32,
     win_h: u32,
@@ -2135,7 +2230,7 @@ fn main() {
                             };
 
                         let frame = pet.current_frame().clone();
-                        let scene = build_pet_render_scene(
+                        let scene = CpuPetRenderer::build_scene(
                             win_w,
                             win_h,
                             target_pos,
@@ -2164,7 +2259,7 @@ fn main() {
                             decompressed_frame_buffer,
                             curr_loading_frames,
                         );
-                        render_pet_scene_cpu(
+                        CpuPetRenderer::render(
                             &scene,
                             &mut composite_data,
                             &mut bubbles,
@@ -2177,7 +2272,7 @@ fn main() {
 
                         #[cfg(target_os = "windows")]
                         if let RawWindowHandle::Win32(_) = window.raw_window_handle() {
-                            present_pet_scene(&mut render_ctx, &scene, &composite_data);
+                            CpuPetRenderer::present(&mut render_ctx, &scene, &composite_data);
                         }
                         // --- SYNCHRONOUS RENDER END ---
                     } else if pos_changed {

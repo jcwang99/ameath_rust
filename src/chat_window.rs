@@ -85,6 +85,18 @@ struct ChatRenderScene {
     cursor_color: u32,
 }
 
+struct ChatCpuRenderer;
+
+impl ChatCpuRenderer {
+    fn build_scene(window: &mut ChatWindow) -> ChatRenderScene {
+        window.prepare_render_scene()
+    }
+
+    fn render(window: &mut ChatWindow, scene: &ChatRenderScene) {
+        window.present_render_scene(scene);
+    }
+}
+
 impl ChatWindow {
     pub fn new<T>(
         event_loop: &EventLoopWindowTarget<T>,
@@ -1180,7 +1192,7 @@ impl ChatWindow {
     }
 
     fn redraw(&mut self) {
-        let scene = self.prepare_render_scene();
-        self.present_render_scene(&scene);
+        let scene = ChatCpuRenderer::build_scene(self);
+        ChatCpuRenderer::render(self, &scene);
     }
 }
