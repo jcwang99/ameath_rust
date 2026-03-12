@@ -22,6 +22,7 @@ impl ChatKernel {
                 profile.api_key.clone(),
                 profile.base_url.clone(),
                 profile.model.clone(),
+                profile.response_mode,
             ))
         };
 
@@ -181,7 +182,16 @@ impl ChatKernel {
                 let _ = tx.send(AiResponseEvent::Status(ThinkingState::Network));
                 
                 tracing::debug!("Requesting LLM with {} messages", messages.len());
-                let response_result = client.chat(messages.clone(), tools_opt.clone()).await;
+                let response_result = client
+                    .chat(messages.clone(), tools_opt.clone(), |event| match event {
+                        crate::ai::client::ClientStreamEvent::Start => {
+                            let _ = tx.send(AiResponseEvent::StreamStart);
+                        }
+                        crate::ai::client::ClientStreamEvent::TextDelta(delta) => {
+                            let _ = tx.send(AiResponseEvent::StreamChunk(delta));
+                        }
+                    })
+                    .await;
                 let _ = tx.send(AiResponseEvent::Status(ThinkingState::Standard));
 
                 match response_result {
@@ -190,7 +200,7 @@ impl ChatKernel {
                         let content_preview = if content_str.chars().count() > 100 {
                             format!("{}...", content_str.chars().take(100).collect::<String>())
                         } else {
-                            content_str.to_string()
+                            content_str.clone()
                         };
                         
                         tracing::info!("LLM Response Received | Role: {} | Content: \"{}\"", 
@@ -287,7 +297,7 @@ impl ChatKernel {
             }
 
             if let Some(mut response_msg) = final_response {
-                let original_content = response_msg.content_as_str().to_string();
+                let original_content = response_msg.content_as_str();
                 
                 // 1. Process FC Traces
                 let fc_summary = if !fc_traces.is_empty() {
@@ -304,8 +314,8 @@ impl ChatKernel {
                             tool_calls: None,
                             tool_call_id: None,
                         }];
-                        if let Ok(summary_msg) = client.chat(summary_prompt, None).await {
-                            combined_traces = summary_msg.content_as_str().to_string();
+                        if let Ok(summary_msg) = client.chat(summary_prompt, None, |_| {}).await {
+                            combined_traces = summary_msg.content_as_str();
                         }
                     }
                     Some(combined_traces)
@@ -326,7 +336,7 @@ impl ChatKernel {
                 self.memory.add_message(&response_msg).ok();
 
                 // 4. Send to UI (Original content only)
-                let _ = tx.send(AiResponseEvent::Response(original_content));
+                let _ = tx.send(AiResponseEvent::StreamEnd(original_content));
 
                 // 5. Orchestrate summarization (L1 -> L2)
                 let kernel_clone = Arc::new(Self {
@@ -382,7 +392,7 @@ impl ChatKernel {
             };
             messages.push(summary_prompt);
 
-            if let Ok(last_summary) = client.chat(messages, None).await {
+            if let Ok(last_summary) = client.chat(messages, None, |_| {}).await {
                 // Construct Handover Context (In-Memory Only)
                 handover_context = Some(format!(
                     "--- COGNITIVE HANDOVER (Step Limit Reached) ---\n\n[Previous Progress Summary]:\n{}\n\n[Recent Tool Execution Log (Raw Context)]:\n{}\n\n--- END OF HANDOVER ---",
@@ -445,9 +455,9 @@ impl ChatKernel {
                 tool_call_id: None,
             });
 
-            if let Ok(summary) = client.chat(prompt, None).await {
+            if let Ok(summary) = client.chat(prompt, None, |_| {}).await {
                 self.memory
-                    .add_conversation_item("assistant", summary.content_as_str(), 2)
+                    .add_conversation_item("assistant", &summary.content_as_str(), 2)
                     .ok();
 
                 // 1. Mark L1 messages as summarized
@@ -499,11 +509,11 @@ impl ChatKernel {
                         tool_call_id: None,
                     }];
 
-                    if let Ok(summary) = client.chat(prompt, None).await {
+                    if let Ok(summary) = client.chat(prompt, None, |_| {}).await {
                         let summary_text = summary.content_as_str();
                         if summary_text.chars().count() <= 1500 {
                             // Success! Save to Layer 3
-                            self.memory.add_summary(summary_text, 3).ok();
+                            self.memory.add_summary(&summary_text, 3).ok();
 
                             // Mark L2 items as compacted
                             let ids: Vec<i64> = l2_items.iter().map(|(id, _)| *id).collect();

@@ -699,6 +699,127 @@ pub fn draw(
         }
     }
 
+    // Response Mode Selector
+    {
+        let fx = 405.0;
+        let fy = 1330.0;
+        let fw = 325.0;
+        let segment_w = fw / 3.0;
+        let fx_abs = s(fx as u32) as i32;
+        let fy_abs = card_y_raw + sc(fy) as i32;
+        let input_y_abs = fy_abs + sc(25.0) as i32;
+        let input_h = sc(45.0) as u32;
+
+        draw_text_dw_ex(
+            buffer,
+            w,
+            "Response Mode",
+            fx_abs,
+            fy_abs,
+            sc(14.0),
+            COLOR_TEXT_SEC,
+            sc(fw) as u32,
+            sc(20.0) as u32,
+            0.0,
+            0.0,
+            sc(fw) as u32,
+        );
+
+        draw_rounded_rect(
+            buffer,
+            w,
+            fx_abs,
+            input_y_abs,
+            sc(fw) as u32,
+            input_h,
+            10,
+            COLOR_BORDER,
+            w,
+            h,
+        );
+        draw_rounded_rect(
+            buffer,
+            w,
+            fx_abs + 1,
+            input_y_abs + 1,
+            sc(fw) as u32 - 2,
+            input_h.saturating_sub(2),
+            9,
+            COLOR_BG_CARD,
+            w,
+            h,
+        );
+
+        let modes = [
+            (crate::types::AiResponseMode::Auto, "Auto"),
+            (crate::types::AiResponseMode::Streaming, "Streaming"),
+            (crate::types::AiResponseMode::NonStreaming, "Non-stream"),
+        ];
+
+        for (idx, (mode, label)) in modes.iter().enumerate() {
+            let seg_x = fx + segment_w * idx as f32;
+            let seg_x_abs = s(seg_x as u32) as i32;
+            let seg_w_abs = if idx == modes.len() - 1 {
+                sc(fw - segment_w * idx as f32) as u32
+            } else {
+                sc(segment_w) as u32
+            };
+            let is_hovered = state.content_mouse_pos.0 >= seg_x
+                && state.content_mouse_pos.0 <= seg_x + segment_w
+                && state.content_mouse_pos.1 >= fy + 25.0
+                && state.content_mouse_pos.1 <= fy + 70.0;
+            let is_active = active_profile.response_mode == *mode;
+
+            if is_active || is_hovered {
+                draw_rounded_rect(
+                    buffer,
+                    w,
+                    seg_x_abs + 2,
+                    input_y_abs + 2,
+                    seg_w_abs.saturating_sub(4),
+                    input_h.saturating_sub(4),
+                    8,
+                    if is_active { COLOR_PRIMARY } else { 0x003A4048 },
+                    w,
+                    h,
+                );
+            }
+
+            if idx > 0 {
+                draw_rect(
+                    buffer,
+                    w,
+                    seg_x_abs,
+                    input_y_abs + sc(8.0) as i32,
+                    1,
+                    input_h.saturating_sub(sc(16.0) as u32),
+                    0x00373D46,
+                    w,
+                    h,
+                );
+            }
+
+            draw_text_dw_ex(
+                buffer,
+                w,
+                label,
+                seg_x_abs + sc(12.0) as i32,
+                input_y_abs + sc(12.0) as i32,
+                sc(14.0),
+                if is_active {
+                    0x00FFFFFF
+                } else {
+                    COLOR_TEXT_MAIN
+                },
+                seg_w_abs.saturating_sub(sc(20.0) as u32),
+                sc(24.0) as u32,
+                0.0,
+                0.0,
+                seg_w_abs.saturating_sub(sc(20.0) as u32),
+            );
+        }
+    }
+
     // Interaction State Restoration for System Prompt
     {
         let fy = 1030.0;

@@ -483,8 +483,10 @@ impl SettingsWindow {
         #[cfg(target_os = "windows")]
         {
             use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
-            use windows::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, ShowWindow, SW_RESTORE};
             use windows::Win32::Foundation::HWND;
+            use windows::Win32::UI::WindowsAndMessaging::{
+                SetForegroundWindow, ShowWindow, SW_RESTORE,
+            };
 
             if let RawWindowHandle::Win32(handle) = self.window.raw_window_handle() {
                 let hwnd = HWND(handle.hwnd as isize);
@@ -621,6 +623,7 @@ impl SettingsWindow {
                 profile.base_url.hash(&mut config_hasher);
                 profile.model.hash(&mut config_hasher);
                 profile.is_multimodal.hash(&mut config_hasher);
+                profile.response_mode.hash(&mut config_hasher);
             }
 
             if self.system_prompt_hash == 0 {
@@ -775,7 +778,11 @@ impl SettingsWindow {
             let mut pixels = {
                 let mut idle = self.idle_buffers.lock().unwrap();
                 idle.pop().unwrap_or_else(|| {
-                    tracing::debug!("Creating new pixel buffer for settings window ({}x{})", w, h);
+                    tracing::debug!(
+                        "Creating new pixel buffer for settings window ({}x{})",
+                        w,
+                        h
+                    );
                     vec![0u32; (w * h) as usize]
                 })
             };
@@ -793,7 +800,10 @@ impl SettingsWindow {
         let mut buffer = match self.surface.buffer_mut() {
             Ok(b) => b,
             Err(e) => {
-                tracing::error!("Failed to get surface buffer for composition: {}. Skipping frame.", e);
+                tracing::error!(
+                    "Failed to get surface buffer for composition: {}. Skipping frame.",
+                    e
+                );
                 return;
             }
         };
@@ -1220,6 +1230,23 @@ impl SettingsWindow {
                     self.pressed_btn = Some(3);
                     self.window.request_redraw();
                     return SettingsAction::None;
+                }
+
+                if dlx >= 405.0 && dlx <= 730.0 && dly >= 1475.0 && dly <= 1520.0 {
+                    tracing::info!("Response mode clicked");
+                    let mode = if dlx < 405.0 + (325.0 / 3.0) {
+                        crate::types::AiResponseMode::Auto
+                    } else if dlx < 405.0 + (325.0 / 3.0) * 2.0 {
+                        crate::types::AiResponseMode::Streaming
+                    } else {
+                        crate::types::AiResponseMode::NonStreaming
+                    };
+                    let mut config = ai_config.clone();
+                    let profile = config.active_profile_mut();
+                    profile.response_mode = mode;
+                    self.config_dirty = true;
+                    self.window.request_redraw();
+                    return SettingsAction::UpdateAiConfig(config);
                 }
 
                 for (i, (fx, fy, fw)) in fields.iter().enumerate() {

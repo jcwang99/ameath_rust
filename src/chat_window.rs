@@ -1,15 +1,15 @@
+use rusttype::PositionedGlyph;
 use rusttype::{point, Font, Scale};
 use softbuffer::{Context, Surface};
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use winit::{
     dpi::{LogicalPosition, PhysicalSize},
-    event::{ElementState, KeyEvent, WindowEvent, MouseButton},
+    event::{ElementState, KeyEvent, WindowEvent},
     event_loop::EventLoopWindowTarget,
     keyboard::{Key, NamedKey},
     window::{Window, WindowBuilder, WindowLevel},
 };
-use rusttype::PositionedGlyph;
 
 #[derive(Clone)]
 pub struct Thumbnail {
@@ -251,7 +251,7 @@ impl ChatWindow {
                         let text_y_offset = if self.slots.is_empty() { 0.0 } else { 100.0 };
                         let (_mx, my) = self.mouse_pos;
                         let window_size = self.window.inner_size();
-                        
+
                         // Button row height is 40. Text area is roughly between top+offset and bottom-40
                         if my > padding + text_y_offset && my < (window_size.height as f64 - 40.0) {
                             self.set_cursor_at_mouse();
@@ -317,7 +317,9 @@ impl ChatWindow {
                         return ChatAction::Close;
                     }
                     Key::Named(NamedKey::Backspace) => {
-                        if self.selection_start.is_some() && self.selection_start != Some(self.cursor_byte_idx) {
+                        if self.selection_start.is_some()
+                            && self.selection_start != Some(self.cursor_byte_idx)
+                        {
                             self.delete_selection();
                             self.selection_start = None;
                             self.cursor_blink_start = std::time::Instant::now();
@@ -367,7 +369,7 @@ impl ChatWindow {
                     }
                     Key::Character(c) => {
                         let c_lower = c.to_lowercase();
-                        
+
                         if self.ignore_next_char && (c_lower == "m") {
                             self.ignore_next_char = false;
                             return ChatAction::None;
@@ -458,10 +460,10 @@ impl ChatWindow {
                 if let Ok(image) = clipboard.get_image() {
                     let slot_id = self.next_slot_id;
                     self.next_slot_id += 1;
-        self.slots.push(ImageSlot {
-            id: slot_id,
-            status: ImageStatus::Processing,
-        });
+                    self.slots.push(ImageSlot {
+                        id: slot_id,
+                        status: ImageStatus::Processing,
+                    });
 
                     let rgba_data = image.bytes.to_vec();
                     if let Some(img_buf) = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(
@@ -666,7 +668,7 @@ impl ChatWindow {
         for (i, c) in self.input_text[target_line_range.clone()].char_indices() {
             let glyph = self.font.glyph(c).scaled(scale);
             let advance = glyph.h_metrics().advance_width;
-            
+
             // Current character's right edge
             let next_x = current_x + advance;
             let dist = (rx - next_x).abs();
@@ -676,7 +678,7 @@ impl ChatWindow {
             }
             current_x = next_x;
         }
-        
+
         self.cursor_byte_idx = best_idx;
         self.cursor_blink_start = std::time::Instant::now();
         self.request_redraw();
@@ -834,13 +836,19 @@ impl ChatWindow {
                         glyph.draw(|x, y, v| {
                             let px = x as i32 + bb.min.x;
                             let py = y as i32 + bb.min.y;
-                            if v > 0.0 && px >= 0 && px < 600 && py >= 0 && py < target_height as i32 {
+                            if v > 0.0
+                                && px >= 0
+                                && px < 600
+                                && py >= 0
+                                && py < target_height as i32
+                            {
                                 let alpha = (v * 255.0) as u32;
                                 if alpha > 0 {
                                     // Simple pre-multiplied-style or solid white with alpha in buffer
                                     // Here we store white (0xFFFFFF) and we can blend or just store alpha
                                     // Since background is solid, we'll store the final text color with alpha
-                                    self.text_buffer[py as usize * 600 + px as usize] = (alpha << 24) | 0xFFFFFF;
+                                    self.text_buffer[py as usize * 600 + px as usize] =
+                                        (alpha << 24) | 0xFFFFFF;
                                 }
                             }
                         });
@@ -850,7 +858,9 @@ impl ChatWindow {
 
             let current_size = self.window.inner_size();
             if current_size.height != target_height {
-                let _ = self.window.request_inner_size(PhysicalSize::new(600, target_height));
+                let _ = self
+                    .window
+                    .request_inner_size(PhysicalSize::new(600, target_height));
             }
             // Always ensure surface matches target_height in layout pass
             let _ = self.surface.resize(
@@ -865,11 +875,11 @@ impl ChatWindow {
         let buf_h = size.height as usize;
 
         let mut buffer = self.surface.buffer_mut().unwrap();
-        
+
         // Safety check for resize lag
         if buffer.len() != buf_w * buf_h {
-             buffer.present().unwrap();
-             return;
+            buffer.present().unwrap();
+            return;
         }
 
         // Colors
@@ -880,7 +890,7 @@ impl ChatWindow {
 
         // Optimized Background Fill with Rounded Corners
         buffer.fill(0); // Transparent outer
-        
+
         let r = 12i32;
         let r_u = 12usize;
         let r_sq = r * r;
@@ -902,10 +912,18 @@ impl ChatWindow {
                     let mut draw_bg = true;
                     let is_near_left = x < r_u;
                     let is_near_right = x >= buf_w - r_u;
-                    
-                    if (is_near_left || is_near_right) {
-                        let dx = if is_near_left { r - x as i32 } else { x as i32 - (buf_w as i32 - r - 1) };
-                        let dy = if is_near_top { r - y as i32 } else { y as i32 - (buf_h as i32 - r - 1) };
+
+                    if is_near_left || is_near_right {
+                        let dx = if is_near_left {
+                            r - x as i32
+                        } else {
+                            x as i32 - (buf_w as i32 - r - 1)
+                        };
+                        let dy = if is_near_top {
+                            r - y as i32
+                        } else {
+                            y as i32 - (buf_h as i32 - r - 1)
+                        };
                         if dx * dx + dy * dy > r_sq {
                             draw_bg = false;
                         }
@@ -952,14 +970,20 @@ impl ChatWindow {
                 }
             }
             thumb_x_cursor += 90;
-            if thumb_x_cursor + 80 > buf_w { break; }
+            if thumb_x_cursor + 80 > buf_w {
+                break;
+            }
         }
 
         // Draw Plus Button
         let btn_size = 32;
         let btn_x = 10;
         let btn_y = buf_h - 10 - btn_size;
-        let plus_bg = if self.plus_button_hovered { 0xFF444444 } else { 0xFF3D3D3D };
+        let plus_bg = if self.plus_button_hovered {
+            0xFF444444
+        } else {
+            0xFF3D3D3D
+        };
         let radius = 16;
         let r_sq = radius * radius;
 
@@ -971,7 +995,8 @@ impl ChatWindow {
                     let px = (btn_x as i32 + tx as i32) as usize;
                     let py = (btn_y as i32 + ty as i32) as usize;
                     if px < buf_w && py < buf_h {
-                        let is_plus = (tx > 10 && tx < 22 && ty >= 15 && ty <= 16) || (ty > 10 && ty < 22 && tx >= 15 && tx <= 16);
+                        let is_plus = (tx > 10 && tx < 22 && ty >= 15 && ty <= 16)
+                            || (ty > 10 && ty < 22 && tx >= 15 && tx <= 16);
                         buffer[py * buf_w + px] = if is_plus { 0xFFBBBBBB } else { plus_bg };
                     }
                 }
@@ -983,7 +1008,7 @@ impl ChatWindow {
             if sel_start != self.cursor_byte_idx {
                 let sel_min = sel_start.min(self.cursor_byte_idx);
                 let sel_max = sel_start.max(self.cursor_byte_idx);
-                
+
                 let _text_y_base = if self.slots.is_empty() { 0.0 } else { 100.0 };
                 let mut byte_offset = 0;
                 let mut char_iter = self.input_text.chars();
@@ -995,7 +1020,11 @@ impl ChatWindow {
                     let mut line_baseline_y = 0.0;
 
                     for glyph in line {
-                        let char_len = if let Some(c) = char_iter.next() { c.len_utf8() } else { 0 };
+                        let char_len = if let Some(c) = char_iter.next() {
+                            c.len_utf8()
+                        } else {
+                            0
+                        };
                         let glyph_start = byte_offset;
                         let glyph_end = byte_offset + char_len;
                         byte_offset += char_len;
@@ -1023,10 +1052,16 @@ impl ChatWindow {
                                     let bg = buffer[idx];
                                     let sel_color = 0x00AADDFF; // Selection blue
                                     let alpha = 120; // Semi-transparent
-                                    
-                                    let r = (((sel_color >> 16) & 0xFF) * alpha + ((bg >> 16) & 0xFF) * (255 - alpha)) / 255;
-                                    let g = (((sel_color >> 8) & 0xFF) * alpha + ((bg >> 8) & 0xFF) * (255 - alpha)) / 255;
-                                    let b = ((sel_color & 0xFF) * alpha + (bg & 0xFF) * (255 - alpha)) / 255;
+
+                                    let r = (((sel_color >> 16) & 0xFF) * alpha
+                                        + ((bg >> 16) & 0xFF) * (255 - alpha))
+                                        / 255;
+                                    let g = (((sel_color >> 8) & 0xFF) * alpha
+                                        + ((bg >> 8) & 0xFF) * (255 - alpha))
+                                        / 255;
+                                    let b = ((sel_color & 0xFF) * alpha
+                                        + (bg & 0xFF) * (255 - alpha))
+                                        / 255;
                                     buffer[idx] = (0xFF << 24) | (r << 16) | (g << 8) | b;
                                 }
                             }
@@ -1071,7 +1106,10 @@ impl ChatWindow {
         for line in &self.cached_layout {
             for glyph in line {
                 if byte_counter == self.cursor_byte_idx {
-                    cursor_pos = (glyph.position().x as i32, (glyph.position().y - v_metrics.ascent) as i32);
+                    cursor_pos = (
+                        glyph.position().x as i32,
+                        (glyph.position().y - v_metrics.ascent) as i32,
+                    );
                     found_cursor = true;
                 }
                 if let Some(c) = char_iter.next() {
@@ -1079,15 +1117,18 @@ impl ChatWindow {
                 }
             }
         }
-        
+
         if !found_cursor && byte_counter == self.cursor_byte_idx {
             if let Some(last_line) = self.cached_layout.last() {
                 if let Some(last_glyph) = last_line.last() {
-                    cursor_pos = ((last_glyph.position().x + last_glyph.unpositioned().h_metrics().advance_width) as i32, 
-                                  (last_glyph.position().y - v_metrics.ascent) as i32);
+                    cursor_pos = (
+                        (last_glyph.position().x
+                            + last_glyph.unpositioned().h_metrics().advance_width)
+                            as i32,
+                        (last_glyph.position().y - v_metrics.ascent) as i32,
+                    );
                 }
             }
-            found_cursor = true;
         }
 
         // Cursor Blink

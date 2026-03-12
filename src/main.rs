@@ -33,6 +33,7 @@ use pet::Pet;
 use rand::Rng;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem},
@@ -45,7 +46,7 @@ use winit::{
     dpi::PhysicalPosition,
     event::{ElementState, Event, MouseButton, WindowEvent},
     event_loop::EventLoop,
-    window::{Window, WindowBuilder, WindowLevel},
+    window::{WindowBuilder, WindowLevel},
 };
 
 #[cfg(target_os = "windows")]
@@ -58,6 +59,214 @@ use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 use windows::Win32::Foundation::{HWND, POINT};
 
 use image::GenericImageView;
+
+fn parse_response_segments(response: &str) -> (Vec<bubble::BubbleContent>, String) {
+    let mut segments = Vec::new();
+    let mut pure_text_accum = String::new();
+    let mut remaining = response;
+
+    while let Some(idx) = remaining.find("[IMG]") {
+        if idx > 0 {
+            let text_part = &remaining[..idx];
+            if !text_part.trim().is_empty() {
+                let text = text_part.trim().to_string();
+                pure_text_accum.push_str(&text);
+                pure_text_accum.push(' ');
+                segments.push(bubble::BubbleContent::Text(text));
+            }
+        }
+
+        remaining = &remaining[idx + 5..];
+        let path_end = remaining
+            .find(|c: char| c.is_whitespace())
+            .unwrap_or(remaining.len());
+        let path = &remaining[..path_end];
+
+        if !path.is_empty() {
+            segments.push(bubble::BubbleContent::Image(path.to_string()));
+        }
+
+        remaining = &remaining[path_end..];
+    }
+
+    if !remaining.trim().is_empty() {
+        let text = remaining.trim().to_string();
+        pure_text_accum.push_str(&text);
+        segments.push(bubble::BubbleContent::Text(text));
+    }
+
+    (segments, pure_text_accum.trim().to_string())
+}
+
+fn stream_preview_display_text(text: &str) -> String {
+    let dot_count = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| ((d.as_millis() / 250) % 3 + 1) as usize)
+        .unwrap_or(3);
+    let suffix = ".".repeat(dot_count);
+    let trimmed = text.trim_end();
+    if trimmed.is_empty() {
+        suffix
+    } else {
+        format!("{} {}|", trimmed, suffix)
+    }
+}
+
+fn update_stream_preview_bubble(
+    bubbles: &mut Vec<bubble::SpeechBubble>,
+    preview_idx: &mut Option<usize>,
+    preview_text: &str,
+    pet_scale: f32,
+) -> bool {
+    let display_text = stream_preview_display_text(preview_text);
+    if display_text.trim().is_empty() {
+        return false;
+    }
+
+    match *preview_idx {
+        Some(idx) if idx < bubbles.len() => {
+            if let Some(bubble) = bubbles.get_mut(idx) {
+                bubble.show(&display_text, Duration::from_secs(6), pet_scale);
+            }
+        }
+        _ => {
+            let mut new_bubble = bubble::SpeechBubble::new();
+            new_bubble.is_ai_response = true;
+            new_bubble.show(&display_text, Duration::from_secs(6), pet_scale);
+            bubbles.push(new_bubble);
+            *preview_idx = Some(bubbles.len() - 1);
+        }
+    }
+
+    true
+}
+
+fn should_flush_stream_preview(
+    chunk: &str,
+    preview_text: &str,
+    last_rendered_len: usize,
+    last_render_elapsed: Duration,
+) -> bool {
+    let new_chars = preview_text
+        .chars()
+        .count()
+        .saturating_sub(last_rendered_len);
+    let has_breakpoint = chunk.contains('\n')
+        || chunk.ends_with('.')
+        || chunk.ends_with('!')
+        || chunk.ends_with('?')
+        || chunk.ends_with(',')
+        || chunk.ends_with('，')
+        || chunk.ends_with('。')
+        || chunk.ends_with('！')
+        || chunk.ends_with('？')
+        || chunk.ends_with('：')
+        || chunk.ends_with(':')
+        || chunk.ends_with('；')
+        || chunk.ends_with(';');
+
+    last_render_elapsed >= Duration::from_millis(100)
+        || chunk.len() >= 64
+        || new_chars >= 8
+        || (new_chars >= 3 && has_breakpoint)
+}
+
+fn enqueue_response_bubbles(
+    bubbles: &mut Vec<bubble::SpeechBubble>,
+    segments: &[bubble::BubbleContent],
+    pet_scale: f32,
+) {
+    let mut cumulative_duration = Duration::from_secs(0);
+    for seg in segments {
+        let mut new_bubble = bubble::SpeechBubble::new();
+        new_bubble.is_ai_response = true;
+        match seg {
+            bubble::BubbleContent::Text(text) => {
+                new_bubble.show(text, Duration::from_secs(6), pet_scale);
+            }
+            bubble::BubbleContent::Image(path) => {
+                new_bubble.show_image(path, pet_scale);
+            }
+        }
+
+        let base_dur = if let Some(until) = new_bubble.show_until {
+            until.duration_since(Instant::now())
+        } else {
+            Duration::from_secs(4)
+        };
+
+        new_bubble.show_until = Some(Instant::now() + cumulative_duration + base_dur);
+        cumulative_duration += base_dur;
+        bubbles.push(new_bubble);
+    }
+}
+
+fn finalize_stream_bubbles(
+    bubbles: &mut Vec<bubble::SpeechBubble>,
+    preview_idx: Option<usize>,
+    segments: &[bubble::BubbleContent],
+    pet_scale: f32,
+) {
+    if segments.is_empty() {
+        if let Some(idx) = preview_idx {
+            if idx < bubbles.len() {
+                bubbles.remove(idx);
+            }
+        }
+        return;
+    }
+
+    if let Some(idx) = preview_idx {
+        if idx < bubbles.len() {
+            let mut cumulative_duration = Duration::from_secs(0);
+
+            match &segments[0] {
+                bubble::BubbleContent::Text(text) => {
+                    if let Some(bubble) = bubbles.get_mut(idx) {
+                        bubble.show(text, Duration::from_secs(6), pet_scale);
+                        bubble.show_until = bubble
+                            .show_until
+                            .or(Some(Instant::now() + Duration::from_secs(4)));
+                        if let Some(until) = bubble.show_until {
+                            cumulative_duration = until.duration_since(Instant::now());
+                        }
+                    }
+                }
+                bubble::BubbleContent::Image(_) => {
+                    bubbles.remove(idx);
+                    enqueue_response_bubbles(bubbles, segments, pet_scale);
+                    return;
+                }
+            }
+
+            for seg in segments.iter().skip(1) {
+                let mut new_bubble = bubble::SpeechBubble::new();
+                new_bubble.is_ai_response = true;
+                match seg {
+                    bubble::BubbleContent::Text(text) => {
+                        new_bubble.show(text, Duration::from_secs(6), pet_scale);
+                    }
+                    bubble::BubbleContent::Image(path) => {
+                        new_bubble.show_image(path, pet_scale);
+                    }
+                }
+
+                let base_dur = if let Some(until) = new_bubble.show_until {
+                    until.duration_since(Instant::now())
+                } else {
+                    Duration::from_secs(4)
+                };
+
+                new_bubble.show_until = Some(Instant::now() + cumulative_duration + base_dur);
+                cumulative_duration += base_dur;
+                bubbles.push(new_bubble);
+            }
+            return;
+        }
+    }
+
+    enqueue_response_bubbles(bubbles, segments, pet_scale);
+}
 
 fn main() {
     // 【修复开机自启动】强制将工作目录设置为可执行文件所在目录，
@@ -287,6 +496,12 @@ fn main() {
     let mut bubbles: Vec<bubble::SpeechBubble> = Vec::new();
     let mut last_response_segments: Vec<bubble::BubbleContent> = Vec::new();
     let mut last_pure_text_response: String = String::new();
+    let mut stream_preview_text = String::new();
+    let mut stream_preview_bubble_idx: Option<usize> = None;
+    let mut stream_in_progress = false;
+    let mut stream_preview_dirty = false;
+    let mut stream_preview_last_rendered_len = 0usize;
+    let mut last_stream_preview_render = Instant::now();
     let mut hover_leave_time: Option<Instant> = None;
     let mut last_processed_mouse: (f64, f64) = (0.0, 0.0);
     let mut pomodoro_manager = pomodoro::Pomodoro::new();
@@ -373,12 +588,11 @@ fn main() {
     let mut last_bubble_click_time: Option<Instant> = None;
 
     let mut composite_data: Vec<u8> = Vec::new();
-    let mut decompressed_frame_buffer: Vec<u8> = Vec::new();
     let mut pomodoro_data: Vec<u8> = Vec::new();
 
     // Frame cache: key = (PetState, variant, frame_idx), value = decompressed pixels
     // Reduced from 32 to 16 frames to save memory (max ~4MB instead of 8MB)
-    let mut frame_cache: lru::LruCache<(PetState, usize, usize), Vec<u8>> =
+    let mut frame_cache: lru::LruCache<(PetState, usize, usize), Arc<[u8]>> =
         lru::LruCache::new(std::num::NonZeroUsize::new(16).unwrap());
     let mut is_hovered = false;
 
@@ -553,7 +767,7 @@ fn main() {
                                                         let (cur_pw, cur_ph) = pet.get_scaled_size();
                                                         let panel_w = (music_panel::BASE_PANEL_WIDTH as f32 * pet.scale) as f64;
                                                         let panel_x = (pet_off_x + cur_pw/2.0 - panel_w/2.0) as i32;
-                                                         let mut panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
+                                                         let panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
                                                         
                                                         if let Some(action) = music_panel::check_music_panel_hit(&music_player, pos.x, pos.y, panel_x, panel_y, pet.scale) {
                                                             handled = true;
@@ -730,8 +944,6 @@ fn main() {
                                         let panel_w = (music_panel::BASE_PANEL_WIDTH as f32 * pet.scale) as f64;
                                         let panel_x = (pet_off_x + cur_pw/2.0 - panel_w/2.0) as i32;
                                         let panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
-                                        let panel_h = music_panel::BASE_PANEL_HEIGHT as f32 * pet.scale;
-
                                         // Check if mouse is anywhere within the music panel (including list area below it)
                                         let is_in_panel_x = pos.x >= panel_x as f64 && pos.x < panel_x as f64 + panel_w;
                                         let is_in_panel_y = pos.y >= panel_y as f64; 
@@ -1002,90 +1214,107 @@ fn main() {
                                 thinking_state = state;
                                 needs_pet_redraw = true;
                             }
-                            AiResponseEvent::Response(response) => {
-                                // Instead of a single manager, we parse the response string and generate multiple bubbles.
-                                // Format example: "Hello! [IMG]assets/emojis/smile.png This is fun!"
-                                let mut segments = Vec::new();
-                                let mut pure_text_accum = String::new();
-                                let mut remaining = response.as_str();
-                                
-                                while let Some(idx) = remaining.find("[IMG]") {
-                                    if idx > 0 {
-                                        let text_part = &remaining[..idx];
-                                        if !text_part.trim().is_empty() {
-                                            let text = text_part.trim().to_string();
-                                            pure_text_accum.push_str(&text);
-                                            pure_text_accum.push(' ');
-                                            segments.push(bubble::BubbleContent::Text(text));
-                                        }
+                            AiResponseEvent::StreamStart => {
+                                stream_in_progress = true;
+                                stream_preview_text.clear();
+                                stream_preview_bubble_idx = None;
+                                stream_preview_dirty = false;
+                                stream_preview_last_rendered_len = 0;
+                                last_stream_preview_render = Instant::now() - Duration::from_millis(34);
+                                needs_pet_redraw = true;
+                            }
+                            AiResponseEvent::StreamChunk(chunk) => {
+                                stream_in_progress = true;
+                                stream_preview_text.push_str(&chunk);
+
+                                let should_flush = should_flush_stream_preview(
+                                    &chunk,
+                                    &stream_preview_text,
+                                    stream_preview_last_rendered_len,
+                                    last_stream_preview_render.elapsed(),
+                                );
+
+                                if should_flush
+                                    && update_stream_preview_bubble(
+                                        &mut bubbles,
+                                        &mut stream_preview_bubble_idx,
+                                        &stream_preview_text,
+                                        pet.scale,
+                                    )
+                                {
+                                    last_stream_preview_render = Instant::now();
+                                    stream_preview_last_rendered_len =
+                                        stream_preview_text.chars().count();
+                                    stream_preview_dirty = false;
+                                    needs_pet_redraw = true;
+                                } else {
+                                    stream_preview_dirty = true;
+                                }
+                            }
+                            AiResponseEvent::StreamEnd(response) => {
+                                let (segments, pure_text) = parse_response_segments(&response);
+                                last_response_segments = segments.clone();
+                                last_pure_text_response = pure_text;
+
+                                if let Some(tts) = &tts_controller {
+                                    if ai_config.tts_enabled && !last_pure_text_response.is_empty() {
+                                        tts.speak(last_pure_text_response.clone(), &ai_config);
                                     }
-                                    
-                                    remaining = &remaining[idx + 5..]; // skip "[IMG]"
-                                    
-                                    // find end of path (next whitespace or end of string)
-                                    let path_end = remaining.find(|c: char| c.is_whitespace()).unwrap_or(remaining.len());
-                                    let path = &remaining[..path_end];
-                                    
-                                    if !path.is_empty() {
-                                        segments.push(bubble::BubbleContent::Image(path.to_string()));
-                                    }
-                                    
-                                    remaining = &remaining[path_end..];
                                 }
 
-                                if !remaining.trim().is_empty() {
-                                    let text = remaining.trim().to_string();
-                                    pure_text_accum.push_str(&text);
-                                    segments.push(bubble::BubbleContent::Text(text));
+                                finalize_stream_bubbles(
+                                    &mut bubbles,
+                                    stream_preview_bubble_idx.take(),
+                                    &segments,
+                                    pet.scale,
+                                );
+
+                                stream_preview_text.clear();
+                                stream_in_progress = false;
+                                stream_preview_dirty = false;
+                                stream_preview_last_rendered_len = 0;
+                                thinking_state = ThinkingState::None;
+                                thinking_start = None;
+                                needs_pet_redraw = true;
+                            }
+                            AiResponseEvent::Response(response) => {
+                                if stream_in_progress {
+                                    continue;
                                 }
-                                
+
+                                let (segments, pure_text) = parse_response_segments(&response);
                                 last_response_segments = segments.clone();
-                                last_pure_text_response = pure_text_accum.trim().to_string();
-                                
-                                // Actually handle TTs & display queue
+                                last_pure_text_response = pure_text;
+
                                 if let Some(tts) = &tts_controller {
-                                    if ai_config.tts_enabled {
-                                        if !last_pure_text_response.is_empty() {
-                                            tts.speak(last_pure_text_response.clone(), &ai_config);
-                                        }
+                                    if ai_config.tts_enabled && !last_pure_text_response.is_empty() {
+                                        tts.speak(last_pure_text_response.clone(), &ai_config);
                                     }
                                 }
-                                
-                                // Generate all bubbles concurrently
-                                let mut cumulative_duration = Duration::from_secs(0);
-                                for seg in segments {
-                                    let mut new_bubble = bubble::SpeechBubble::new();
-                                    new_bubble.is_ai_response = true;
-                                    match seg {
-                                        bubble::BubbleContent::Text(t) => {
-                                            new_bubble.show(&t, Duration::from_secs(6), pet.scale);
-                                        }
-                                        bubble::BubbleContent::Image(p) => {
-                                            new_bubble.show_image(&p, pet.scale);
-                                        }
-                                    }
-                                    
-                                    // Extract the base duration it assigned itself
-                                    let base_dur = if let Some(until) = new_bubble.show_until {
-                                        until.duration_since(Instant::now())
-                                    } else {
-                                        Duration::from_secs(4)
-                                    };
-                                    
-                                    // Make it stay visible for its own duration PLUS all previous bubbles' durations
-                                    new_bubble.show_until = Some(Instant::now() + cumulative_duration + base_dur);
-                                    
-                                    // Add to cumulative for the NEXT bubble
-                                    cumulative_duration += base_dur;
-                                    
-                                    bubbles.push(new_bubble);
-                                }
-                                
+
+                                enqueue_response_bubbles(&mut bubbles, &segments, pet.scale);
+
                                 thinking_state = ThinkingState::None;
                                 thinking_start = None;
                                 needs_pet_redraw = true;
                             }
                         }
+                    }
+
+                    if stream_in_progress
+                        && stream_preview_dirty
+                        && last_stream_preview_render.elapsed() >= Duration::from_millis(33)
+                        && update_stream_preview_bubble(
+                            &mut bubbles,
+                            &mut stream_preview_bubble_idx,
+                            &stream_preview_text,
+                            pet.scale,
+                        )
+                    {
+                        last_stream_preview_render = Instant::now();
+                        stream_preview_last_rendered_len = stream_preview_text.chars().count();
+                        stream_preview_dirty = false;
+                        needs_pet_redraw = true;
                     }
 
                     // Check for TTS audio readiness signals (deprecated sequential queueing logic inside here can be simplified out next as we show instantly)
@@ -1390,10 +1619,13 @@ fn main() {
                     let mut over_bubble = false;
                     for b in &bubbles {
                         if let Some((bx, by, bw, bh)) = b.get_rect() {
-                            let b_screen_x = target_x as f64 + bx as f64;
-                            let b_screen_y = target_y as f64 + by as f64;
-                            if mouse_x >= b_screen_x && mouse_x <= (b_screen_x + bw as f64) &&
-                               mouse_y >= b_screen_y && mouse_y <= (b_screen_y + bh as f64) {
+                            let bubble_rect = (
+                                target_x + bx,
+                                target_y + by,
+                                bw,
+                                bh,
+                            );
+                            if pet.hit_test_bubble(mouse_x, mouse_y, bubble_rect) {
                                 over_bubble = true;
                                 break;
                             }
@@ -1505,19 +1737,20 @@ fn main() {
                         
                         // Frame cache lookup - get key values first
                         let cache_key = (pet.state, pet.current_anim_variant, pet.current_frame_idx);
-                        if let Some(cached_data) = frame_cache.get(&cache_key) {
-                            decompressed_frame_buffer.clone_from(cached_data);
+                        let decompressed_frame_buffer: Arc<[u8]> = if let Some(cached_data) = frame_cache.get(&cache_key) {
+                            cached_data.clone()
                         } else {
                             // Cache miss: decompress and store
                             let frame = pet.current_frame();
                             if let Ok(data) = lz4_flex::decompress_size_prepended(&frame.lz4_data) {
+                                let data: Arc<[u8]> = Arc::from(data);
                                 frame_cache.put(cache_key, data.clone());
-                                decompressed_frame_buffer = data;
+                                data
                             } else {
                                 // Fallback if decompression fails
-                                decompressed_frame_buffer.resize((frame.width * frame.height * 4) as usize, 0);
+                                Arc::from(vec![0; (frame.width * frame.height * 4) as usize])
                             }
-                        }
+                        };
                         
                         // Get frame reference for rendering (it's the same frame we just cached)
                         let frame = pet.current_frame();
@@ -1575,8 +1808,20 @@ fn main() {
                                         let (start_x_src_unflipped, end_x_src_unflipped) = frame.opaque_rows[src_y];
                                         if start_x_src_unflipped >= end_x_src_unflipped { return; }
 
-                                        let start_x_dest = 0;
-                                        let end_x_dest = cur_pw as usize;
+                                        let scaled_start_x = (start_x_src_unflipped as f32 * draw_scale)
+                                            .floor()
+                                            .max(0.0) as usize;
+                                        let scaled_end_x = (end_x_src_unflipped as f32 * draw_scale)
+                                            .ceil()
+                                            .min(cur_pw as f32) as usize;
+                                        let (start_x_dest, end_x_dest) = if facing_right {
+                                            (scaled_start_x, scaled_end_x)
+                                        } else {
+                                            (
+                                                cur_pw as usize - scaled_end_x,
+                                                cur_pw as usize - scaled_start_x,
+                                            )
+                                        };
                                         let src_row_idx = src_y * fw * 4;
 
                                         for x in start_x_dest..end_x_dest {
@@ -1749,7 +1994,7 @@ fn main() {
                                 let panel_w = (music_panel::BASE_PANEL_WIDTH as f32 * pet.scale) as f64;
                                 // Visual adjustment: -2px offset to compensate for asymmetrical pet gif assets
                                 let panel_x = (pet_off_x + cur_pw/2.0 - panel_w/2.0 - 2.0 * pet.scale as f64) as i32;
-                                let mut panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
+                                let panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
                                 let comp_u32 = unsafe {
                                     std::slice::from_raw_parts_mut(
                                         composite_data.as_mut_ptr() as *mut u32,

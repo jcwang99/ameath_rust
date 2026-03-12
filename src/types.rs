@@ -26,6 +26,9 @@ pub enum ThinkingState {
 #[derive(Debug, Clone)]
 pub enum AiResponseEvent {
     Status(ThinkingState),
+    StreamStart,
+    StreamChunk(String),
+    StreamEnd(String),
     Response(String),
 }
 
@@ -46,6 +49,18 @@ pub enum PetState {
     Clingy,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiResponseMode {
+    Auto,
+    Streaming,
+    NonStreaming,
+}
+
+fn default_ai_response_mode() -> AiResponseMode {
+    AiResponseMode::Auto
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AiProfile {
     pub name: String,
@@ -54,6 +69,8 @@ pub struct AiProfile {
     pub model: String,
     #[serde(default)]
     pub is_multimodal: bool,
+    #[serde(default = "default_ai_response_mode")]
+    pub response_mode: AiResponseMode,
 }
 
 impl Default for AiProfile {
@@ -64,6 +81,7 @@ impl Default for AiProfile {
             base_url: "https://api.deepseek.com/v1".to_string(),
             model: "deepseek-chat".to_string(),
             is_multimodal: false,
+            response_mode: AiResponseMode::Auto,
         }
     }
 }
@@ -124,6 +142,7 @@ impl AiConfig {
                 base_url: String::new(),
                 model: String::new(),
                 is_multimodal: false,
+                response_mode: AiResponseMode::Auto,
             };
             &FALLBACK
         } else {
@@ -150,6 +169,7 @@ impl AiConfig {
                     base_url: self.base_url.clone(),
                     model: self.model.clone(),
                     is_multimodal: false,
+                    response_mode: AiResponseMode::Auto,
                 });
                 self.api_key.clear();
                 self.base_url.clear();
