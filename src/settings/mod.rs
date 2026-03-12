@@ -91,7 +91,15 @@ trait SettingsRendererBackend {
     fn render(buffer: &mut [u32], scene: Self::Scene) -> RenderResult;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsGpuPrototypeInitStatus {
+    Uninitialized,
+    Ready,
+    FailedFallback,
+}
+
 struct SettingsGpuPrototypeState {
+    init_status: SettingsGpuPrototypeInitStatus,
     initialized: bool,
     last_frame_size: Option<(u32, u32)>,
 }
@@ -99,9 +107,26 @@ struct SettingsGpuPrototypeState {
 impl SettingsGpuPrototypeState {
     fn new() -> Self {
         Self {
+            init_status: SettingsGpuPrototypeInitStatus::Uninitialized,
             initialized: false,
             last_frame_size: None,
         }
+    }
+
+    fn ensure_initialized(&mut self, input: &SettingsRenderInput) -> bool {
+        if self.init_status == SettingsGpuPrototypeInitStatus::Ready {
+            self.last_frame_size = Some((input.w, input.h));
+            return true;
+        }
+
+        if cfg!(target_os = "windows") {
+            self.init_status = SettingsGpuPrototypeInitStatus::Ready;
+        } else {
+            self.init_status = SettingsGpuPrototypeInitStatus::FailedFallback;
+        }
+
+        self.prepare(input);
+        self.init_status == SettingsGpuPrototypeInitStatus::Ready
     }
 
     fn prepare(&mut self, input: &SettingsRenderInput) {
@@ -111,6 +136,7 @@ impl SettingsGpuPrototypeState {
 
     fn snapshot(&self) -> SettingsGpuPrototypeSnapshot {
         SettingsGpuPrototypeSnapshot {
+            init_status: self.init_status,
             initialized: self.initialized,
             last_frame_size: self.last_frame_size,
         }
@@ -119,6 +145,7 @@ impl SettingsGpuPrototypeState {
 
 #[derive(Debug, Clone, Copy)]
 struct SettingsGpuPrototypeSnapshot {
+    init_status: SettingsGpuPrototypeInitStatus,
     initialized: bool,
     last_frame_size: Option<(u32, u32)>,
 }
@@ -136,8 +163,21 @@ impl SettingsWorkerRuntime {
         }
     }
 
-    fn select_renderer_kind(&self, requested: SettingsRendererKind) -> SettingsRendererKind {
-        requested
+    fn select_renderer_kind(
+        &mut self,
+        requested: SettingsRendererKind,
+        input: &SettingsRenderInput,
+    ) -> SettingsRendererKind {
+        match requested {
+            SettingsRendererKind::Cpu => SettingsRendererKind::Cpu,
+            SettingsRendererKind::GpuPrototype => {
+                if self.gpu_prototype.ensure_initialized(input) {
+                    SettingsRendererKind::GpuPrototype
+                } else {
+                    SettingsRendererKind::Cpu
+                }
+            }
+        }
     }
 
     fn gpu_snapshot(&self) -> SettingsGpuPrototypeSnapshot {
@@ -145,7 +185,7 @@ impl SettingsWorkerRuntime {
     }
 
     fn render_request(&mut self, req: &mut RenderRequest) -> RenderResult {
-        let renderer_kind = self.select_renderer_kind(req.renderer_kind);
+        let renderer_kind = self.select_renderer_kind(req.renderer_kind, &req.input);
         self.last_renderer_kind = renderer_kind;
 
         match renderer_kind {
@@ -155,7 +195,6 @@ impl SettingsWorkerRuntime {
                 req.hash,
             ),
             SettingsRendererKind::GpuPrototype => {
-                self.gpu_prototype.prepare(&req.input);
                 render_with_backend::<SettingsGpuPrototypeRenderer>(
                     &mut req.buffer,
                     req.input.clone(),
@@ -653,8 +692,9 @@ impl SettingsWindow {
                 let res = runtime.render_request(&mut req);
                 let gpu_snapshot = runtime.gpu_snapshot();
                 tracing::debug!(
-                    "Settings worker rendered with {:?}; gpu prototype initialized={}, last_frame_size={:?}",
+                    "Settings worker rendered with {:?}; gpu prototype init_status={:?}, initialized={}, last_frame_size={:?}",
                     runtime.last_renderer_kind,
+                    gpu_snapshot.init_status,
                     gpu_snapshot.initialized,
                     gpu_snapshot.last_frame_size
                 );
