@@ -85,16 +85,30 @@ struct ChatRenderScene {
     cursor_color: u32,
 }
 
+trait ChatRendererBackend {
+    type Scene;
+
+    fn build_scene(window: &mut ChatWindow) -> Self::Scene;
+    fn render(window: &mut ChatWindow, scene: &Self::Scene);
+}
+
 struct ChatCpuRenderer;
 
-impl ChatCpuRenderer {
-    fn build_scene(window: &mut ChatWindow) -> ChatRenderScene {
+impl ChatRendererBackend for ChatCpuRenderer {
+    type Scene = ChatRenderScene;
+
+    fn build_scene(window: &mut ChatWindow) -> Self::Scene {
         window.prepare_render_scene()
     }
 
-    fn render(window: &mut ChatWindow, scene: &ChatRenderScene) {
+    fn render(window: &mut ChatWindow, scene: &Self::Scene) {
         window.present_render_scene(scene);
     }
+}
+
+fn render_with_backend<B: ChatRendererBackend>(window: &mut ChatWindow) {
+    let scene = B::build_scene(window);
+    B::render(window, &scene);
 }
 
 impl ChatWindow {
@@ -1192,7 +1206,6 @@ impl ChatWindow {
     }
 
     fn redraw(&mut self) {
-        let scene = ChatCpuRenderer::build_scene(self);
-        ChatCpuRenderer::render(self, &scene);
+        render_with_backend::<ChatCpuRenderer>(self);
     }
 }
