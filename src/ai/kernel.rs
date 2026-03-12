@@ -295,7 +295,7 @@ impl ChatKernel {
                     if combined_traces.len() > 2500 {
                         tracing::info!("FC traces too long ({} chars), summarizing...", combined_traces.len());
                         let summary_prompt = vec![Message {
-                            role: "system".to_string(),
+                            role: "user".to_string(),
                             content: Some(Content::Simple(format!(
                                 "Please summarize the following tool calling process into a concise log within 1000 tokens. \
                                 Focus on what tools were called and what key information was obtained.\n\n[Tool Traces]:\n{}",
@@ -493,7 +493,7 @@ impl ChatKernel {
                 let mut attempts = 0;
                 while attempts < 3 {
                     let prompt = vec![Message {
-                        role: "system".to_string(),
+                        role: "user".to_string(),
                         content: Some(Content::Simple(prompt_content.clone())),
                         tool_calls: None,
                         tool_call_id: None,
