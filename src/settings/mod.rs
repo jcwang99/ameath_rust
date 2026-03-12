@@ -100,6 +100,75 @@ impl SettingsSurfacePresenter {
     fn present_final(buffer: softbuffer::Buffer<'_, Rc<Window>, Rc<Window>>) {
         let _ = buffer.present();
     }
+
+    fn restore_background(
+        buffer: &mut softbuffer::Buffer<'_, Rc<Window>, Rc<Window>>,
+        width: u32,
+        height: u32,
+        pixels: &[u32],
+    ) {
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                pixels.as_ptr(),
+                buffer.as_mut_ptr(),
+                (width * height) as usize,
+            );
+        }
+    }
+
+    fn draw_scrollbar(
+        buffer: &mut softbuffer::Buffer<'_, Rc<Window>, Rc<Window>>,
+        width: u32,
+        height: u32,
+        viewport_height: f32,
+        content_height: f32,
+        scroll_offset: f32,
+    ) {
+        draw_main_scrollbar(
+            buffer,
+            width,
+            height,
+            viewport_height,
+            content_height,
+            scroll_offset,
+        );
+    }
+
+    fn apply_cursor_overlay(
+        buffer: &mut softbuffer::Buffer<'_, Rc<Window>, Rc<Window>>,
+        width: u32,
+        height: u32,
+        cursor_rect: (i32, i32, u32, u32),
+        cursor_save_under: &mut Vec<u32>,
+        draw_cursor: bool,
+    ) {
+        let (cx, cy, cw, ch) = cursor_rect;
+        if !cursor_save_under.is_empty() && cursor_save_under.len() == (cw * ch) as usize {
+            let mut idx = 0;
+            for row in 0..ch {
+                let y_idx = (cy + row as i32) as usize * width as usize;
+                for col in 0..cw {
+                    buffer[y_idx + (cx + col as i32) as usize] = cursor_save_under[idx];
+                    idx += 1;
+                }
+            }
+        } else {
+            cursor_save_under.clear();
+        }
+
+        if draw_cursor {
+            cursor_save_under.clear();
+            for row in 0..ch {
+                let y_idx = (cy + row as i32) as usize * width as usize;
+                for col in 0..cw {
+                    cursor_save_under.push(buffer[y_idx + (cx + col as i32) as usize]);
+                }
+            }
+            draw_rect(buffer, width, cx, cy, cw, ch, COLOR_PRIMARY, width, height);
+        } else {
+            cursor_save_under.clear();
+        }
+    }
 }
 
 struct SettingsCpuRenderer;
@@ -903,13 +972,12 @@ impl SettingsWindow {
         // 1.5 Restore background if no new background frame was just copied
         // (This happens during smooth scrolling dragging between worker frames)
         if base_state_hash == self.last_base_state_hash && !self.last_background_pixels.is_empty() {
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    self.last_background_pixels.as_ptr(),
-                    buffer.as_mut_ptr(),
-                    (w * h) as usize,
-                );
-            }
+            SettingsSurfacePresenter::restore_background(
+                &mut buffer,
+                w,
+                h,
+                &self.last_background_pixels,
+            );
         }
 
         // 2. Surgical Cursor Blink (Synchronous)
@@ -921,46 +989,16 @@ impl SettingsWindow {
                     && (cx + cw as i32) <= w as i32
                     && (cy + ch as i32) <= h as i32
                 {
-                    let mut buffer = match self.surface.buffer_mut() {
-                        Ok(b) => b,
-                        Err(e) => {
-                            tracing::error!("Failed to get surface buffer for cursor restoration: {}. Skipping frame.", e);
-                            return;
-                        }
-                    };
-                    // Restore
-                    if !self.cursor_save_under.is_empty()
-                        && self.cursor_save_under.len() == (cw * ch) as usize
-                    {
-                        let mut idx = 0;
-                        for row in 0..ch {
-                            let y_idx = (cy + row as i32) as usize * w as usize;
-                            for col in 0..cw {
-                                buffer[y_idx + (cx + col as i32) as usize] =
-                                    self.cursor_save_under[idx];
-                                idx += 1;
-                            }
-                        }
-                    } else {
-                        self.cursor_save_under.clear();
-                    }
-                    // Draw
-                    if is_cursor_on && self.focused_field.is_some() {
-                        self.cursor_save_under.clear();
-                        for row in 0..ch {
-                            let y_idx = (cy + row as i32) as usize * w as usize;
-                            for col in 0..cw {
-                                self.cursor_save_under
-                                    .push(buffer[y_idx + (cx + col as i32) as usize]);
-                            }
-                        }
-                        draw_rect(&mut buffer, w, cx, cy, cw, ch, COLOR_PRIMARY, w, h);
-                    } else {
-                        self.cursor_save_under.clear();
-                    }
+                    SettingsSurfacePresenter::apply_cursor_overlay(
+                        &mut buffer,
+                        w,
+                        h,
+                        (cx, cy, cw, ch),
+                        &mut self.cursor_save_under,
+                        is_cursor_on && self.focused_field.is_some(),
+                    );
                     self.last_state_hash = current_hash;
-                    // Draw scrollbar even in cursor-only update
-                    draw_main_scrollbar(
+                    SettingsSurfacePresenter::draw_scrollbar(
                         &mut buffer,
                         w,
                         h,
@@ -976,7 +1014,7 @@ impl SettingsWindow {
 
         // 4. Final Composition (Scrollbar + Cursor)
         // Always redraw scrollbar on top of whatever background we have
-        draw_main_scrollbar(
+        SettingsSurfacePresenter::draw_scrollbar(
             &mut buffer,
             w,
             h,
@@ -995,14 +1033,14 @@ impl SettingsWindow {
                         && (cx + cw as i32) <= w as i32
                         && (cy + ch as i32) <= h as i32
                     {
-                        for row in 0..ch {
-                            let y_idx = (cy + row as i32) as usize * w as usize;
-                            for col in 0..cw {
-                                self.cursor_save_under
-                                    .push(buffer[y_idx + (cx + col as i32) as usize]);
-                            }
-                        }
-                        draw_rect(&mut buffer, w, cx, cy, cw, ch, COLOR_PRIMARY, w, h);
+                        SettingsSurfacePresenter::apply_cursor_overlay(
+                            &mut buffer,
+                            w,
+                            h,
+                            (cx, cy, cw, ch),
+                            &mut self.cursor_save_under,
+                            true,
+                        );
                     }
                 }
             }
