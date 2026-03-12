@@ -13,21 +13,25 @@ impl NotificationSkill {
     fn send_notification(&self, title: &str, message: &str) -> Result<(), String> {
         #[cfg(target_os = "windows")]
         {
-            // Escape single quotes for PowerShell
-            let escaped_title = title.replace("'", "''");
-            let escaped_message = message.replace("'", "''");
+            use base64::{Engine as _, engine::general_purpose::STANDARD};
 
-            // PowerShell script to show a balloon tip notification
-            // This is more reliable across different Windows versions than Toast types which require AppIDs
+            // Encode text to base64 to completely avoid PowerShell string escaping and encoding issues
+            let title_b64 = STANDARD.encode(title.as_bytes());
+            let msg_b64 = STANDARD.encode(message.as_bytes());
+
             let ps_script = format!(
-                "[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms'); \
-                 $obj = New-Object System.Windows.Forms.NotifyIcon; \
-                 $obj.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon((Get-Process -id $pid).Path); \
-                 $obj.Visible = $true; \
-                 $obj.ShowBalloonTip(5000, '{}', '{}', [System.Windows.Forms.ToolTipIcon]::Info); \
-                 Start-Sleep -Seconds 1; \
-                 $obj.Dispose();",
-                escaped_title, escaped_message
+                "$titleBytes = [System.Convert]::FromBase64String('{}'); \
+                 $msgBytes = [System.Convert]::FromBase64String('{}'); \
+                 $title = [System.Text.Encoding]::UTF8.GetString($titleBytes); \
+                 $message = [System.Text.Encoding]::UTF8.GetString($msgBytes); \
+                 [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; \
+                 [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime] | Out-Null; \
+                 $xmlString = \"<toast><visual><binding template='ToastText02'><text id='1'>$title</text><text id='2'>$message</text></binding></visual></toast>\"; \
+                 $toastXml = [Windows.Data.Xml.Dom.XmlDocument]::new(); \
+                 $toastXml.LoadXml($xmlString); \
+                 $toast = [Windows.UI.Notifications.ToastNotification]::new($toastXml); \
+                 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Ameath AI').Show($toast);",
+                title_b64, msg_b64
             );
 
             let output = Command::new("powershell")
