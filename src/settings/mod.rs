@@ -75,6 +75,13 @@ struct SettingsRenderScene {
     hash: u64,
 }
 
+trait SettingsRendererBackend {
+    type Scene;
+
+    fn build_scene(input: SettingsRenderInput, hash: u64) -> Self::Scene;
+    fn render(buffer: &mut [u32], scene: Self::Scene) -> RenderResult;
+}
+
 struct SettingsSurfacePresenter;
 
 impl SettingsSurfacePresenter {
@@ -173,12 +180,14 @@ impl SettingsSurfacePresenter {
 
 struct SettingsCpuRenderer;
 
-impl SettingsCpuRenderer {
-    fn build_scene(input: SettingsRenderInput, hash: u64) -> SettingsRenderScene {
+impl SettingsRendererBackend for SettingsCpuRenderer {
+    type Scene = SettingsRenderScene;
+
+    fn build_scene(input: SettingsRenderInput, hash: u64) -> Self::Scene {
         SettingsRenderScene { input, hash }
     }
 
-    fn render(buffer: &mut [u32], scene: SettingsRenderScene) -> RenderResult {
+    fn render(buffer: &mut [u32], scene: Self::Scene) -> RenderResult {
         let input = scene.input;
         let hash = scene.hash;
         let w = input.w;
@@ -369,6 +378,15 @@ impl SettingsCpuRenderer {
     }
 }
 
+fn render_with_backend<B: SettingsRendererBackend>(
+    buffer: &mut [u32],
+    input: SettingsRenderInput,
+    hash: u64,
+) -> RenderResult {
+    let scene = B::build_scene(input, hash);
+    B::render(buffer, scene)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
 pub enum SettingsAction {
@@ -532,8 +550,11 @@ impl SettingsWindow {
                     req = next_req;
                 }
 
-                let scene = SettingsCpuRenderer::build_scene(req.input, req.hash);
-                let res = SettingsCpuRenderer::render(&mut req.buffer, scene);
+                let res = render_with_backend::<SettingsCpuRenderer>(
+                    &mut req.buffer,
+                    req.input,
+                    req.hash,
+                );
                 {
                     let mut lock = rb_ptr.lock().unwrap();
                     *lock = Some(res);
