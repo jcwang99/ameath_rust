@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use winit::event_loop::{EventLoopProxy, EventLoopWindowTarget};
 use winit::window::Window;
 
+#[derive(Clone)]
 pub struct SettingsRenderInput {
     pub w: u32,
     pub h: u32,
@@ -88,6 +89,55 @@ trait SettingsRendererBackend {
 
     fn build_scene(input: SettingsRenderInput, hash: u64) -> Self::Scene;
     fn render(buffer: &mut [u32], scene: Self::Scene) -> RenderResult;
+}
+
+struct SettingsGpuPrototypeState {
+    initialized: bool,
+    last_frame_size: Option<(u32, u32)>,
+}
+
+impl SettingsGpuPrototypeState {
+    fn new() -> Self {
+        Self {
+            initialized: false,
+            last_frame_size: None,
+        }
+    }
+
+    fn prepare(&mut self, input: &SettingsRenderInput) {
+        self.initialized = true;
+        self.last_frame_size = Some((input.w, input.h));
+    }
+}
+
+struct SettingsWorkerRuntime {
+    gpu_prototype: SettingsGpuPrototypeState,
+}
+
+impl SettingsWorkerRuntime {
+    fn new() -> Self {
+        Self {
+            gpu_prototype: SettingsGpuPrototypeState::new(),
+        }
+    }
+
+    fn render_request(&mut self, req: &mut RenderRequest) -> RenderResult {
+        match req.renderer_kind {
+            SettingsRendererKind::Cpu => render_with_backend::<SettingsCpuRenderer>(
+                &mut req.buffer,
+                req.input.clone(),
+                req.hash,
+            ),
+            SettingsRendererKind::GpuPrototype => {
+                self.gpu_prototype.prepare(&req.input);
+                render_with_backend::<SettingsGpuPrototypeRenderer>(
+                    &mut req.buffer,
+                    req.input.clone(),
+                    req.hash,
+                )
+            }
+        }
+    }
 }
 
 struct SettingsSurfacePresenter;
@@ -409,22 +459,6 @@ fn render_with_backend<B: SettingsRendererBackend>(
     B::render(buffer, scene)
 }
 
-fn render_with_renderer_kind(
-    renderer_kind: SettingsRendererKind,
-    buffer: &mut [u32],
-    input: SettingsRenderInput,
-    hash: u64,
-) -> RenderResult {
-    match renderer_kind {
-        SettingsRendererKind::Cpu => {
-            render_with_backend::<SettingsCpuRenderer>(buffer, input, hash)
-        }
-        SettingsRendererKind::GpuPrototype => {
-            render_with_backend::<SettingsGpuPrototypeRenderer>(buffer, input, hash)
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
 pub enum SettingsAction {
@@ -577,6 +611,7 @@ impl SettingsWindow {
         let p_ptr = proxy.clone();
 
         std::thread::spawn(move || {
+            let mut runtime = SettingsWorkerRuntime::new();
             while let Ok(mut req) = render_rx.recv() {
                 // Drain any pending requests and only process the latest one
                 // This is the "Frame Skipping" mechanism
@@ -589,12 +624,7 @@ impl SettingsWindow {
                     req = next_req;
                 }
 
-                let res = render_with_renderer_kind(
-                    req.renderer_kind,
-                    &mut req.buffer,
-                    req.input,
-                    req.hash,
-                );
+                let res = runtime.render_request(&mut req);
                 {
                     let mut lock = rb_ptr.lock().unwrap();
                     *lock = Some(res);

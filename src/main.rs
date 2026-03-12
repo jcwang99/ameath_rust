@@ -98,72 +98,6 @@ fn parse_response_segments(response: &str) -> (Vec<bubble::BubbleContent>, Strin
     (segments, pure_text_accum.trim().to_string())
 }
 
-fn preview_text_from_response(response: &str) -> String {
-    let cleaned = crate::ai::memory::MemoryManager::strip_auxiliary_for_display(response);
-    let (segments, _) = parse_response_segments(&cleaned);
-    segments
-        .into_iter()
-        .filter_map(|seg| match seg {
-            bubble::BubbleContent::Text(text) => {
-                let trimmed = text.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                }
-            }
-            bubble::BubbleContent::Image(_) => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
-fn response_contains_image_marker(response: &str) -> bool {
-    crate::ai::memory::MemoryManager::strip_auxiliary_for_display(response).contains("[IMG]")
-}
-
-fn stream_preview_display_text(text: &str) -> String {
-    let dot_count = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| ((d.as_millis() / 250) % 3 + 1) as usize)
-        .unwrap_or(3);
-    let suffix = ".".repeat(dot_count);
-    let trimmed = text.trim_end();
-    if trimmed.is_empty() {
-        suffix
-    } else {
-        format!("{} {}|", trimmed, suffix)
-    }
-}
-
-fn update_stream_preview_bubble(
-    bubbles: &mut Vec<bubble::SpeechBubble>,
-    preview_text: &str,
-    pet_scale: f32,
-) -> bool {
-    let preview_visible_text = preview_text_from_response(preview_text);
-    let display_text = stream_preview_display_text(&preview_visible_text);
-    if display_text.trim().is_empty() {
-        return false;
-    }
-
-    if let Some(bubble) = bubbles.iter_mut().find(|bubble| bubble.is_stream_preview) {
-        bubble.show(&display_text, Duration::from_secs(6), pet_scale);
-    } else {
-        let mut new_bubble = bubble::SpeechBubble::new();
-        new_bubble.is_ai_response = true;
-        new_bubble.is_stream_preview = true;
-        new_bubble.show(&display_text, Duration::from_secs(6), pet_scale);
-        bubbles.push(new_bubble);
-    }
-
-    true
-}
-
-fn clear_stream_preview_bubbles(bubbles: &mut Vec<bubble::SpeechBubble>) {
-    bubbles.retain(|bubble| !bubble.is_stream_preview);
-}
-
 fn build_response_bubbles(
     segments: &[bubble::BubbleContent],
     pet_scale: f32,
@@ -205,33 +139,6 @@ fn build_response_bubbles(
     built
 }
 
-fn should_flush_stream_preview(
-    chunk: &str,
-    preview_char_len: usize,
-    last_rendered_len: usize,
-    last_render_elapsed: Duration,
-) -> bool {
-    let new_chars = preview_char_len.saturating_sub(last_rendered_len);
-    let has_breakpoint = chunk.contains('\n')
-        || chunk.ends_with('.')
-        || chunk.ends_with('!')
-        || chunk.ends_with('?')
-        || chunk.ends_with(',')
-        || chunk.ends_with('，')
-        || chunk.ends_with('。')
-        || chunk.ends_with('！')
-        || chunk.ends_with('？')
-        || chunk.ends_with('：')
-        || chunk.ends_with(':')
-        || chunk.ends_with('；')
-        || chunk.ends_with(';');
-
-    last_render_elapsed >= Duration::from_millis(100)
-        || chunk.len() >= 64
-        || new_chars >= 8
-        || (new_chars >= 3 && has_breakpoint)
-}
-
 fn enqueue_response_bubbles(
     bubbles: &mut Vec<bubble::SpeechBubble>,
     segments: &[bubble::BubbleContent],
@@ -245,8 +152,6 @@ fn finalize_stream_bubbles(
     segments: &[bubble::BubbleContent],
     pet_scale: f32,
 ) {
-    clear_stream_preview_bubbles(bubbles);
-
     if !segments.is_empty() {
         enqueue_response_bubbles(bubbles, segments, pet_scale);
     }
@@ -1023,13 +928,6 @@ fn main() {
     let mut bubbles: Vec<bubble::SpeechBubble> = Vec::new();
     let mut last_response_segments: Vec<bubble::BubbleContent> = Vec::new();
     let mut last_pure_text_response: String = String::new();
-    let mut stream_preview_text = String::new();
-    let mut stream_in_progress = false;
-    let mut stream_preview_suppressed = false;
-    let mut stream_preview_dirty = false;
-    let mut stream_preview_char_len = 0usize;
-    let mut stream_preview_last_rendered_len = 0usize;
-    let mut last_stream_preview_render = Instant::now();
     let mut hover_leave_time: Option<Instant> = None;
     let mut last_processed_mouse: (f64, f64) = (0.0, 0.0);
     let mut pomodoro_manager = pomodoro::Pomodoro::new();
@@ -1742,54 +1640,6 @@ fn main() {
                                 thinking_state = state;
                                 needs_pet_redraw = true;
                             }
-                            AiResponseEvent::StreamStart => {
-                                clear_stream_preview_bubbles(&mut bubbles);
-                                stream_in_progress = true;
-                                stream_preview_suppressed = false;
-                                stream_preview_text.clear();
-                                stream_preview_dirty = false;
-                                stream_preview_char_len = 0;
-                                stream_preview_last_rendered_len = 0;
-                                last_stream_preview_render = Instant::now() - Duration::from_millis(34);
-                                needs_pet_redraw = true;
-                            }
-                            AiResponseEvent::StreamChunk(chunk) => {
-                                stream_in_progress = true;
-                                stream_preview_char_len += chunk.chars().count();
-                                stream_preview_text.push_str(&chunk);
-
-                                if response_contains_image_marker(&stream_preview_text) {
-                                    if !stream_preview_suppressed {
-                                        clear_stream_preview_bubbles(&mut bubbles);
-                                        needs_pet_redraw = true;
-                                    }
-                                    stream_preview_suppressed = true;
-                                    stream_preview_dirty = false;
-                                    continue;
-                                }
-
-                                let should_flush = should_flush_stream_preview(
-                                    &chunk,
-                                    stream_preview_char_len,
-                                    stream_preview_last_rendered_len,
-                                    last_stream_preview_render.elapsed(),
-                                );
-
-                                if should_flush
-                                    && update_stream_preview_bubble(
-                                        &mut bubbles,
-                                        &stream_preview_text,
-                                        pet.scale,
-                                    )
-                                {
-                                    last_stream_preview_render = Instant::now();
-                                    stream_preview_last_rendered_len = stream_preview_char_len;
-                                    stream_preview_dirty = false;
-                                    needs_pet_redraw = true;
-                                } else {
-                                    stream_preview_dirty = true;
-                                }
-                            }
                             AiResponseEvent::StreamEnd(response) => {
                                 let (segments, pure_text) = parse_response_segments(&response);
                                 last_response_segments = segments.clone();
@@ -1807,21 +1657,11 @@ fn main() {
                                     pet.scale,
                                 );
 
-                                stream_preview_text.clear();
-                                stream_in_progress = false;
-                                stream_preview_suppressed = false;
-                                stream_preview_dirty = false;
-                                stream_preview_char_len = 0;
-                                stream_preview_last_rendered_len = 0;
                                 thinking_state = ThinkingState::None;
                                 thinking_start = None;
                                 needs_pet_redraw = true;
                             }
                             AiResponseEvent::Response(response) => {
-                                if stream_in_progress {
-                                    continue;
-                                }
-
                                 let (segments, pure_text) = parse_response_segments(&response);
                                 last_response_segments = segments.clone();
                                 last_pure_text_response = pure_text;
@@ -1839,22 +1679,6 @@ fn main() {
                                 needs_pet_redraw = true;
                             }
                         }
-                    }
-
-                    if stream_in_progress
-                        && !stream_preview_suppressed
-                        && stream_preview_dirty
-                        && last_stream_preview_render.elapsed() >= Duration::from_millis(33)
-                        && update_stream_preview_bubble(
-                            &mut bubbles,
-                            &stream_preview_text,
-                            pet.scale,
-                        )
-                    {
-                        last_stream_preview_render = Instant::now();
-                        stream_preview_last_rendered_len = stream_preview_char_len;
-                        stream_preview_dirty = false;
-                        needs_pet_redraw = true;
                     }
 
                     // Check for TTS audio readiness signals (deprecated sequential queueing logic inside here can be simplified out next as we show instantly)

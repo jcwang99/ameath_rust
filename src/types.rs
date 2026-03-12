@@ -26,10 +26,6 @@ pub enum ThinkingState {
 #[derive(Debug, Clone)]
 pub enum AiResponseEvent {
     Status(ThinkingState),
-    #[allow(dead_code)]
-    StreamStart,
-    #[allow(dead_code)]
-    StreamChunk(String),
     StreamEnd(String),
     Response(String),
 }

@@ -138,7 +138,6 @@ pub struct SpeechBubble {
     pub rect: Option<(i32, i32, i32, i32)>,
     pub is_ai_response: bool,
     pub is_hover_recall: bool,
-    pub is_stream_preview: bool,
 
     // Animation state
     pub frames: Vec<(Vec<u8>, Duration)>,
@@ -165,7 +164,6 @@ impl SpeechBubble {
             rect: None,
             is_ai_response: false,
             is_hover_recall: false,
-            is_stream_preview: false,
             frames: Vec::new(),
             current_frame_idx: 0,
             last_frame_time: Instant::now(),

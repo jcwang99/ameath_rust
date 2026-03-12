@@ -98,16 +98,8 @@ pub struct ChatRequest {
     pub tools: Option<Vec<Value>>,
 }
 
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub enum ClientStreamEvent {
-    Start,
-    TextDelta(String),
-}
-
 #[derive(Default)]
 struct StreamingState {
-    started: bool,
     role: Option<String>,
     content: String,
     tool_calls: BTreeMap<usize, PartialToolCall>,
@@ -137,24 +129,17 @@ impl OpenAiClient {
         }
     }
 
-    pub async fn chat<F>(
+    pub async fn chat(
         &self,
         messages: Vec<Message>,
         tools: Option<Vec<Value>>,
-        mut on_stream_event: F,
     ) -> Result<Message, String>
-    where
-        F: FnMut(ClientStreamEvent),
     {
         match self.response_mode {
-            AiResponseMode::NonStreaming => {
-                self.chat_once(messages, tools, false, &mut on_stream_event).await
-            }
-            AiResponseMode::Streaming => {
-                self.chat_once(messages, tools, true, &mut on_stream_event).await
-            }
+            AiResponseMode::NonStreaming => self.chat_once(messages, tools, false).await,
+            AiResponseMode::Streaming => self.chat_once(messages, tools, true).await,
             AiResponseMode::Auto => match self
-                .chat_once(messages.clone(), tools.clone(), true, &mut on_stream_event)
+                .chat_once(messages.clone(), tools.clone(), true)
                 .await
             {
                 Ok(message) => Ok(message),
@@ -163,22 +148,18 @@ impl OpenAiClient {
                         "Streaming request failed in auto mode, retrying non-stream: {}",
                         stream_err
                     );
-                    self.chat_once(messages, tools, false, &mut on_stream_event)
-                        .await
+                    self.chat_once(messages, tools, false).await
                 }
             },
         }
     }
 
-    async fn chat_once<F>(
+    async fn chat_once(
         &self,
         messages: Vec<Message>,
         tools: Option<Vec<Value>>,
         stream: bool,
-        on_stream_event: &mut F,
     ) -> Result<Message, String>
-    where
-        F: FnMut(ClientStreamEvent),
     {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
 
@@ -244,7 +225,7 @@ impl OpenAiClient {
             .to_ascii_lowercase();
 
         if content_type.contains("text/event-stream") {
-            return self.parse_streaming_response(response, on_stream_event).await;
+            return self.parse_streaming_response(response).await;
         }
 
         let body_text = response.text().await.map_err(|e| {
@@ -255,19 +236,16 @@ impl OpenAiClient {
         tracing::debug!("AI Raw Response: {}", body_text);
 
         if body_text.trim_start().starts_with("data:") {
-            return parse_streaming_text_body(&body_text, on_stream_event);
+            return parse_streaming_text_body(&body_text);
         }
 
         parse_chat_response_text(&body_text)
     }
 
-    async fn parse_streaming_response<F>(
+    async fn parse_streaming_response(
         &self,
         response: reqwest::Response,
-        on_stream_event: &mut F,
     ) -> Result<Message, String>
-    where
-        F: FnMut(ClientStreamEvent),
     {
         let mut state = StreamingState::default();
         let mut stream = response.bytes_stream();
@@ -280,37 +258,27 @@ impl OpenAiClient {
 
             while let Some(pos) = buffer.find('\n') {
                 let line: String = buffer.drain(..=pos).collect();
-                process_sse_line(line.trim_end_matches(['\r', '\n']), &mut state, on_stream_event)?;
+                process_sse_line(line.trim_end_matches(['\r', '\n']), &mut state)?;
             }
         }
 
         if !buffer.trim().is_empty() {
-            process_sse_line(buffer.trim_end_matches(['\r', '\n']), &mut state, on_stream_event)?;
+            process_sse_line(buffer.trim_end_matches(['\r', '\n']), &mut state)?;
         }
 
         state.into_message()
     }
 }
 
-fn parse_streaming_text_body<F>(body_text: &str, on_stream_event: &mut F) -> Result<Message, String>
-where
-    F: FnMut(ClientStreamEvent),
-{
+fn parse_streaming_text_body(body_text: &str) -> Result<Message, String> {
     let mut state = StreamingState::default();
     for line in body_text.lines() {
-        process_sse_line(line.trim(), &mut state, on_stream_event)?;
+        process_sse_line(line.trim(), &mut state)?;
     }
     state.into_message()
 }
 
-fn process_sse_line<F>(
-    line: &str,
-    state: &mut StreamingState,
-    on_stream_event: &mut F,
-) -> Result<(), String>
-where
-    F: FnMut(ClientStreamEvent),
-{
+fn process_sse_line(line: &str, state: &mut StreamingState) -> Result<(), String> {
     if line.is_empty() || line.starts_with(':') {
         return Ok(());
     }
@@ -323,20 +291,13 @@ where
 
         let value: Value = serde_json::from_str(payload)
             .map_err(|e| format!("Failed to parse streaming payload: {}", e))?;
-        apply_stream_delta(&value, state, on_stream_event)
+        apply_stream_delta(&value, state)
     } else {
         Ok(())
     }
 }
 
-fn apply_stream_delta<F>(
-    value: &Value,
-    state: &mut StreamingState,
-    on_stream_event: &mut F,
-) -> Result<(), String>
-where
-    F: FnMut(ClientStreamEvent),
-{
+fn apply_stream_delta(value: &Value, state: &mut StreamingState) -> Result<(), String> {
     let delta = value
         .get("choices")
         .and_then(Value::as_array)
@@ -351,12 +312,7 @@ where
     if let Some(content_value) = delta.get("content") {
         let text_delta = extract_text_from_content_value(content_value);
         if !text_delta.is_empty() {
-            if !state.started {
-                state.started = true;
-                on_stream_event(ClientStreamEvent::Start);
-            }
             state.content.push_str(&text_delta);
-            on_stream_event(ClientStreamEvent::TextDelta(text_delta));
         }
     }
 

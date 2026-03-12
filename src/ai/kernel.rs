@@ -182,7 +182,7 @@ impl ChatKernel {
                 let _ = tx.send(AiResponseEvent::Status(ThinkingState::Network));
                 
                 tracing::debug!("Requesting LLM with {} messages", messages.len());
-                let response_result = client.chat(messages.clone(), tools_opt.clone(), |_| {}).await;
+                let response_result = client.chat(messages.clone(), tools_opt.clone()).await;
                 let _ = tx.send(AiResponseEvent::Status(ThinkingState::Standard));
 
                 match response_result {
@@ -308,7 +308,7 @@ impl ChatKernel {
                             tool_calls: None,
                             tool_call_id: None,
                         }];
-                        if let Ok(summary_msg) = client.chat(summary_prompt, None, |_| {}).await {
+                        if let Ok(summary_msg) = client.chat(summary_prompt, None).await {
                             combined_traces = summary_msg.content_as_str();
                         }
                     }
@@ -386,7 +386,7 @@ impl ChatKernel {
             };
             messages.push(summary_prompt);
 
-            if let Ok(last_summary) = client.chat(messages, None, |_| {}).await {
+            if let Ok(last_summary) = client.chat(messages, None).await {
                 // Construct Handover Context (In-Memory Only)
                 handover_context = Some(format!(
                     "--- COGNITIVE HANDOVER (Step Limit Reached) ---\n\n[Previous Progress Summary]:\n{}\n\n[Recent Tool Execution Log (Raw Context)]:\n{}\n\n--- END OF HANDOVER ---",
@@ -449,7 +449,7 @@ impl ChatKernel {
                 tool_call_id: None,
             });
 
-            if let Ok(summary) = client.chat(prompt, None, |_| {}).await {
+            if let Ok(summary) = client.chat(prompt, None).await {
                 self.memory
                     .add_conversation_item("assistant", &summary.content_as_str(), 2)
                     .ok();
@@ -503,7 +503,7 @@ impl ChatKernel {
                         tool_call_id: None,
                     }];
 
-                    if let Ok(summary) = client.chat(prompt, None, |_| {}).await {
+                    if let Ok(summary) = client.chat(prompt, None).await {
                         let summary_text = summary.content_as_str();
                         if summary_text.chars().count() <= 1500 {
                             // Success! Save to Layer 3
