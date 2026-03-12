@@ -84,6 +84,11 @@ struct SettingsRenderScene {
     hash: u64,
 }
 
+struct SettingsGpuPrototypeScene {
+    cpu_fallback_scene: SettingsRenderScene,
+    backend_label: &'static str,
+}
+
 trait SettingsRendererBackend {
     type Scene;
 
@@ -340,6 +345,26 @@ struct SettingsCpuRenderer;
 
 struct SettingsGpuPrototypeRenderer;
 
+impl SettingsGpuPrototypeRenderer {
+    fn build_gpu_scene(input: SettingsRenderInput, hash: u64) -> SettingsGpuPrototypeScene {
+        SettingsGpuPrototypeScene {
+            cpu_fallback_scene: SettingsRenderScene { input, hash },
+            backend_label: "windows-gpu-prototype",
+        }
+    }
+
+    fn render_with_cpu_fallback(
+        buffer: &mut [u32],
+        scene: SettingsGpuPrototypeScene,
+    ) -> RenderResult {
+        tracing::debug!(
+            "SettingsGpuPrototypeRenderer fallback render via {}",
+            scene.backend_label
+        );
+        SettingsCpuRenderer::render(buffer, scene.cpu_fallback_scene)
+    }
+}
+
 impl SettingsRendererBackend for SettingsCpuRenderer {
     type Scene = SettingsRenderScene;
 
@@ -539,14 +564,14 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
 }
 
 impl SettingsRendererBackend for SettingsGpuPrototypeRenderer {
-    type Scene = SettingsRenderScene;
+    type Scene = SettingsGpuPrototypeScene;
 
     fn build_scene(input: SettingsRenderInput, hash: u64) -> Self::Scene {
-        SettingsCpuRenderer::build_scene(input, hash)
+        Self::build_gpu_scene(input, hash)
     }
 
     fn render(buffer: &mut [u32], scene: Self::Scene) -> RenderResult {
-        SettingsCpuRenderer::render(buffer, scene)
+        Self::render_with_cpu_fallback(buffer, scene)
     }
 }
 
