@@ -108,21 +108,47 @@ impl SettingsGpuPrototypeState {
         self.initialized = true;
         self.last_frame_size = Some((input.w, input.h));
     }
+
+    fn snapshot(&self) -> SettingsGpuPrototypeSnapshot {
+        SettingsGpuPrototypeSnapshot {
+            initialized: self.initialized,
+            last_frame_size: self.last_frame_size,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SettingsGpuPrototypeSnapshot {
+    initialized: bool,
+    last_frame_size: Option<(u32, u32)>,
 }
 
 struct SettingsWorkerRuntime {
     gpu_prototype: SettingsGpuPrototypeState,
+    last_renderer_kind: SettingsRendererKind,
 }
 
 impl SettingsWorkerRuntime {
     fn new() -> Self {
         Self {
             gpu_prototype: SettingsGpuPrototypeState::new(),
+            last_renderer_kind: SettingsRendererKind::Cpu,
         }
     }
 
+    fn select_renderer_kind(&self, requested: SettingsRendererKind) -> SettingsRendererKind {
+        requested
+    }
+
+    fn gpu_snapshot(&self) -> SettingsGpuPrototypeSnapshot {
+        self.gpu_prototype.snapshot()
+    }
+
     fn render_request(&mut self, req: &mut RenderRequest) -> RenderResult {
-        match req.renderer_kind {
+        let renderer_kind = self.select_renderer_kind(req.renderer_kind);
+        self.last_renderer_kind = renderer_kind;
+
+        match renderer_kind {
             SettingsRendererKind::Cpu => render_with_backend::<SettingsCpuRenderer>(
                 &mut req.buffer,
                 req.input.clone(),
@@ -625,6 +651,13 @@ impl SettingsWindow {
                 }
 
                 let res = runtime.render_request(&mut req);
+                let gpu_snapshot = runtime.gpu_snapshot();
+                tracing::debug!(
+                    "Settings worker rendered with {:?}; gpu prototype initialized={}, last_frame_size={:?}",
+                    runtime.last_renderer_kind,
+                    gpu_snapshot.initialized,
+                    gpu_snapshot.last_frame_size
+                );
                 {
                     let mut lock = rb_ptr.lock().unwrap();
                     *lock = Some(res);
@@ -720,6 +753,10 @@ impl SettingsWindow {
         if !self.redraw_pending.replace(true) {
             self.window.request_redraw();
         }
+    }
+
+    fn selected_renderer_kind(&self) -> SettingsRendererKind {
+        self.renderer_kind
     }
 
     pub fn request_redraw_actual(&self) {
@@ -863,7 +900,7 @@ impl SettingsWindow {
             input,
             hash: plan.base_state_hash,
             buffer: pixels,
-            renderer_kind: self.renderer_kind,
+            renderer_kind: self.selected_renderer_kind(),
         });
     }
 
