@@ -70,10 +70,48 @@ struct SettingsRedrawPlan {
     current_hash: u64,
 }
 
+struct SettingsRenderScene {
+    input: SettingsRenderInput,
+    hash: u64,
+}
+
+struct SettingsSurfacePresenter;
+
+impl SettingsSurfacePresenter {
+    fn present_background<'a>(
+        surface: &'a mut Surface<Rc<Window>, Rc<Window>>,
+        width: u32,
+        height: u32,
+        pixels: &[u32],
+    ) -> Result<softbuffer::Buffer<'a, Rc<Window>, Rc<Window>>, String> {
+        let mut buffer = surface
+            .buffer_mut()
+            .map_err(|e| format!("Failed to get surface buffer for composition: {}", e))?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                pixels.as_ptr(),
+                buffer.as_mut_ptr(),
+                (width * height) as usize,
+            );
+        }
+        Ok(buffer)
+    }
+
+    fn present_final(buffer: softbuffer::Buffer<'_, Rc<Window>, Rc<Window>>) {
+        let _ = buffer.present();
+    }
+}
+
 struct SettingsCpuRenderer;
 
 impl SettingsCpuRenderer {
-    fn render(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) -> RenderResult {
+    fn build_scene(input: SettingsRenderInput, hash: u64) -> SettingsRenderScene {
+        SettingsRenderScene { input, hash }
+    }
+
+    fn render(buffer: &mut [u32], scene: SettingsRenderScene) -> RenderResult {
+        let input = scene.input;
+        let hash = scene.hash;
         let w = input.w;
         let h = input.h;
         let mut vh = 0.0;
@@ -425,7 +463,8 @@ impl SettingsWindow {
                     req = next_req;
                 }
 
-                let res = SettingsCpuRenderer::render(&mut req.buffer, req.input, req.hash);
+                let scene = SettingsCpuRenderer::build_scene(req.input, req.hash);
+                let res = SettingsCpuRenderer::render(&mut req.buffer, scene);
                 {
                     let mut lock = rb_ptr.lock().unwrap();
                     *lock = Some(res);
@@ -839,13 +878,19 @@ impl SettingsWindow {
         };
 
         if let Some(res) = background_result {
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    res.pixels.as_ptr(),
-                    buffer.as_mut_ptr(),
-                    (plan.width * plan.height) as usize,
-                );
-            }
+            drop(buffer);
+            buffer = match SettingsSurfacePresenter::present_background(
+                &mut self.surface,
+                plan.width,
+                plan.height,
+                &res.pixels,
+            ) {
+                Ok(buffer) => buffer,
+                Err(e) => {
+                    tracing::error!("{}. Skipping frame.", e);
+                    return;
+                }
+            };
 
             let mut idle = self.idle_buffers.lock().unwrap();
             if idle.len() < 2 {
@@ -923,7 +968,7 @@ impl SettingsWindow {
                         self.content_height,
                         self.scroll_offset,
                     );
-                    buffer.present().unwrap();
+                    SettingsSurfacePresenter::present_final(buffer);
                     return;
                 }
             }
@@ -964,7 +1009,7 @@ impl SettingsWindow {
         }
 
         self.last_state_hash = current_hash;
-        buffer.present().unwrap();
+        SettingsSurfacePresenter::present_final(buffer);
     }
 
     pub fn handle_click(
