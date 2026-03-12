@@ -414,8 +414,9 @@ pub fn draw_rect(
     let surface_w_usize = surface_w as usize;
     let rect_w = (max_x - start_x) as usize;
 
-    // OPTIMIZATION: Use parallel chunks only for large enough rects
-    if (end_y_idx - start_y_idx) * rect_w > 16384 {
+    // OPTIMIZATION: Parallelization threshold tuned. 
+    // Small rects (most pet renders) are faster on single thread due to context switch overhead.
+    if (end_y_idx - start_y_idx) * rect_w > 65536 {
         buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize]
             .par_chunks_mut(surface_w_usize)
             .for_each(|row| {
@@ -1470,24 +1471,25 @@ pub fn blit_32bit_premultiplied(
         }
 
         // 4. Process trailing pixels
-        while i < copy_len {
-            let s = src_slice[i];
-            let a = (s >> 24) & 0xFF;
+        if i < copy_len {
+            for j in i..copy_len {
+                let s = src_slice[j];
+                let a = (s >> 24) & 0xFF;
 
-            if a == 255 {
-                dest_slice[i] = s;
-            } else if a > 0 {
-                let d = dest_slice[i];
-                let inv_a = 255 - a;
-                let rb_dest = d & 0x00FF00FF;
-                let g_dest = d & 0x0000FF00;
-                let rb_src = s & 0x00FF00FF;
-                let g_src = s & 0x0000FF00;
-                let rb_res = rb_src + ((rb_dest * inv_a) >> 8);
-                let g_res = g_src + ((g_dest * inv_a) >> 8);
-                dest_slice[i] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
+                if a == 255 {
+                    dest_slice[j] = s;
+                } else if a > 0 {
+                    let d = dest_slice[j];
+                    let inv_a = 255 - a;
+                    let rb_dest = d & 0x00FF00FF;
+                    let g_dest = d & 0x0000FF00;
+                    let rb_src = s & 0x00FF00FF;
+                    let g_src = s & 0x0000FF00;
+                    let rb_res = rb_src + ((rb_dest * inv_a) >> 8);
+                    let g_res = g_src + ((g_dest * inv_a) >> 8);
+                    dest_slice[j] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
+                }
             }
-            i += 1;
         }
     }
 }

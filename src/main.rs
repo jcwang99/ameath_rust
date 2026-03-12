@@ -382,6 +382,10 @@ fn main() {
         lru::LruCache::new(std::num::NonZeroUsize::new(16).unwrap());
     let mut is_hovered = false;
 
+    // Performance Optimization: Cache window dimensions
+    let mut last_win_w = 0u32;
+    let mut last_win_h = 0u32;
+
     event_loop
         .run(move |event, elwt| {
             // Control flow is managed in AboutToWait logic
@@ -1466,8 +1470,15 @@ fn main() {
                         needs_pet_redraw = true;
                     }
 
-                    
                     if needs_pet_redraw {
+                        // CRITICAL PERFORMANCE OPTIMIZATION: Only resize if dimensions ACTUALLY changed.
+                        // window.request_inner_size is a VERY heavy call in Windows.
+                        if win_w != last_win_w || win_h != last_win_h {
+                            let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(win_w, win_h));
+                            last_win_w = win_w;
+                            last_win_h = win_h;
+                        }
+
                         last_frame_idx = pet.current_frame_idx;
                         last_loading_frame_idx = loading_frame_idx;
                         last_render_pet_off = (pet_off_x, pet_off_y);
@@ -1475,9 +1486,6 @@ fn main() {
                         last_facing_right = pet.facing_right;
                         last_window_pos = target_pos;
                         last_processed_mouse = current_mouse;
-                        
-                        // Sync physical window size using request_inner_size (used in chat_window)
-                        let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(win_w, win_h));
                         
                         // Verification: check if id() works
                         let _ = window.id();
