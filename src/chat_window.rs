@@ -4,7 +4,7 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 use winit::{
     dpi::{LogicalPosition, PhysicalSize},
-    event::{ElementState, KeyEvent, WindowEvent},
+    event::{ElementState, KeyEvent, WindowEvent, MouseButton},
     event_loop::EventLoopWindowTarget,
     keyboard::{Key, NamedKey},
     window::{Window, WindowBuilder, WindowLevel},
@@ -56,6 +56,7 @@ pub struct ChatWindow {
     image_tx: std::sync::mpsc::Sender<ImageAsyncMsg>,
     proxy: winit::event_loop::EventLoopProxy<()>,
     cursor_byte_idx: usize,
+    pub selection_start: Option<usize>,
     // Optimization: Cache layout
     cached_layout: Vec<Vec<PositionedGlyph<'static>>>,
     cached_line_heights: Vec<f32>,
@@ -64,6 +65,7 @@ pub struct ChatWindow {
     text_buffer_w: u32,
     text_buffer_h: u32,
     ignore_next_char: bool,
+    is_selecting: bool,
 }
 
 pub enum ChatAction {
@@ -120,6 +122,7 @@ impl ChatWindow {
             image_rx,
             proxy,
             cursor_byte_idx: 0,
+            selection_start: None,
             cached_layout: Vec::new(),
             cached_line_heights: Vec::new(),
             layout_valid: false,
@@ -127,6 +130,7 @@ impl ChatWindow {
             text_buffer_w: 0,
             text_buffer_h: 0,
             ignore_next_char: false,
+            is_selecting: false,
         }
     }
 
@@ -155,6 +159,7 @@ impl ChatWindow {
         self.is_visible = true;
         self.input_text.clear();
         self.cursor_byte_idx = 0;
+        self.selection_start = None;
         self.slots.clear();
         self.ignore_next_char = true; // Use this to swallow the hotkey leak
         self.cursor_blink_start = std::time::Instant::now();
@@ -219,8 +224,10 @@ impl ChatWindow {
                         return ChatAction::None;
                     }
                     self.ignore_next_char = false;
+                    self.delete_selection();
                     self.input_text.insert_str(self.cursor_byte_idx, text);
                     self.cursor_byte_idx += text.len();
+                    self.selection_start = None;
                     self.cursor_blink_start = std::time::Instant::now();
                     self.layout_valid = false;
                     self.request_redraw();
@@ -228,32 +235,50 @@ impl ChatWindow {
                 _ => {}
             },
             WindowEvent::MouseInput {
-                state: ElementState::Pressed,
+                state,
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
-                if self.plus_button_hovered {
-                    self.trigger_upload();
-                } else if let Some(idx) = self.get_thumbnail_at_mouse() {
-                    self.remove_image(idx);
-                } else {
-                    // Check if click is in text area
-                    let padding = 10.0;
-                    let text_y_offset = if self.slots.is_empty() { 0.0 } else { 100.0 };
-                    let (_mx, my) = self.mouse_pos;
-                    let window_size = self.window.inner_size();
-                    
-                    // Button row height is 40. Text area is roughly between top+offset and bottom-40
-                    if my > padding + text_y_offset && my < (window_size.height as f64 - 40.0) {
-                        self.set_cursor_at_mouse();
+                if *state == ElementState::Pressed {
+                    self.is_selecting = true;
+                    if self.plus_button_hovered {
+                        self.trigger_upload();
+                    } else if let Some(idx) = self.get_thumbnail_at_mouse() {
+                        self.remove_image(idx);
                     } else {
-                        let _ = self.window.drag_window();
+                        // Check if click is in text area
+                        let padding = 10.0;
+                        let text_y_offset = if self.slots.is_empty() { 0.0 } else { 100.0 };
+                        let (_mx, my) = self.mouse_pos;
+                        let window_size = self.window.inner_size();
+                        
+                        // Button row height is 40. Text area is roughly between top+offset and bottom-40
+                        if my > padding + text_y_offset && my < (window_size.height as f64 - 40.0) {
+                            self.set_cursor_at_mouse();
+                            self.selection_start = Some(self.cursor_byte_idx);
+                        } else {
+                            self.selection_start = None;
+                            let _ = self.window.drag_window();
+                        }
+                    }
+                } else {
+                    // Released
+                    self.is_selecting = false;
+                    if let Some(start) = self.selection_start {
+                        if start == self.cursor_byte_idx {
+                            self.selection_start = None;
+                        }
                     }
                 }
+                self.request_redraw();
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_pos = (position.x, position.y);
                 self.update_hover_states();
+                if self.is_selecting {
+                    self.set_cursor_at_mouse();
+                    self.request_redraw();
+                }
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -292,7 +317,13 @@ impl ChatWindow {
                         return ChatAction::Close;
                     }
                     Key::Named(NamedKey::Backspace) => {
-                        if self.cursor_byte_idx > 0 {
+                        if self.selection_start.is_some() && self.selection_start != Some(self.cursor_byte_idx) {
+                            self.delete_selection();
+                            self.selection_start = None;
+                            self.cursor_blink_start = std::time::Instant::now();
+                            self.layout_valid = false;
+                            self.request_redraw();
+                        } else if self.cursor_byte_idx > 0 {
                             // Find previous character start
                             if let Some((idx, _)) = self.input_text[..self.cursor_byte_idx]
                                 .char_indices()
@@ -313,6 +344,7 @@ impl ChatWindow {
                                 .next_back()
                             {
                                 self.cursor_byte_idx = idx;
+                                self.selection_start = None;
                                 self.cursor_blink_start = std::time::Instant::now();
                                 self.request_redraw();
                             }
@@ -328,6 +360,7 @@ impl ChatWindow {
                             } else {
                                 self.cursor_byte_idx = self.input_text.len();
                             }
+                            self.selection_start = None;
                             self.cursor_blink_start = std::time::Instant::now();
                             self.request_redraw();
                         }
@@ -353,18 +386,30 @@ impl ChatWindow {
                             return ChatAction::None;
                         }
 
+                        if c_lower == "a" && has_ctrl {
+                            self.selection_start = Some(0);
+                            self.cursor_byte_idx = self.input_text.len();
+                            self.cursor_blink_start = std::time::Instant::now();
+                            self.request_redraw();
+                            return ChatAction::None;
+                        }
+
                         // Filter control characters and Alt combinations (to prevent hotkey leakage)
                         if !c.chars().any(|ch| ch.is_control()) && !modifiers.alt_key() {
+                            self.delete_selection();
                             self.input_text.insert_str(self.cursor_byte_idx, c);
                             self.cursor_byte_idx += c.len();
+                            self.selection_start = None;
                             self.cursor_blink_start = std::time::Instant::now();
                             self.layout_valid = false;
                             self.request_redraw();
                         }
                     }
                     Key::Named(NamedKey::Space) => {
+                        self.delete_selection();
                         self.input_text.insert(self.cursor_byte_idx, ' ');
                         self.cursor_byte_idx += 1;
+                        self.selection_start = None;
                         self.cursor_blink_start = std::time::Instant::now();
                         self.layout_valid = false;
                         self.request_redraw();
@@ -546,6 +591,20 @@ impl ChatWindow {
             }
         }
         None
+    }
+
+    fn delete_selection(&mut self) {
+        if let Some(start) = self.selection_start {
+            if start != self.cursor_byte_idx {
+                let min = start.min(self.cursor_byte_idx);
+                let max = start.max(self.cursor_byte_idx);
+                if min < self.input_text.len() {
+                    let end = max.min(self.input_text.len());
+                    self.input_text.replace_range(min..end, "");
+                    self.cursor_byte_idx = min;
+                }
+            }
+        }
     }
 
     fn remove_image(&mut self, index: usize) {
@@ -914,6 +973,64 @@ impl ChatWindow {
                     if px < buf_w && py < buf_h {
                         let is_plus = (tx > 10 && tx < 22 && ty >= 15 && ty <= 16) || (ty > 10 && ty < 22 && tx >= 15 && tx <= 16);
                         buffer[py * buf_w + px] = if is_plus { 0xFFBBBBBB } else { plus_bg };
+                    }
+                }
+            }
+        }
+
+        // Draw Selection Highlight
+        if let Some(sel_start) = self.selection_start {
+            if sel_start != self.cursor_byte_idx {
+                let sel_min = sel_start.min(self.cursor_byte_idx);
+                let sel_max = sel_start.max(self.cursor_byte_idx);
+                
+                let _text_y_base = if self.slots.is_empty() { 0.0 } else { 100.0 };
+                let mut byte_offset = 0;
+                let mut char_iter = self.input_text.chars();
+
+                for line in &self.cached_layout {
+                    let mut line_min_x = f32::MAX;
+                    let mut line_max_x = f32::MIN;
+                    let mut has_intersection = false;
+                    let mut line_baseline_y = 0.0;
+
+                    for glyph in line {
+                        let char_len = if let Some(c) = char_iter.next() { c.len_utf8() } else { 0 };
+                        let glyph_start = byte_offset;
+                        let glyph_end = byte_offset + char_len;
+                        byte_offset += char_len;
+
+                        if glyph_start < sel_max && glyph_end > sel_min {
+                            let pos = glyph.position();
+                            let width = glyph.unpositioned().h_metrics().advance_width;
+                            line_min_x = line_min_x.min(pos.x);
+                            line_max_x = line_max_x.max(pos.x + width);
+                            line_baseline_y = pos.y;
+                            has_intersection = true;
+                        }
+                    }
+
+                    if has_intersection {
+                        let rx = line_min_x as i32;
+                        let ry = (line_baseline_y - v_metrics.ascent) as i32;
+                        let rw = (line_max_x - line_min_x) as u32;
+                        let rh = (v_metrics.ascent - v_metrics.descent) as u32;
+
+                        for sy in ry..(ry + rh as i32) {
+                            for sx in rx..(rx + rw as i32) {
+                                if sx >= 0 && sx < buf_w as i32 && sy >= 0 && sy < buf_h as i32 {
+                                    let idx = sy as usize * buf_w + sx as usize;
+                                    let bg = buffer[idx];
+                                    let sel_color = 0x00AADDFF; // Selection blue
+                                    let alpha = 120; // Semi-transparent
+                                    
+                                    let r = (((sel_color >> 16) & 0xFF) * alpha + ((bg >> 16) & 0xFF) * (255 - alpha)) / 255;
+                                    let g = (((sel_color >> 8) & 0xFF) * alpha + ((bg >> 8) & 0xFF) * (255 - alpha)) / 255;
+                                    let b = ((sel_color & 0xFF) * alpha + (bg & 0xFF) * (255 - alpha)) / 255;
+                                    buffer[idx] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+                                }
+                            }
+                        }
                     }
                 }
             }
