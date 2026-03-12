@@ -207,6 +207,7 @@ impl ChatWindow {
             }
         }
         if got_new_images {
+            self.layout_valid = false;
             self.request_redraw();
         }
 
@@ -445,6 +446,7 @@ impl ChatWindow {
                     } else {
                         self.slots.pop();
                     }
+                    self.layout_valid = false;
                     self.request_redraw();
                     return;
                 }
@@ -495,6 +497,7 @@ impl ChatWindow {
                             } else {
                                 self.slots.pop();
                             }
+                            self.layout_valid = false;
                             self.request_redraw();
                             return;
                         }
@@ -548,6 +551,7 @@ impl ChatWindow {
     fn remove_image(&mut self, index: usize) {
         if index < self.slots.len() {
             self.slots.remove(index);
+            self.layout_valid = false;
             self.request_redraw();
         }
     }
@@ -645,6 +649,7 @@ impl ChatWindow {
             status: ImageStatus::Processing,
         });
         Self::process_image_async(path, slot_id, self.image_tx.clone(), self.proxy.clone());
+        self.layout_valid = false;
         self.request_redraw();
     }
 
