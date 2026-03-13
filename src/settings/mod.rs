@@ -1143,6 +1143,7 @@ impl SettingsGpuPrototypeRenderer {
                         "ai_standard_input_chrome",
                         "ai_eye_icon_chrome",
                         "ai_profile_button_base_chrome",
+                        "ai_profile_symbol_text",
                         "ai_tts_ref_button_chrome",
                         "ai_response_mode_chrome",
                         "ai_response_mode_label_text",
@@ -1294,6 +1295,37 @@ impl SettingsGpuPrototypeRenderer {
                         let w = w_design * render_scale;
                         let h = 45.0 * render_scale;
                         content_cards.push((x, y, x + w, y + h, 8.0 * render_scale, COLOR_BG_CARD));
+                    }
+                    let profile_symbols = [
+                        (0usize, "<", 230.0 + 10.0, 8.0, 20.0, COLOR_TEXT_MAIN),
+                        (1usize, ">", 430.0 + 10.0, 8.0, 20.0, COLOR_TEXT_MAIN),
+                        (2usize, "+", 480.0 + 10.0, 8.0, 20.0, COLOR_TEXT_MAIN),
+                        (3usize, "-", 525.0 + 14.0, 6.0, 24.0, 0x00FF6666),
+                    ];
+                    for (btn_idx, symbol, x, y, size, color) in profile_symbols {
+                        let (hover_min_x, hover_max_x) = match btn_idx {
+                            0 => (230.0, 260.0),
+                            1 => (430.0, 460.0),
+                            2 => (480.0, 515.0),
+                            _ => (525.0, 560.0),
+                        };
+                        let is_hover = mouse_lx >= hover_min_x
+                            && mouse_lx <= hover_max_x
+                            && content_mouse_y >= 55.0
+                            && content_mouse_y <= 100.0;
+                        if is_hover || scene.cpu_fallback_scene.input.pressed_btn == Some(btn_idx) {
+                            continue;
+                        }
+                        text_runs.push(SettingsGpuTextRun {
+                            text: symbol.to_string(),
+                            x: x * render_scale + off_x,
+                            y: (120.0 + 30.0 + 25.0 + y) * render_scale
+                                + off_y
+                                + scene.cpu_fallback_scene.input.scroll_offset * render_scale,
+                            font_size: size * render_scale,
+                            color,
+                            bold: false,
+                        });
                     }
 
                     let ref_x = 230.0 * render_scale + off_x;
@@ -1688,7 +1720,7 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     gpu_eye_icon_chrome: scene.draw_static_blocks == false,
                     gpu_dialog_chrome: false,
                     gpu_toast_chrome: false,
-                    gpu_profile_symbol_text: false,
+                    gpu_profile_symbol_text: scene.draw_static_text == false,
                     gpu_response_mode_label_text: scene.draw_static_text == false,
                     gpu_profile_title_text: scene.draw_static_text == false,
                 };

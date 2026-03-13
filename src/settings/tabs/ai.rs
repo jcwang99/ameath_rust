@@ -510,7 +510,7 @@ pub fn draw(
                     h,
                 );
             }
-            if !state.gpu_profile_symbol_text {
+            if !state.gpu_profile_symbol_text || is_prev_hover || state.pressed_btn == Some(0) {
                 draw_text_dw_ex(
                     buffer,
                     w,
@@ -555,7 +555,7 @@ pub fn draw(
                     h,
                 );
             }
-            if !state.gpu_profile_symbol_text {
+            if !state.gpu_profile_symbol_text || is_next_hover || state.pressed_btn == Some(1) {
                 draw_text_dw_ex(
                     buffer,
                     w,
@@ -602,7 +602,7 @@ pub fn draw(
                     h,
                 );
             }
-            if !state.gpu_profile_symbol_text {
+            if !state.gpu_profile_symbol_text || is_add_hover || state.pressed_btn == Some(2) {
                 draw_text_dw_ex(
                     buffer,
                     w,
@@ -649,7 +649,7 @@ pub fn draw(
                     h,
                 );
             }
-            if !state.gpu_profile_symbol_text {
+            if !state.gpu_profile_symbol_text || is_del_hover || state.pressed_btn == Some(3) {
                 draw_text_dw_ex(
                     buffer,
                     w,
