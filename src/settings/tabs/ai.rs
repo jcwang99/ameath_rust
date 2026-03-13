@@ -31,8 +31,8 @@ pub struct AiTabState<'a> {
     pub gpu_profile_button_chrome: bool,
     pub gpu_response_mode_chrome: bool,
     pub gpu_tts_ref_button_chrome: bool,
-    pub gpu_checkbox_chrome: bool,
     pub gpu_square_checkbox_chrome: bool,
+    pub gpu_multimodal_outer_chrome: bool,
     pub gpu_eye_icon_chrome: bool,
     pub gpu_dialog_chrome: bool,
     pub gpu_toast_chrome: bool,
@@ -730,13 +730,13 @@ pub fn draw(
             };
 
             // Draw border
-            if !state.gpu_checkbox_chrome {
+            if !state.gpu_multimodal_outer_chrome {
                 draw_rounded_rect(
                     buffer, w, fx_abs, toggle_y, toggle_dim, toggle_dim, 8, toggle_bg, w, h,
                 );
             }
             // Draw inner box for border effect
-            if !state.gpu_checkbox_chrome
+            if !state.gpu_multimodal_outer_chrome
                 && !is_multimodal
                 && state.pressed_btn != Some(101)
                 && !is_hover

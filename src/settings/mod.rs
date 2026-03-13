@@ -1141,6 +1141,7 @@ impl SettingsGpuPrototypeRenderer {
                         "ai_static_labels",
                         "ai_profile_title_text",
                         "ai_standard_input_chrome",
+                        "ai_multimodal_outer_chrome",
                         "ai_square_checkbox_chrome",
                         "ai_eye_icon_chrome",
                         "ai_profile_button_base_chrome",
@@ -1275,6 +1276,59 @@ impl SettingsGpuPrototypeRenderer {
                         });
                     }
 
+                    let mouse_lx =
+                        (scene.cpu_fallback_scene.input.mouse_pos.0 as f32 - off_x) / render_scale;
+                    let mouse_ly =
+                        (scene.cpu_fallback_scene.input.mouse_pos.1 as f32 - off_y) / render_scale;
+                    let content_mouse_y =
+                        mouse_ly - 120.0 - scene.cpu_fallback_scene.input.scroll_offset;
+
+                    let multimodal_hover = mouse_lx >= 565.0
+                        && mouse_lx <= 610.0
+                        && content_mouse_y >= 55.0
+                        && content_mouse_y <= 100.0;
+                    let multimodal_enabled = scene
+                        .cpu_fallback_scene
+                        .input
+                        .ai_config
+                        .active_profile()
+                        .is_multimodal;
+                    let multimodal_bg = if multimodal_enabled
+                        || scene.cpu_fallback_scene.input.pressed_btn == Some(101)
+                    {
+                        COLOR_PRIMARY
+                    } else if multimodal_hover {
+                        0x00444444
+                    } else {
+                        COLOR_TEXT_SEC
+                    };
+                    let mm_x = 565.0 * render_scale + off_x;
+                    let mm_y = (120.0 + 30.0 + 25.0) * render_scale
+                        + off_y
+                        + scene.cpu_fallback_scene.input.scroll_offset * render_scale;
+                    let mm_dim = 45.0 * render_scale;
+                    content_cards.push((
+                        mm_x,
+                        mm_y,
+                        mm_x + mm_dim,
+                        mm_y + mm_dim,
+                        8.0 * render_scale,
+                        multimodal_bg,
+                    ));
+                    if !multimodal_enabled
+                        && scene.cpu_fallback_scene.input.pressed_btn != Some(101)
+                        && !multimodal_hover
+                    {
+                        content_cards.push((
+                            mm_x + 1.0,
+                            mm_y + 1.0,
+                            mm_x + mm_dim - 1.0,
+                            mm_y + mm_dim - 1.0,
+                            7.0 * render_scale,
+                            COLOR_BG_CARD,
+                        ));
+                    }
+
                     let ai_fields = [
                         (230.0, 130.0, 500.0),
                         (230.0, 230.0, 500.0),
@@ -1385,12 +1439,6 @@ impl SettingsGpuPrototypeRenderer {
                         }
                     }
 
-                    let mouse_lx =
-                        (scene.cpu_fallback_scene.input.mouse_pos.0 as f32 - off_x) / render_scale;
-                    let mouse_ly =
-                        (scene.cpu_fallback_scene.input.mouse_pos.1 as f32 - off_y) / render_scale;
-                    let content_mouse_y =
-                        mouse_ly - 120.0 - scene.cpu_fallback_scene.input.scroll_offset;
                     let profile_buttons = [
                         (0usize, 230.0, 30.0, 30.0),
                         (1usize, 430.0, 30.0, 30.0),
@@ -1843,8 +1891,8 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     gpu_profile_button_chrome: scene.draw_static_blocks == false,
                     gpu_response_mode_chrome: scene.draw_static_blocks == false,
                     gpu_tts_ref_button_chrome: scene.draw_static_blocks == false,
-                    gpu_checkbox_chrome: false,
                     gpu_square_checkbox_chrome: scene.draw_static_blocks == false,
+                    gpu_multimodal_outer_chrome: scene.draw_static_blocks == false,
                     gpu_eye_icon_chrome: scene.draw_static_blocks == false,
                     gpu_dialog_chrome: false,
                     gpu_toast_chrome: false,
