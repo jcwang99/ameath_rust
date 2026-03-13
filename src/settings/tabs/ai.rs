@@ -25,6 +25,7 @@ pub struct AiTabState<'a> {
     pub show_delete_dialog: bool,
     pub notification: Option<(String, std::time::Instant)>,
     pub field_scroll_offsets: [f32; 18],
+    pub draw_card_background: bool,
 }
 
 pub fn draw(
@@ -56,7 +57,10 @@ pub fn draw(
     // 1. Background (Directly into main buffer, clipped to viewport)
     let card_start_x = s(210) as i32;
     let card_box_h = card_h as i32;
-    if (card_y_raw + card_box_h) >= min_y_vis && card_y_raw <= max_y_vis {
+    if state.draw_card_background
+        && (card_y_raw + card_box_h) >= min_y_vis
+        && card_y_raw <= max_y_vis
+    {
         draw_rounded_rect(
             buffer,
             w,

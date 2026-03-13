@@ -1145,6 +1145,7 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     show_delete_dialog: input.show_delete_dialog,
                     notification: input.notification,
                     field_scroll_offsets: input.field_scroll_offsets,
+                    draw_card_background: scene.draw_static_blocks,
                 };
                 let (v, c, rect) = tabs::ai::draw(
                     buffer,
