@@ -813,6 +813,7 @@ impl SettingsGpuPrototypeRenderer {
                         "general_cards",
                         "general_static_titles",
                         "general_behavior_label_text",
+                        "general_monitor_label_text",
                         "general_window_layer_label_text",
                         "general_slider_chrome",
                         "general_behavior_chrome",
@@ -1104,6 +1105,23 @@ impl SettingsGpuPrototypeRenderer {
                                 COLOR_BG_LIGHT
                             },
                         ));
+                        let display_name = if name.chars().count() > 8 {
+                            format!("{}...", name.chars().take(5).collect::<String>())
+                        } else {
+                            name.clone()
+                        };
+                        text_runs.push(SettingsGpuTextRun {
+                            text: display_name,
+                            x: btn_x + 10.0 * render_scale,
+                            y: btn_y + 18.0 * render_scale,
+                            font_size: 12.0 * render_scale,
+                            color: if is_active {
+                                0x00FFFFFF
+                            } else {
+                                COLOR_TEXT_MAIN
+                            },
+                            bold: false,
+                        });
                     }
 
                     let card6_y = (825.0 + 60.0 + monitors_h + 20.0) * render_scale
@@ -1928,6 +1946,7 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     gpu_window_layer_chrome: scene.draw_static_blocks == false,
                     gpu_music_input_chrome: scene.draw_static_blocks == false,
                     gpu_monitor_chrome: scene.draw_static_blocks == false,
+                    gpu_monitor_label_text: scene.draw_static_text == false,
                     gpu_startup_toggle_chrome: scene.draw_static_blocks == false,
                 };
                 let (v, c, _) =

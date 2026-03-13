@@ -21,6 +21,7 @@ pub struct GeneralTabState<'a> {
     pub gpu_window_layer_chrome: bool,
     pub gpu_music_input_chrome: bool,
     pub gpu_monitor_chrome: bool,
+    pub gpu_monitor_label_text: bool,
     pub gpu_startup_toggle_chrome: bool,
 }
 
@@ -458,16 +459,18 @@ pub fn draw(
             name.clone()
         };
 
-        draw_text(
-            buffer,
-            w,
-            &[],
-            &display_name,
-            btn_x + sc(10.0) as i32,
-            btn_y + sc(18.0) as i32,
-            sc(12.0),
-            text_col,
-        );
+        if !state.gpu_monitor_label_text {
+            draw_text(
+                buffer,
+                w,
+                &[],
+                &display_name,
+                btn_x + sc(10.0) as i32,
+                btn_y + sc(18.0) as i32,
+                sc(12.0),
+                text_col,
+            );
+        }
     }
 
     // 6. Auto-Start
