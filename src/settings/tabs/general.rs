@@ -11,6 +11,7 @@ pub struct GeneralTabState<'a> {
     pub scroll_offset: f32,
     pub available_monitors: &'a [(String, String)],
     pub current_monitor_name: Option<&'a str>,
+    pub draw_control_chrome: bool,
 }
 
 pub fn draw(
@@ -68,50 +69,56 @@ pub fn draw(
     let track_h = sc(6.0) as u32;
 
     // Background track
-    draw_rounded_rect(
-        buffer,
-        w,
-        track_x,
-        track_y,
-        track_w,
-        track_h,
-        (3.0 * scale) as u32,
-        COLOR_BG_LIGHT,
-        w,
-        h,
-    );
+    if state.draw_control_chrome {
+        draw_rounded_rect(
+            buffer,
+            w,
+            track_x,
+            track_y,
+            track_w,
+            track_h,
+            (3.0 * scale) as u32,
+            COLOR_BG_LIGHT,
+            w,
+            h,
+        );
+    }
 
     // Filled track
     let fill_w = (sc(300.0) * progress).max(sc(6.0)) as u32;
-    draw_rounded_rect(
-        buffer,
-        w,
-        track_x,
-        track_y,
-        fill_w,
-        track_h,
-        (3.0 * scale) as u32,
-        COLOR_PRIMARY,
-        w,
-        h,
-    );
+    if state.draw_control_chrome {
+        draw_rounded_rect(
+            buffer,
+            w,
+            track_x,
+            track_y,
+            fill_w,
+            track_h,
+            (3.0 * scale) as u32,
+            COLOR_PRIMARY,
+            w,
+            h,
+        );
+    }
 
     // Knob
     let knob_size = sc(18.0) as u32;
     let knob_x = track_x + fill_w as i32 - (knob_size as i32 / 2);
     let knob_y = track_y + (track_h as i32 / 2) - (knob_size as i32 / 2);
-    draw_rounded_rect(
-        buffer,
-        w,
-        knob_x,
-        knob_y,
-        knob_size,
-        knob_size,
-        (9.0 * scale) as u32,
-        0x00FFFFFF,
-        w,
-        h,
-    );
+    if state.draw_control_chrome {
+        draw_rounded_rect(
+            buffer,
+            w,
+            knob_x,
+            knob_y,
+            knob_size,
+            knob_size,
+            (9.0 * scale) as u32,
+            0x00FFFFFF,
+            w,
+            h,
+        );
+    }
 
     // Value text
     let val_text = format!("{:.2}x", current_scale);
@@ -162,30 +169,32 @@ pub fn draw(
         } else {
             COLOR_BORDER
         };
-        draw_rounded_rect(
-            buffer,
-            w,
-            mx,
-            my,
-            sc(150.0) as u32,
-            sc(55.0) as u32,
-            8,
-            b_col,
-            w,
-            h,
-        );
-        draw_rounded_rect(
-            buffer,
-            w,
-            mx + 2,
-            my + 2,
-            sc(150.0) as u32 - 4,
-            sc(55.0) as u32 - 4,
-            6,
-            COLOR_BG_CARD,
-            w,
-            h,
-        );
+        if state.draw_control_chrome {
+            draw_rounded_rect(
+                buffer,
+                w,
+                mx,
+                my,
+                sc(150.0) as u32,
+                sc(55.0) as u32,
+                8,
+                b_col,
+                w,
+                h,
+            );
+            draw_rounded_rect(
+                buffer,
+                w,
+                mx + 2,
+                my + 2,
+                sc(150.0) as u32 - 4,
+                sc(55.0) as u32 - 4,
+                6,
+                COLOR_BG_CARD,
+                w,
+                h,
+            );
+        }
         draw_text(
             buffer,
             w,
@@ -227,30 +236,32 @@ pub fn draw(
         COLOR_TEXT_MAIN,
     );
     let p_btn_y = card3_y + sc(60.0) as i32;
-    draw_rounded_rect(
-        buffer,
-        w,
-        s(230) as i32,
-        p_btn_y,
-        sc(500.0) as u32,
-        sc(45.0) as u32,
-        8,
-        COLOR_BORDER,
-        w,
-        h,
-    );
-    draw_rounded_rect(
-        buffer,
-        w,
-        s(230) as i32 + 1,
-        p_btn_y + 1,
-        sc(500.0) as u32 - 2,
-        sc(45.0) as u32 - 2,
-        7,
-        COLOR_BG_CARD,
-        w,
-        h,
-    );
+    if state.draw_control_chrome {
+        draw_rounded_rect(
+            buffer,
+            w,
+            s(230) as i32,
+            p_btn_y,
+            sc(500.0) as u32,
+            sc(45.0) as u32,
+            8,
+            COLOR_BORDER,
+            w,
+            h,
+        );
+        draw_rounded_rect(
+            buffer,
+            w,
+            s(230) as i32 + 1,
+            p_btn_y + 1,
+            sc(500.0) as u32 - 2,
+            sc(45.0) as u32 - 2,
+            7,
+            COLOR_BG_CARD,
+            w,
+            h,
+        );
+    }
     let path = current_music_path
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| "Click to select...".to_string());
@@ -303,30 +314,32 @@ pub fn draw(
         } else {
             COLOR_BORDER
         };
-        draw_rounded_rect(
-            buffer,
-            w,
-            mx,
-            my,
-            sc(200.0) as u32,
-            sc(55.0) as u32,
-            8,
-            b_col,
-            w,
-            h,
-        );
-        draw_rounded_rect(
-            buffer,
-            w,
-            mx + 2,
-            my + 2,
-            sc(200.0) as u32 - 4,
-            sc(55.0) as u32 - 4,
-            6,
-            COLOR_BG_CARD,
-            w,
-            h,
-        );
+        if state.draw_control_chrome {
+            draw_rounded_rect(
+                buffer,
+                w,
+                mx,
+                my,
+                sc(200.0) as u32,
+                sc(55.0) as u32,
+                8,
+                b_col,
+                w,
+                h,
+            );
+            draw_rounded_rect(
+                buffer,
+                w,
+                mx + 2,
+                my + 2,
+                sc(200.0) as u32 - 4,
+                sc(55.0) as u32 - 4,
+                6,
+                COLOR_BG_CARD,
+                w,
+                h,
+            );
+        }
         draw_text(
             buffer,
             w,
@@ -390,18 +403,20 @@ pub fn draw(
             COLOR_TEXT_MAIN
         };
 
-        draw_rounded_rect(
-            buffer,
-            w,
-            btn_x,
-            btn_y,
-            sc(100.0) as u32,
-            sc(55.0) as u32,
-            8,
-            bg_col,
-            w,
-            h,
-        );
+        if state.draw_control_chrome {
+            draw_rounded_rect(
+                buffer,
+                w,
+                btn_x,
+                btn_y,
+                sc(100.0) as u32,
+                sc(55.0) as u32,
+                8,
+                bg_col,
+                w,
+                h,
+            );
+        }
 
         let display_name = if name.chars().count() > 8 {
             format!("{}...", name.chars().take(5).collect::<String>())
@@ -468,22 +483,23 @@ pub fn draw(
     };
 
     // Background
-    draw_rounded_rect(
-        buffer, w, toggle_x, toggle_y, toggle_w, toggle_h, 12, bg_color, w, h,
-    );
-    // Knob
-    draw_rounded_rect(
-        buffer,
-        w,
-        knob_x,
-        toggle_y + sc(2.0) as i32,
-        sc(20.0) as u32,
-        sc(20.0) as u32,
-        10,
-        0x00FFFFFF,
-        w,
-        h,
-    );
+    if state.draw_control_chrome {
+        draw_rounded_rect(
+            buffer, w, toggle_x, toggle_y, toggle_w, toggle_h, 12, bg_color, w, h,
+        );
+        draw_rounded_rect(
+            buffer,
+            w,
+            knob_x,
+            toggle_y + sc(2.0) as i32,
+            sc(20.0) as u32,
+            sc(20.0) as u32,
+            10,
+            0x00FFFFFF,
+            w,
+            h,
+        );
+    }
 
     // Content height tracking
     let viewport_height = 600.0;

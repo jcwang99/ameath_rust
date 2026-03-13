@@ -451,6 +451,7 @@ struct SettingsGpuPrototypeSnapshot {
 struct SettingsWorkerRuntime {
     gpu_prototype: SettingsGpuPrototypeState,
     last_renderer_kind: SettingsRendererKind,
+    last_gpu_surface_count: usize,
 }
 
 impl SettingsWorkerRuntime {
@@ -458,6 +459,7 @@ impl SettingsWorkerRuntime {
         Self {
             gpu_prototype: SettingsGpuPrototypeState::new(),
             last_renderer_kind: SettingsRendererKind::Cpu,
+            last_gpu_surface_count: 0,
         }
     }
 
@@ -495,18 +497,23 @@ impl SettingsWorkerRuntime {
         self.last_renderer_kind = renderer_kind;
 
         match renderer_kind {
-            SettingsRendererKind::Cpu => render_with_backend::<SettingsCpuRenderer>(
-                &mut req.buffer,
-                req.input.clone(),
-                req.hash,
-            ),
-            SettingsRendererKind::GpuPrototype => {
-                SettingsGpuPrototypeRenderer::render_with_runtime(
-                    &mut self.gpu_prototype,
+            SettingsRendererKind::Cpu => {
+                self.last_gpu_surface_count = 0;
+                render_with_backend::<SettingsCpuRenderer>(
                     &mut req.buffer,
                     req.input.clone(),
                     req.hash,
                 )
+            }
+            SettingsRendererKind::GpuPrototype => {
+                let (result, surface_count) = SettingsGpuPrototypeRenderer::render_with_runtime(
+                    &mut self.gpu_prototype,
+                    &mut req.buffer,
+                    req.input.clone(),
+                    req.hash,
+                );
+                self.last_gpu_surface_count = surface_count;
+                result
             }
         }
     }
@@ -641,8 +648,9 @@ impl SettingsGpuPrototypeRenderer {
         buffer: &mut [u32],
         input: SettingsRenderInput,
         hash: u64,
-    ) -> RenderResult {
+    ) -> (RenderResult, usize) {
         let scene = Self::build_gpu_scene(input, hash);
+        let mut gpu_surface_count = 0usize;
 
         #[cfg(target_os = "windows")]
         if let Some(resources) = &mut state.resources {
@@ -710,6 +718,192 @@ impl SettingsGpuPrototypeRenderer {
                             COLOR_BG_CARD,
                         ));
                     }
+
+                    let track_x = 230.0 * render_scale + off_x;
+                    let card1_y = 120.0 * render_scale + off_y + scroll_y;
+                    let track_y = card1_y + 75.0 * render_scale;
+                    let track_w = 300.0 * render_scale;
+                    let track_h = 6.0 * render_scale;
+                    let progress = ((scene.cpu_fallback_scene.input.current_scale - 0.1) / 2.9)
+                        .clamp(0.0, 1.0);
+                    let fill_w = (300.0 * render_scale * progress).max(6.0 * render_scale);
+                    content_cards.push((
+                        track_x,
+                        track_y,
+                        track_x + track_w,
+                        track_y + track_h,
+                        3.0 * render_scale,
+                        COLOR_BG_LIGHT,
+                    ));
+                    content_cards.push((
+                        track_x,
+                        track_y,
+                        track_x + fill_w,
+                        track_y + track_h,
+                        3.0 * render_scale,
+                        COLOR_PRIMARY,
+                    ));
+                    let knob_size = 18.0 * render_scale;
+                    let knob_x = track_x + fill_w - knob_size / 2.0;
+                    let knob_y = track_y + track_h / 2.0 - knob_size / 2.0;
+                    content_cards.push((
+                        knob_x,
+                        knob_y,
+                        knob_x + knob_size,
+                        knob_y + knob_size,
+                        9.0 * render_scale,
+                        0x00FFFFFF,
+                    ));
+
+                    let card2_y = 280.0 * render_scale + off_y + scroll_y * render_scale;
+                    let modes = ["Static", "Quiet", "Active", "Clingy"];
+                    for (i, mode) in modes.iter().enumerate() {
+                        let row = i / 2;
+                        let col = i % 2;
+                        let mx = (230.0 + col as f32 * 165.0) * render_scale + off_x;
+                        let my = card2_y + (60.0 + row as f32 * 65.0) * render_scale;
+                        let border = if *mode == scene.cpu_fallback_scene.input.current_mode {
+                            COLOR_PRIMARY
+                        } else {
+                            COLOR_BORDER
+                        };
+                        content_cards.push((
+                            mx,
+                            my,
+                            mx + 150.0 * render_scale,
+                            my + 55.0 * render_scale,
+                            8.0 * render_scale,
+                            border,
+                        ));
+                        content_cards.push((
+                            mx + 2.0,
+                            my + 2.0,
+                            mx + 150.0 * render_scale - 2.0,
+                            my + 55.0 * render_scale - 2.0,
+                            6.0 * render_scale,
+                            COLOR_BG_CARD,
+                        ));
+                    }
+
+                    let card3_y = 505.0 * render_scale + off_y + scroll_y * render_scale;
+                    let p_btn_y = card3_y + 60.0 * render_scale;
+                    let p_btn_x = 230.0 * render_scale + off_x;
+                    let p_btn_w = 500.0 * render_scale;
+                    let p_btn_h = 45.0 * render_scale;
+                    content_cards.push((
+                        p_btn_x,
+                        p_btn_y,
+                        p_btn_x + p_btn_w,
+                        p_btn_y + p_btn_h,
+                        8.0 * render_scale,
+                        COLOR_BORDER,
+                    ));
+                    content_cards.push((
+                        p_btn_x + 1.0,
+                        p_btn_y + 1.0,
+                        p_btn_x + p_btn_w - 1.0,
+                        p_btn_y + p_btn_h - 1.0,
+                        7.0 * render_scale,
+                        COLOR_BG_CARD,
+                    ));
+
+                    let card4_y = 665.0 * render_scale + off_y + scroll_y * render_scale;
+                    let layers = [
+                        (
+                            230.0,
+                            scene.cpu_fallback_scene.input.current_layer == WindowLayer::Top,
+                        ),
+                        (
+                            440.0,
+                            scene.cpu_fallback_scene.input.current_layer == WindowLayer::Bottom,
+                        ),
+                    ];
+                    for (base_x, is_active) in layers {
+                        let mx = base_x * render_scale + off_x;
+                        let my = card4_y + 60.0 * render_scale;
+                        content_cards.push((
+                            mx,
+                            my,
+                            mx + 200.0 * render_scale,
+                            my + 55.0 * render_scale,
+                            8.0 * render_scale,
+                            if is_active {
+                                COLOR_PRIMARY
+                            } else {
+                                COLOR_BORDER
+                            },
+                        ));
+                        content_cards.push((
+                            mx + 2.0,
+                            my + 2.0,
+                            mx + 200.0 * render_scale - 2.0,
+                            my + 55.0 * render_scale - 2.0,
+                            6.0 * render_scale,
+                            COLOR_BG_CARD,
+                        ));
+                    }
+
+                    let card5_y = 825.0 * render_scale + off_y + scroll_y * render_scale;
+                    for (i, (name, _)) in scene
+                        .cpu_fallback_scene
+                        .input
+                        .available_monitors
+                        .iter()
+                        .enumerate()
+                    {
+                        let row = i / 3;
+                        let col = i % 3;
+                        let btn_x = (230.0 + col as f32 * 110.0) * render_scale + off_x;
+                        let btn_y = card5_y + (60.0 + row as f32 * 65.0) * render_scale;
+                        let is_active = scene
+                            .cpu_fallback_scene
+                            .input
+                            .current_monitor_name
+                            .as_deref()
+                            .map(|n| n == name.as_str())
+                            .unwrap_or(false);
+                        content_cards.push((
+                            btn_x,
+                            btn_y,
+                            btn_x + 100.0 * render_scale,
+                            btn_y + 55.0 * render_scale,
+                            8.0 * render_scale,
+                            if is_active {
+                                COLOR_PRIMARY
+                            } else {
+                                COLOR_BG_LIGHT
+                            },
+                        ));
+                    }
+
+                    let card6_y = (825.0 + 60.0 + monitors_h + 20.0) * render_scale
+                        + off_y
+                        + scroll_y * render_scale;
+                    let toggle_x = card_left + 560.0 * render_scale - 80.0 * render_scale;
+                    let toggle_y = card6_y + 25.0 * render_scale;
+                    let toggle_w = 44.0 * render_scale;
+                    let toggle_h = 24.0 * render_scale;
+                    let (bg_color, knob_x) = if scene.cpu_fallback_scene.input.run_on_startup {
+                        (COLOR_PRIMARY, toggle_x + 22.0 * render_scale)
+                    } else {
+                        (COLOR_BORDER, toggle_x + 2.0 * render_scale)
+                    };
+                    content_cards.push((
+                        toggle_x,
+                        toggle_y,
+                        toggle_x + toggle_w,
+                        toggle_y + toggle_h,
+                        12.0 * render_scale,
+                        bg_color,
+                    ));
+                    content_cards.push((
+                        knob_x,
+                        toggle_y + 2.0 * render_scale,
+                        knob_x + 20.0 * render_scale,
+                        toggle_y + 22.0 * render_scale,
+                        10.0 * render_scale,
+                        0x00FFFFFF,
+                    ));
                 }
                 2 => {
                     let left = 210.0 * render_scale + off_x;
@@ -782,9 +976,13 @@ impl SettingsGpuPrototypeRenderer {
                 header_height,
                 &content_cards,
             );
+            gpu_surface_count = 2 + content_cards.len();
         }
 
-        Self::render_with_cpu_fallback(buffer, scene)
+        (
+            Self::render_with_cpu_fallback(buffer, scene),
+            gpu_surface_count,
+        )
     }
 }
 
@@ -907,6 +1105,7 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     scroll_offset: input.scroll_offset,
                     available_monitors: &input.available_monitors,
                     current_monitor_name: input.current_monitor_name.as_deref(),
+                    draw_control_chrome: true,
                 };
                 let (v, c, _) =
                     tabs::general::draw(buffer, w, h, scale, off_x, off_y, &mut gen_state);
@@ -1192,14 +1391,15 @@ impl SettingsWindow {
                 let res = runtime.render_request(&mut req);
                 let gpu_snapshot = runtime.gpu_snapshot();
                 tracing::info!(
-                    "Settings worker rendered with {:?}; gpu prototype init_status={:?}, initialized={}, last_frame_size={:?}, has_resources={}, backend_label={:?}, has_error={}",
+                    "Settings worker rendered with {:?}; gpu prototype init_status={:?}, initialized={}, last_frame_size={:?}, has_resources={}, backend_label={:?}, has_error={}, gpu_static_surfaces={}",
                     runtime.last_renderer_kind,
                     gpu_snapshot.init_status,
                     gpu_snapshot.initialized,
                     gpu_snapshot.last_frame_size,
                     gpu_snapshot.has_resources,
                     gpu_snapshot.backend_label,
-                    gpu_snapshot.has_error
+                    gpu_snapshot.has_error,
+                    runtime.last_gpu_surface_count
                 );
                 {
                     let mut lock = rb_ptr.lock().unwrap();
