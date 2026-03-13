@@ -1,5 +1,7 @@
 pub mod tabs;
 
+#[cfg(target_os = "windows")]
+use crate::render::{get_d2d_factory, get_dwrite_factory};
 use crate::theme::*;
 use crate::types::{AiConfig, BehaviorMode, PersistentConfig, WindowLayer};
 use crate::ui_primitives::*;
@@ -97,6 +99,7 @@ trait SettingsRendererBackend {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 enum SettingsGpuPrototypeInitStatus {
     Uninitialized,
     Initializing,
@@ -108,6 +111,12 @@ enum SettingsGpuPrototypeInitStatus {
 struct SettingsGpuPrototypeResources {
     backend_label: String,
     logical_surface_size: (u32, u32),
+    #[cfg(target_os = "windows")]
+    #[allow(dead_code)]
+    d2d_factory: windows::Win32::Graphics::Direct2D::ID2D1Factory,
+    #[cfg(target_os = "windows")]
+    #[allow(dead_code)]
+    dwrite_factory: windows::Win32::Graphics::DirectWrite::IDWriteFactory,
 }
 
 struct SettingsGpuPrototypeState {
@@ -140,14 +149,20 @@ impl SettingsGpuPrototypeState {
 
         self.init_status = SettingsGpuPrototypeInitStatus::Initializing;
 
-        if cfg!(target_os = "windows") {
+        #[cfg(target_os = "windows")]
+        {
             self.init_status = SettingsGpuPrototypeInitStatus::Ready;
             self.last_error = None;
             self.resources = Some(SettingsGpuPrototypeResources {
                 backend_label: "windows-gpu-prototype".to_string(),
                 logical_surface_size: (input.w, input.h),
+                d2d_factory: get_d2d_factory().clone(),
+                dwrite_factory: get_dwrite_factory().clone(),
             });
-        } else {
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
             self.init_status = SettingsGpuPrototypeInitStatus::FailedFallback;
             self.last_error =
                 Some("GPU prototype currently only scaffolded for Windows".to_string());
