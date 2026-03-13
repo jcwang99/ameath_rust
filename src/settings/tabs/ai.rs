@@ -31,6 +31,7 @@ pub struct AiTabState<'a> {
     pub gpu_response_mode_chrome: bool,
     pub gpu_tts_ref_button_chrome: bool,
     pub gpu_checkbox_chrome: bool,
+    pub gpu_eye_icon_chrome: bool,
 }
 
 pub fn draw(
@@ -634,17 +635,19 @@ pub fn draw(
             } else {
                 COLOR_TEXT_SEC
             };
-            draw_rect(
-                buffer,
-                w,
-                eye_x,
-                eye_y + sc(4.0) as i32,
-                sc(16.0) as u32,
-                sc(16.0) as u32,
-                eye_col,
-                w,
-                h,
-            );
+            if !state.gpu_eye_icon_chrome {
+                draw_rect(
+                    buffer,
+                    w,
+                    eye_x,
+                    eye_y + sc(4.0) as i32,
+                    sc(16.0) as u32,
+                    sc(16.0) as u32,
+                    eye_col,
+                    w,
+                    h,
+                );
+            }
         }
     }
 

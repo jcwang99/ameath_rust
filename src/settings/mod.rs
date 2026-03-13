@@ -925,6 +925,7 @@ impl SettingsGpuPrototypeRenderer {
                     gpu_groups.extend([
                         "ai_main_card",
                         "ai_standard_input_chrome",
+                        "ai_eye_icon_chrome",
                         "ai_profile_button_chrome",
                         "ai_tts_ref_button_chrome",
                         "ai_response_mode_chrome",
@@ -977,6 +978,24 @@ impl SettingsGpuPrototypeRenderer {
                             7.0 * render_scale,
                             COLOR_BG_CARD,
                         ));
+
+                        if matches!(field_index, 2 | 9 | 10 | 12) {
+                            let eye_x = x + (fw - 45.0) * render_scale;
+                            let eye_y = y + 12.0 * render_scale + 4.0 * render_scale;
+                            let eye_color = if scene.cpu_fallback_scene.input.show_api_key {
+                                COLOR_PRIMARY
+                            } else {
+                                COLOR_TEXT_SEC
+                            };
+                            content_cards.push((
+                                eye_x,
+                                eye_y,
+                                eye_x + 16.0 * render_scale,
+                                eye_y + 16.0 * render_scale,
+                                0.0,
+                                eye_color,
+                            ));
+                        }
                     }
 
                     let btn_y = (120.0 + 30.0 + 25.0) * render_scale
@@ -1426,6 +1445,7 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     gpu_response_mode_chrome: scene.draw_static_blocks == false,
                     gpu_tts_ref_button_chrome: scene.draw_static_blocks == false,
                     gpu_checkbox_chrome: false,
+                    gpu_eye_icon_chrome: scene.draw_static_blocks == false,
                 };
                 let (v, c, rect) = tabs::ai::draw(
                     buffer,
