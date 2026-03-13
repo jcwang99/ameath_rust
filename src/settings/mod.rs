@@ -90,6 +90,25 @@ enum SettingsRendererKind {
     GpuPrototype,
 }
 
+impl SettingsRendererKind {
+    fn from_env() -> Self {
+        let raw = std::env::var("AMEATH_SETTINGS_RENDERER")
+            .unwrap_or_else(|_| "cpu".to_string())
+            .to_ascii_lowercase();
+        match raw.as_str() {
+            "gpu" | "gpu-prototype" | "prototype" => SettingsRendererKind::GpuPrototype,
+            _ => SettingsRendererKind::Cpu,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            SettingsRendererKind::Cpu => "cpu",
+            SettingsRendererKind::GpuPrototype => "gpu-prototype",
+        }
+    }
+}
+
 struct SettingsRedrawPlan {
     width: u32,
     height: u32,
@@ -101,6 +120,7 @@ struct SettingsRenderScene {
     input: SettingsRenderInput,
     hash: u64,
     clear_background: bool,
+    draw_static_blocks: bool,
 }
 
 struct SettingsGpuPrototypeScene {
@@ -204,6 +224,8 @@ impl SettingsGpuPrototypeCanvas {
         width: u32,
         height: u32,
         buffer: &mut [u32],
+        sidebar_width: u32,
+        header_height: u32,
     ) {
         self.ensure_surface(d2d_factory, width as i32, height as i32);
 
@@ -224,6 +246,47 @@ impl SettingsGpuPrototypeCanvas {
                     b: (COLOR_BG_APP & 0xFF) as f32 / 255.0,
                     a: 1.0,
                 }));
+
+                if let Ok(sidebar_brush) = rt.CreateSolidColorBrush(
+                    &D2D1_COLOR_F {
+                        r: ((COLOR_BG_SIDEBAR >> 16) & 0xFF) as f32 / 255.0,
+                        g: ((COLOR_BG_SIDEBAR >> 8) & 0xFF) as f32 / 255.0,
+                        b: (COLOR_BG_SIDEBAR & 0xFF) as f32 / 255.0,
+                        a: 1.0,
+                    },
+                    None,
+                ) {
+                    rt.FillRectangle(
+                        &windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                            left: 0.0,
+                            top: 0.0,
+                            right: sidebar_width as f32,
+                            bottom: height as f32,
+                        },
+                        &sidebar_brush,
+                    );
+                }
+
+                if let Ok(header_brush) = rt.CreateSolidColorBrush(
+                    &D2D1_COLOR_F {
+                        r: ((COLOR_BG_APP >> 16) & 0xFF) as f32 / 255.0,
+                        g: ((COLOR_BG_APP >> 8) & 0xFF) as f32 / 255.0,
+                        b: (COLOR_BG_APP & 0xFF) as f32 / 255.0,
+                        a: 1.0,
+                    },
+                    None,
+                ) {
+                    rt.FillRectangle(
+                        &windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                            left: sidebar_width as f32,
+                            top: 0.0,
+                            right: width as f32,
+                            bottom: header_height as f32,
+                        },
+                        &header_brush,
+                    );
+                }
+
                 let _ = rt.EndDraw(None, None);
 
                 let src = std::slice::from_raw_parts(self.bits, (width * height) as usize);
@@ -303,6 +366,11 @@ impl SettingsGpuPrototypeState {
                 dwrite_factory: get_dwrite_factory().clone(),
                 canvas: SettingsGpuPrototypeCanvas::new(),
             });
+            tracing::info!(
+                "Settings GPU prototype initialized successfully for {}x{}",
+                input.w,
+                input.h
+            );
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -311,6 +379,9 @@ impl SettingsGpuPrototypeState {
             self.last_error =
                 Some("GPU prototype currently only scaffolded for Windows".to_string());
             self.resources = None;
+            tracing::info!(
+                "Settings GPU prototype unavailable on this platform; falling back to CPU"
+            );
         }
 
         self.prepare(input);
@@ -385,6 +456,14 @@ impl SettingsWorkerRuntime {
 
     fn render_request(&mut self, req: &mut RenderRequest) -> RenderResult {
         let renderer_kind = self.select_renderer_kind(req.renderer_kind, &req.input);
+        tracing::info!(
+            "Settings renderer request: requested={:?}, selected={:?}, previous={:?}, size={}x{}",
+            req.renderer_kind,
+            renderer_kind,
+            self.last_renderer_kind,
+            req.input.w,
+            req.input.h
+        );
         self.last_renderer_kind = renderer_kind;
 
         match renderer_kind {
@@ -512,6 +591,7 @@ impl SettingsGpuPrototypeRenderer {
                 input,
                 hash,
                 clear_background: false,
+                draw_static_blocks: false,
             },
             backend_label: "windows-gpu-prototype",
         }
@@ -538,11 +618,21 @@ impl SettingsGpuPrototypeRenderer {
 
         #[cfg(target_os = "windows")]
         if let Some(resources) = &mut state.resources {
+            let scale = (
+                scene.cpu_fallback_scene.input.w as f32 / 800.0,
+                scene.cpu_fallback_scene.input.h as f32 / 750.0,
+            );
+            let render_scale = scale.0.min(scale.1);
+            let off_x = (scene.cpu_fallback_scene.input.w as f32 - 800.0 * render_scale) / 2.0;
+            let sidebar_width = (180.0 * render_scale + off_x) as u32;
+            let header_height = (120.0 * render_scale) as u32;
             resources.canvas.render_background(
                 &resources.d2d_factory,
                 scene.cpu_fallback_scene.input.w,
                 scene.cpu_fallback_scene.input.h,
                 buffer,
+                sidebar_width,
+                header_height,
             );
         }
 
@@ -558,6 +648,7 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
             input,
             hash,
             clear_background: true,
+            draw_static_blocks: true,
         }
     }
 
@@ -586,7 +677,9 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
         let sy_val = |val: u32| -> u32 { (val as f32 * scale + off_y) as u32 };
 
         // Sidebar
-        draw_rect(buffer, w, 0, 0, s(180), h, COLOR_BG_SIDEBAR, w, h);
+        if scene.draw_static_blocks {
+            draw_rect(buffer, w, 0, 0, s(180), h, COLOR_BG_SIDEBAR, w, h);
+        }
         let icons = ["🏠", "🎨", "🧠", "📜", "ℹ️"];
         for i in 0..5 {
             let color = if input.current_tab == i {
@@ -615,17 +708,19 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
             _ => ("About", "Ameath v0.1.0"),
         };
         let header_h = sy_val(120);
-        draw_rect(
-            buffer,
-            w,
-            s(180) as i32,
-            0,
-            w - s(180),
-            header_h,
-            COLOR_BG_APP,
-            w,
-            h,
-        );
+        if scene.draw_static_blocks {
+            draw_rect(
+                buffer,
+                w,
+                s(180) as i32,
+                0,
+                w - s(180),
+                header_h,
+                COLOR_BG_APP,
+                w,
+                h,
+            );
+        }
         draw_text(
             buffer,
             w,
@@ -874,6 +969,12 @@ impl SettingsWindow {
         proxy: EventLoopProxy<()>,
         icon: Option<winit::window::Icon>,
     ) -> Self {
+        let renderer_kind = SettingsRendererKind::from_env();
+        tracing::info!(
+            "Settings renderer preference from env: {}",
+            renderer_kind.as_str()
+        );
+
         let window = Rc::new(
             winit::window::WindowBuilder::new()
                 .with_title("Ameath Settings")
@@ -942,7 +1043,7 @@ impl SettingsWindow {
 
                 let res = runtime.render_request(&mut req);
                 let gpu_snapshot = runtime.gpu_snapshot();
-                tracing::debug!(
+                tracing::info!(
                     "Settings worker rendered with {:?}; gpu prototype init_status={:?}, initialized={}, last_frame_size={:?}, has_resources={}, backend_label={:?}, has_error={}",
                     runtime.last_renderer_kind,
                     gpu_snapshot.init_status,
@@ -1012,7 +1113,7 @@ impl SettingsWindow {
             last_background_pixels: std::sync::Arc::new(Vec::new()),
             render_tx,
             _proxy: proxy,
-            renderer_kind: SettingsRendererKind::Cpu,
+            renderer_kind,
             redraw_pending: Cell::new(false),
         }
     }
@@ -1196,6 +1297,14 @@ impl SettingsWindow {
             buffer: pixels,
             renderer_kind: self.selected_renderer_kind(),
         });
+        tracing::info!(
+            "Queued settings render with renderer {} ({:?}), base_hash={}, size={}x{}",
+            self.selected_renderer_kind().as_str(),
+            self.selected_renderer_kind(),
+            plan.base_state_hash,
+            plan.width,
+            plan.height
+        );
     }
 
     pub fn redraw(
