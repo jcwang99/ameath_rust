@@ -239,6 +239,7 @@ impl SettingsGpuPrototypeCanvas {
         sidebar_width: u32,
         header_height: u32,
         content_cards: &[(f32, f32, f32, f32, f32, u32)],
+        overlay_cards: &[(f32, f32, f32, f32, f32, u32, f32)],
         text_runs: &[SettingsGpuTextRun],
     ) {
         self.ensure_surface(d2d_factory, width as i32, height as i32);
@@ -324,6 +325,44 @@ impl SettingsGpuPrototypeCanvas {
                             },
                             &card_brush,
                         );
+                    }
+                }
+
+                for (left, top, right, bottom, radius, color, alpha) in overlay_cards {
+                    if let Ok(card_brush) = rt.CreateSolidColorBrush(
+                        &D2D1_COLOR_F {
+                            r: ((color >> 16) & 0xFF) as f32 / 255.0,
+                            g: ((color >> 8) & 0xFF) as f32 / 255.0,
+                            b: (color & 0xFF) as f32 / 255.0,
+                            a: *alpha,
+                        },
+                        None,
+                    ) {
+                        if *radius > 0.0 {
+                            rt.FillRoundedRectangle(
+                                &D2D1_ROUNDED_RECT {
+                                    rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                        left: *left,
+                                        top: *top,
+                                        right: *right,
+                                        bottom: *bottom,
+                                    },
+                                    radiusX: *radius,
+                                    radiusY: *radius,
+                                },
+                                &card_brush,
+                            );
+                        } else {
+                            rt.FillRectangle(
+                                &windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                    left: *left,
+                                    top: *top,
+                                    right: *right,
+                                    bottom: *bottom,
+                                },
+                                &card_brush,
+                            );
+                        }
                     }
                 }
 
@@ -711,6 +750,7 @@ impl SettingsGpuPrototypeRenderer {
             let sidebar_width = (180.0 * render_scale + off_x) as u32;
             let header_height = (120.0 * render_scale + off_y) as u32;
             let mut content_cards = Vec::new();
+            let overlay_cards: Vec<(f32, f32, f32, f32, f32, u32, f32)> = Vec::new();
             let mut text_runs = Vec::new();
             let (title, sub) = match scene.cpu_fallback_scene.input.current_tab {
                 0 => ("Home", "Welcome to Ameath!"),
@@ -1233,99 +1273,6 @@ impl SettingsGpuPrototypeRenderer {
                             card_color,
                         ));
                     }
-
-                    let checkbox_specs = [
-                        (
-                            405.0,
-                            530.0,
-                            20.0,
-                            scene
-                                .cpu_fallback_scene
-                                .input
-                                .ai_config
-                                .active_interaction_screenshots_enabled,
-                            false,
-                        ),
-                        (
-                            230.0,
-                            1330.0,
-                            20.0,
-                            scene.cpu_fallback_scene.input.ai_config.tts_enabled,
-                            false,
-                        ),
-                        (
-                            565.0,
-                            30.0,
-                            45.0,
-                            scene
-                                .cpu_fallback_scene
-                                .input
-                                .ai_config
-                                .active_profile()
-                                .is_multimodal,
-                            true,
-                        ),
-                    ];
-                    for (fx, fy, box_dim, checked, rounded) in checkbox_specs {
-                        if fy == 530.0
-                            && !scene
-                                .cpu_fallback_scene
-                                .input
-                                .ai_config
-                                .active_profile()
-                                .is_multimodal
-                        {
-                            continue;
-                        }
-                        let x = fx * render_scale + off_x;
-                        let y = (120.0 + fy + 25.0 + if fy == 30.0 { 0.0 } else { 12.5 })
-                            * render_scale
-                            + off_y
-                            + scene.cpu_fallback_scene.input.scroll_offset * render_scale;
-                        let dim = box_dim * render_scale;
-                        let outer_color = if checked {
-                            COLOR_PRIMARY
-                        } else if rounded {
-                            COLOR_TEXT_SEC
-                        } else {
-                            COLOR_BORDER
-                        };
-                        content_cards.push((
-                            x,
-                            y,
-                            x + dim,
-                            y + dim,
-                            if rounded { 8.0 * render_scale } else { 0.0 },
-                            if rounded && !checked {
-                                outer_color
-                            } else {
-                                COLOR_BG_LIGHT
-                            },
-                        ));
-                        if checked {
-                            let inner = if rounded { 0.0 } else { 12.0 * render_scale };
-                            if !rounded {
-                                let offset = (dim - inner) / 2.0;
-                                content_cards.push((
-                                    x + offset,
-                                    y + offset,
-                                    x + offset + inner,
-                                    y + offset + inner,
-                                    0.0,
-                                    COLOR_PRIMARY,
-                                ));
-                            }
-                        } else if rounded {
-                            content_cards.push((
-                                x + 1.0,
-                                y + 1.0,
-                                x + dim - 1.0,
-                                y + dim - 1.0,
-                                7.0 * render_scale,
-                                COLOR_BG_CARD,
-                            ));
-                        }
-                    }
                 }
                 4 => {
                     gpu_groups.push("about_card");
@@ -1376,6 +1323,7 @@ impl SettingsGpuPrototypeRenderer {
                 sidebar_width,
                 header_height,
                 &content_cards,
+                &overlay_cards,
                 &text_runs,
             );
             gpu_surface_count = 2 + content_cards.len();
@@ -1430,23 +1378,25 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
         if scene.draw_static_blocks {
             draw_rect(buffer, w, 0, 0, s(180), h, COLOR_BG_SIDEBAR, w, h);
         }
-        let icons = ["🏠", "🎨", "🧠", "📜", "ℹ️"];
-        for i in 0..5 {
-            let color = if input.current_tab == i {
-                COLOR_PRIMARY
-            } else {
-                COLOR_TEXT_SEC
-            };
-            draw_text(
-                buffer,
-                w,
-                &[],
-                icons[i],
-                s(75) as i32,
-                sy_val(60 + i as u32 * 80) as i32,
-                sc(32.0),
-                color,
-            );
+        {
+            let icons = ["🏠", "🎨", "🧠", "📜", "ℹ️"];
+            for i in 0..5 {
+                let color = if input.current_tab == i {
+                    COLOR_PRIMARY
+                } else {
+                    COLOR_TEXT_SEC
+                };
+                draw_text(
+                    buffer,
+                    w,
+                    &[],
+                    icons[i],
+                    s(75) as i32,
+                    sy_val(60 + i as u32 * 80) as i32,
+                    sc(32.0),
+                    color,
+                );
+            }
         }
 
         // Header
@@ -1567,6 +1517,8 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     gpu_tts_ref_button_chrome: scene.draw_static_blocks == false,
                     gpu_checkbox_chrome: false,
                     gpu_eye_icon_chrome: scene.draw_static_blocks == false,
+                    gpu_dialog_chrome: false,
+                    gpu_toast_chrome: false,
                 };
                 let (v, c, rect) = tabs::ai::draw(
                     buffer,

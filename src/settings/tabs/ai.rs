@@ -32,6 +32,8 @@ pub struct AiTabState<'a> {
     pub gpu_tts_ref_button_chrome: bool,
     pub gpu_checkbox_chrome: bool,
     pub gpu_eye_icon_chrome: bool,
+    pub gpu_dialog_chrome: bool,
+    pub gpu_toast_chrome: bool,
 }
 
 pub fn draw(
@@ -1168,18 +1170,20 @@ pub fn draw(
         let dialog_w_abs = sc(300.0) as u32;
         let dialog_h_abs = sc(150.0) as u32;
 
-        draw_rounded_rect(
-            buffer,
-            w,
-            dialog_x_abs,
-            dialog_y_abs,
-            dialog_w_abs,
-            dialog_h_abs,
-            12,
-            COLOR_BG_LIGHT,
-            w,
-            h,
-        );
+        if !state.gpu_dialog_chrome {
+            draw_rounded_rect(
+                buffer,
+                w,
+                dialog_x_abs,
+                dialog_y_abs,
+                dialog_w_abs,
+                dialog_h_abs,
+                12,
+                COLOR_BG_LIGHT,
+                w,
+                h,
+            );
+        }
         draw_text_dw_ex(
             buffer,
             w,
@@ -1209,22 +1213,24 @@ pub fn draw(
             && state.mouse_pos.0 <= no_x_design + btn_w_design
             && state.mouse_pos.1 >= btn_y_design
             && state.mouse_pos.1 <= btn_y_design + btn_h_design;
-        draw_rounded_rect(
-            buffer,
-            w,
-            no_x_abs,
-            btn_y_abs,
-            btn_w_abs,
-            btn_h_abs,
-            8,
-            if is_no_hover {
-                COLOR_BORDER
-            } else {
-                COLOR_BG_SIDEBAR
-            },
-            w,
-            h,
-        );
+        if !state.gpu_dialog_chrome {
+            draw_rounded_rect(
+                buffer,
+                w,
+                no_x_abs,
+                btn_y_abs,
+                btn_w_abs,
+                btn_h_abs,
+                8,
+                if is_no_hover {
+                    COLOR_BORDER
+                } else {
+                    COLOR_BG_SIDEBAR
+                },
+                w,
+                h,
+            );
+        }
         draw_text_dw_ex(
             buffer,
             w,
@@ -1249,18 +1255,20 @@ pub fn draw(
             && state.mouse_pos.1 <= btn_y_design + btn_h_design;
 
         // Premium red Yes button: Solid red bg, White text. Brighter on hover.
-        draw_rounded_rect(
-            buffer,
-            w,
-            yes_x_abs,
-            btn_y_abs,
-            btn_w_abs,
-            btn_h_abs,
-            8,
-            if is_yes_hover { 0x00FF6666 } else { 0x00FF4444 },
-            w,
-            h,
-        );
+        if !state.gpu_dialog_chrome {
+            draw_rounded_rect(
+                buffer,
+                w,
+                yes_x_abs,
+                btn_y_abs,
+                btn_w_abs,
+                btn_h_abs,
+                8,
+                if is_yes_hover { 0x00FF6666 } else { 0x00FF4444 },
+                w,
+                h,
+            );
+        }
         draw_text_dw_ex(
             buffer,
             w,
@@ -1291,18 +1299,20 @@ pub fn draw(
             } else {
                 1.0
             };
-            draw_rect_alpha(
-                buffer,
-                w,
-                toast_x as i32,
-                toast_y as i32,
-                toast_w,
-                toast_h,
-                0x00444444,
-                0.8 * alpha,
-                w,
-                h,
-            );
+            if !state.gpu_toast_chrome {
+                draw_rect_alpha(
+                    buffer,
+                    w,
+                    toast_x as i32,
+                    toast_y as i32,
+                    toast_w,
+                    toast_h,
+                    0x00444444,
+                    0.8 * alpha,
+                    w,
+                    h,
+                );
+            }
             draw_text_dw_ex(
                 buffer,
                 w,
