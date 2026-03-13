@@ -1317,9 +1317,15 @@ impl SettingsGpuPrototypeRenderer {
                             && mouse_lx <= hover_max_x
                             && content_mouse_y >= 55.0
                             && content_mouse_y <= 100.0;
-                        if is_hover || scene.cpu_fallback_scene.input.pressed_btn == Some(btn_idx) {
-                            continue;
-                        }
+                        let actual_color = if btn_idx == 3 {
+                            if is_hover {
+                                0x00FFFFFF
+                            } else {
+                                color
+                            }
+                        } else {
+                            color
+                        };
                         text_runs.push(SettingsGpuTextRun {
                             text: symbol.to_string(),
                             x: x * render_scale + off_x,
@@ -1327,7 +1333,7 @@ impl SettingsGpuPrototypeRenderer {
                                 + off_y
                                 + scene.cpu_fallback_scene.input.scroll_offset * render_scale,
                             font_size: size * render_scale,
-                            color,
+                            color: actual_color,
                             bold: false,
                         });
                     }
@@ -1708,7 +1714,7 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     system_prompt_metrics_cache: &mut sys_metrics,
                     system_prompt_hash: input.system_prompt_hash,
                     draw_cursor: false,
-                    draw_static_text: scene.draw_static_text || input.focused_field == Some(0),
+                    draw_static_text: scene.draw_static_text,
                     mouse_pos: (lx, ly),
                     content_mouse_pos: (lx, dly),
                     pressed_btn: input.pressed_btn,

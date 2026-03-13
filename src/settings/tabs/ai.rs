@@ -333,30 +333,47 @@ pub fn draw(
         };
 
         // Label
-        if i == 0 && state.gpu_profile_title_text && !state.draw_static_text {
-            let prefix = "Active Profile";
-            let suffix = format!(
-                " ({}/{})",
-                ai_config.active_profile_index + 1,
-                ai_config.profiles.len()
-            );
-            let (prefix_w, _) =
-                get_metrics_dw_ex(prefix, sc(14.0), w, "Microsoft YaHei", false, false, false);
-            draw_text_dw_ex(
-                buffer,
-                w,
-                &suffix,
-                fx_abs + prefix_w.ceil() as i32,
-                fy_abs,
-                sc(14.0),
-                COLOR_TEXT_SEC,
-                w,
-                sc(20.0) as u32,
-                0.0,
-                0.0,
-                w,
-            );
-        } else if state.draw_static_text || i == 0 {
+        if i == 0 {
+            if state.gpu_profile_title_text {
+                let prefix = "Active Profile";
+                let suffix = format!(
+                    " ({}/{})",
+                    ai_config.active_profile_index + 1,
+                    ai_config.profiles.len()
+                );
+                let (prefix_w, _) =
+                    get_metrics_dw_ex(prefix, sc(14.0), w, "Microsoft YaHei", false, false, false);
+                draw_text_dw_ex(
+                    buffer,
+                    w,
+                    &suffix,
+                    fx_abs + prefix_w.ceil() as i32,
+                    fy_abs,
+                    sc(14.0),
+                    COLOR_TEXT_SEC,
+                    w,
+                    sc(20.0) as u32,
+                    0.0,
+                    0.0,
+                    w,
+                );
+            } else {
+                draw_text_dw_ex(
+                    buffer,
+                    w,
+                    label,
+                    fx_abs,
+                    fy_abs,
+                    sc(14.0),
+                    COLOR_TEXT_SEC,
+                    w,
+                    sc(20.0) as u32,
+                    0.0,
+                    0.0,
+                    w,
+                );
+            }
+        } else if state.draw_static_text {
             draw_text_dw_ex(
                 buffer,
                 w,
@@ -510,7 +527,7 @@ pub fn draw(
                     h,
                 );
             }
-            if !state.gpu_profile_symbol_text || is_prev_hover || state.pressed_btn == Some(0) {
+            if !state.gpu_profile_symbol_text {
                 draw_text_dw_ex(
                     buffer,
                     w,
@@ -555,7 +572,7 @@ pub fn draw(
                     h,
                 );
             }
-            if !state.gpu_profile_symbol_text || is_next_hover || state.pressed_btn == Some(1) {
+            if !state.gpu_profile_symbol_text {
                 draw_text_dw_ex(
                     buffer,
                     w,
@@ -602,7 +619,7 @@ pub fn draw(
                     h,
                 );
             }
-            if !state.gpu_profile_symbol_text || is_add_hover || state.pressed_btn == Some(2) {
+            if !state.gpu_profile_symbol_text {
                 draw_text_dw_ex(
                     buffer,
                     w,
@@ -649,7 +666,7 @@ pub fn draw(
                     h,
                 );
             }
-            if !state.gpu_profile_symbol_text || is_del_hover || state.pressed_btn == Some(3) {
+            if !state.gpu_profile_symbol_text {
                 draw_text_dw_ex(
                     buffer,
                     w,
