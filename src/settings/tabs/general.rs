@@ -14,6 +14,8 @@ pub struct GeneralTabState<'a> {
     pub draw_card_backgrounds: bool,
     pub draw_static_text: bool,
     pub draw_control_chrome: bool,
+    pub gpu_behavior_label_text: bool,
+    pub gpu_window_layer_label_text: bool,
     pub gpu_slider_chrome: bool,
     pub gpu_behavior_chrome: bool,
     pub gpu_window_layer_chrome: bool,
@@ -211,20 +213,22 @@ pub fn draw(
                 h,
             );
         }
-        draw_text(
-            buffer,
-            w,
-            &[],
-            mode,
-            mx + sc(25.0) as i32,
-            my + sc(18.0) as i32,
-            sc(15.0),
-            if is_active {
-                COLOR_PRIMARY
-            } else {
-                COLOR_TEXT_SEC
-            },
-        );
+        if !state.gpu_behavior_label_text {
+            draw_text(
+                buffer,
+                w,
+                &[],
+                mode,
+                mx + sc(25.0) as i32,
+                my + sc(18.0) as i32,
+                sc(15.0),
+                if is_active {
+                    COLOR_PRIMARY
+                } else {
+                    COLOR_TEXT_SEC
+                },
+            );
+        }
     }
 
     // 3. Music Directory
@@ -364,20 +368,22 @@ pub fn draw(
                 h,
             );
         }
-        draw_text(
-            buffer,
-            w,
-            &[],
-            layer_name,
-            mx + sc(20.0) as i32,
-            my + sc(18.0) as i32,
-            sc(14.0),
-            if is_active {
-                COLOR_PRIMARY
-            } else {
-                COLOR_TEXT_SEC
-            },
-        );
+        if !state.gpu_window_layer_label_text {
+            draw_text(
+                buffer,
+                w,
+                &[],
+                layer_name,
+                mx + sc(20.0) as i32,
+                my + sc(18.0) as i32,
+                sc(14.0),
+                if is_active {
+                    COLOR_PRIMARY
+                } else {
+                    COLOR_TEXT_SEC
+                },
+            );
+        }
     }
 
     // 5. Monitor Selection

@@ -812,6 +812,8 @@ impl SettingsGpuPrototypeRenderer {
                     gpu_groups.extend([
                         "general_cards",
                         "general_static_titles",
+                        "general_behavior_label_text",
+                        "general_window_layer_label_text",
                         "general_slider_chrome",
                         "general_behavior_chrome",
                         "general_music_input_chrome",
@@ -982,6 +984,18 @@ impl SettingsGpuPrototypeRenderer {
                             6.0 * render_scale,
                             COLOR_BG_CARD,
                         ));
+                        text_runs.push(SettingsGpuTextRun {
+                            text: (*mode).to_string(),
+                            x: mx + 25.0 * render_scale,
+                            y: my + 18.0 * render_scale,
+                            font_size: 15.0 * render_scale,
+                            color: if *mode == scene.cpu_fallback_scene.input.current_mode {
+                                COLOR_PRIMARY
+                            } else {
+                                COLOR_TEXT_SEC
+                            },
+                            bold: false,
+                        });
                     }
 
                     let card3_y = 505.0 * render_scale + off_y + scroll_y * render_scale;
@@ -1040,6 +1054,23 @@ impl SettingsGpuPrototypeRenderer {
                             6.0 * render_scale,
                             COLOR_BG_CARD,
                         ));
+                        let label = if base_x == 230.0 {
+                            "Always on Top"
+                        } else {
+                            "Standard (Bottom)"
+                        };
+                        text_runs.push(SettingsGpuTextRun {
+                            text: label.to_string(),
+                            x: mx + 20.0 * render_scale,
+                            y: my + 18.0 * render_scale,
+                            font_size: 14.0 * render_scale,
+                            color: if is_active {
+                                COLOR_PRIMARY
+                            } else {
+                                COLOR_TEXT_SEC
+                            },
+                            bold: false,
+                        });
                     }
 
                     let card5_y = 825.0 * render_scale + off_y + scroll_y * render_scale;
@@ -1533,6 +1564,8 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     draw_card_backgrounds: scene.draw_static_blocks,
                     draw_static_text: scene.draw_static_text,
                     draw_control_chrome: true,
+                    gpu_behavior_label_text: scene.draw_static_text == false,
+                    gpu_window_layer_label_text: scene.draw_static_text == false,
                     gpu_slider_chrome: scene.draw_static_blocks == false,
                     gpu_behavior_chrome: scene.draw_static_blocks == false,
                     gpu_window_layer_chrome: scene.draw_static_blocks == false,
