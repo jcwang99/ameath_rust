@@ -674,6 +674,7 @@ impl SettingsGpuPrototypeRenderer {
             match scene.cpu_fallback_scene.input.current_tab {
                 0 => {
                     gpu_groups.push("home_card");
+                    gpu_groups.push("home_full_static_layout");
                     let left = 210.0 * render_scale + off_x;
                     let top = 120.0 * render_scale + off_y;
                     content_cards.push((
@@ -1246,6 +1247,7 @@ impl SettingsGpuPrototypeRenderer {
                 }
                 4 => {
                     gpu_groups.push("about_card");
+                    gpu_groups.push("about_full_static_layout");
                     let left = 210.0 * render_scale + off_x;
                     let top = 120.0 * render_scale + off_y;
                     content_cards.push((
@@ -1385,7 +1387,8 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
         // Tab Content
         match input.current_tab {
             0 => {
-                let (v, c, _) = tabs::home::draw(buffer, w, h, scale, off_x, off_y);
+                let (v, c, _) =
+                    tabs::home::draw(buffer, w, h, scale, off_x, off_y, scene.draw_static_blocks);
                 vh = v;
                 ch = c;
             }
@@ -1480,7 +1483,8 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                 history_item_rects = local_rects;
             }
             4 => {
-                let (v, c, _) = tabs::about::draw(buffer, w, h, scale, off_x, off_y);
+                let (v, c, _) =
+                    tabs::about::draw(buffer, w, h, scale, off_x, off_y, scene.draw_static_blocks);
                 vh = v;
                 ch = c;
             }

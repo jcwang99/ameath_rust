@@ -9,24 +9,27 @@ pub fn draw(
     scale: f32,
     off_x: f32,
     off_y: f32,
+    draw_card_background: bool,
 ) -> (f32, f32, Option<(i32, i32, u32, u32)>) {
     let s = |val: u32| -> u32 { (val as f32 * scale + off_x) as u32 };
     let sy_val = |val: u32| -> u32 { (val as f32 * scale + off_y) as u32 };
     let sc = |val: f32| -> f32 { val * scale };
 
     // Welcome card
-    draw_rounded_rect(
-        buffer,
-        w,
-        s(210) as i32,
-        sy_val(120) as i32,
-        (560.0 * scale) as u32,
-        (200.0 * scale) as u32,
-        12,
-        COLOR_BG_CARD,
-        w,
-        h,
-    );
+    if draw_card_background {
+        draw_rounded_rect(
+            buffer,
+            w,
+            s(210) as i32,
+            sy_val(120) as i32,
+            (560.0 * scale) as u32,
+            (200.0 * scale) as u32,
+            12,
+            COLOR_BG_CARD,
+            w,
+            h,
+        );
+    }
 
     draw_text(
         buffer,
