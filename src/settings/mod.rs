@@ -811,6 +811,7 @@ impl SettingsGpuPrototypeRenderer {
                 1 => {
                     gpu_groups.extend([
                         "general_cards",
+                        "general_static_titles",
                         "general_slider_chrome",
                         "general_behavior_chrome",
                         "general_music_input_chrome",
@@ -839,9 +840,68 @@ impl SettingsGpuPrototypeRenderer {
                             COLOR_BG_CARD,
                         ));
                     }
-
+                    text_runs.push(SettingsGpuTextRun {
+                        text: "Pet Scale".to_string(),
+                        x: 230.0 * render_scale + off_x,
+                        y: (120.0 + 20.0) * render_scale + off_y + scroll_y,
+                        font_size: 18.0 * render_scale,
+                        color: COLOR_TEXT_MAIN,
+                        bold: false,
+                    });
+                    text_runs.push(SettingsGpuTextRun {
+                        text: "Behavior Mode".to_string(),
+                        x: 230.0 * render_scale + off_x,
+                        y: (280.0 + 20.0) * render_scale + off_y + scroll_y * render_scale,
+                        font_size: 18.0 * render_scale,
+                        color: COLOR_TEXT_MAIN,
+                        bold: false,
+                    });
+                    text_runs.push(SettingsGpuTextRun {
+                        text: "Music Directory".to_string(),
+                        x: 230.0 * render_scale + off_x,
+                        y: (505.0 + 20.0) * render_scale + off_y + scroll_y * render_scale,
+                        font_size: 18.0 * render_scale,
+                        color: COLOR_TEXT_MAIN,
+                        bold: false,
+                    });
+                    text_runs.push(SettingsGpuTextRun {
+                        text: "Window Layer".to_string(),
+                        x: 230.0 * render_scale + off_x,
+                        y: (665.0 + 20.0) * render_scale + off_y + scroll_y * render_scale,
+                        font_size: 18.0 * render_scale,
+                        color: COLOR_TEXT_MAIN,
+                        bold: false,
+                    });
                     let rows = (scene.cpu_fallback_scene.input.available_monitors.len() + 2) / 3;
                     let monitors_h = if rows > 0 { rows as f32 * 65.0 } else { 65.0 };
+                    text_runs.push(SettingsGpuTextRun {
+                        text: "Display Monitor".to_string(),
+                        x: 230.0 * render_scale + off_x,
+                        y: (825.0 + 20.0) * render_scale + off_y + scroll_y * render_scale,
+                        font_size: 18.0 * render_scale,
+                        color: COLOR_TEXT_MAIN,
+                        bold: false,
+                    });
+                    text_runs.push(SettingsGpuTextRun {
+                        text: "Run on Startup".to_string(),
+                        x: 230.0 * render_scale + off_x,
+                        y: (825.0 + 60.0 + monitors_h + 20.0 + 28.0) * render_scale
+                            + off_y
+                            + scroll_y * render_scale,
+                        font_size: 16.0 * render_scale,
+                        color: COLOR_TEXT_MAIN,
+                        bold: false,
+                    });
+                    text_runs.push(SettingsGpuTextRun {
+                        text: "Automatically start Ameath when Windows boots".to_string(),
+                        x: 230.0 * render_scale + off_x,
+                        y: (825.0 + 60.0 + monitors_h + 20.0 + 50.0) * render_scale
+                            + off_y
+                            + scroll_y * render_scale,
+                        font_size: 12.0 * render_scale,
+                        color: COLOR_TEXT_SEC,
+                        bold: false,
+                    });
                     let extra_cards = [
                         (825.0 + scroll_y, 60.0 + monitors_h),
                         (825.0 + 60.0 + monitors_h + 20.0 + scroll_y, 80.0),
@@ -1471,6 +1531,7 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     available_monitors: &input.available_monitors,
                     current_monitor_name: input.current_monitor_name.as_deref(),
                     draw_card_backgrounds: scene.draw_static_blocks,
+                    draw_static_text: scene.draw_static_text,
                     draw_control_chrome: true,
                     gpu_slider_chrome: scene.draw_static_blocks == false,
                     gpu_behavior_chrome: scene.draw_static_blocks == false,

@@ -12,6 +12,7 @@ pub struct GeneralTabState<'a> {
     pub available_monitors: &'a [(String, String)],
     pub current_monitor_name: Option<&'a str>,
     pub draw_card_backgrounds: bool,
+    pub draw_static_text: bool,
     pub draw_control_chrome: bool,
     pub gpu_slider_chrome: bool,
     pub gpu_behavior_chrome: bool,
@@ -59,16 +60,18 @@ pub fn draw(
             h,
         );
     }
-    draw_text(
-        buffer,
-        w,
-        &[],
-        "Pet Scale",
-        s(230) as i32,
-        card1_y + sc(20.0) as i32,
-        sc(18.0),
-        COLOR_TEXT_MAIN,
-    );
+    if state.draw_static_text {
+        draw_text(
+            buffer,
+            w,
+            &[],
+            "Pet Scale",
+            s(230) as i32,
+            card1_y + sc(20.0) as i32,
+            sc(18.0),
+            COLOR_TEXT_MAIN,
+        );
+    }
 
     // Slider logic: range 0.1 to 3.0
     let progress = ((current_scale - 0.1) / 2.9).clamp(0.0, 1.0);
@@ -158,16 +161,18 @@ pub fn draw(
             h,
         );
     }
-    draw_text(
-        buffer,
-        w,
-        &[],
-        "Behavior Mode",
-        s(230) as i32,
-        card2_y + sc(20.0) as i32,
-        sc(18.0),
-        COLOR_TEXT_MAIN,
-    );
+    if state.draw_static_text {
+        draw_text(
+            buffer,
+            w,
+            &[],
+            "Behavior Mode",
+            s(230) as i32,
+            card2_y + sc(20.0) as i32,
+            sc(18.0),
+            COLOR_TEXT_MAIN,
+        );
+    }
     let modes = vec!["Static", "Quiet", "Active", "Clingy"];
     for (i, mode) in modes.iter().enumerate() {
         let row = i / 2;
@@ -238,16 +243,18 @@ pub fn draw(
             h,
         );
     }
-    draw_text(
-        buffer,
-        w,
-        &[],
-        "Music Directory",
-        s(230) as i32,
-        card3_y + sc(20.0) as i32,
-        sc(18.0),
-        COLOR_TEXT_MAIN,
-    );
+    if state.draw_static_text {
+        draw_text(
+            buffer,
+            w,
+            &[],
+            "Music Directory",
+            s(230) as i32,
+            card3_y + sc(20.0) as i32,
+            sc(18.0),
+            COLOR_TEXT_MAIN,
+        );
+    }
     let p_btn_y = card3_y + sc(60.0) as i32;
     if state.draw_control_chrome && !state.gpu_music_input_chrome {
         draw_rounded_rect(
@@ -305,16 +312,18 @@ pub fn draw(
             h,
         );
     }
-    draw_text(
-        buffer,
-        w,
-        &[],
-        "Window Layer",
-        s(230) as i32,
-        card4_y + sc(20.0) as i32,
-        sc(18.0),
-        COLOR_TEXT_MAIN,
-    );
+    if state.draw_static_text {
+        draw_text(
+            buffer,
+            w,
+            &[],
+            "Window Layer",
+            s(230) as i32,
+            card4_y + sc(20.0) as i32,
+            sc(18.0),
+            COLOR_TEXT_MAIN,
+        );
+    }
     let layers = vec!["Always on Top", "Standard (Bottom)"];
     for (i, layer_name) in layers.iter().enumerate() {
         let mx = s(230 + i as u32 * 210) as i32;
@@ -391,16 +400,18 @@ pub fn draw(
             h,
         );
     }
-    draw_text(
-        buffer,
-        w,
-        &[],
-        "Display Monitor",
-        s(230) as i32,
-        card5_y + sc(20.0) as i32,
-        sc(18.0),
-        COLOR_TEXT_MAIN,
-    );
+    if state.draw_static_text {
+        draw_text(
+            buffer,
+            w,
+            &[],
+            "Display Monitor",
+            s(230) as i32,
+            card5_y + sc(20.0) as i32,
+            sc(18.0),
+            COLOR_TEXT_MAIN,
+        );
+    }
 
     for (i, (name, _)) in available_monitors.iter().enumerate() {
         let row = i / 3;
@@ -469,26 +480,28 @@ pub fn draw(
             h,
         );
     }
-    draw_text(
-        buffer,
-        w,
-        &[],
-        "Run on Startup",
-        s(230) as i32,
-        card6_y + sc(28.0) as i32,
-        sc(16.0),
-        COLOR_TEXT_MAIN,
-    );
-    draw_text(
-        buffer,
-        w,
-        &[],
-        "Automatically start Ameath when Windows boots",
-        s(230) as i32,
-        card6_y + sc(50.0) as i32,
-        sc(12.0),
-        COLOR_TEXT_SEC,
-    );
+    if state.draw_static_text {
+        draw_text(
+            buffer,
+            w,
+            &[],
+            "Run on Startup",
+            s(230) as i32,
+            card6_y + sc(28.0) as i32,
+            sc(16.0),
+            COLOR_TEXT_MAIN,
+        );
+        draw_text(
+            buffer,
+            w,
+            &[],
+            "Automatically start Ameath when Windows boots",
+            s(230) as i32,
+            card6_y + sc(50.0) as i32,
+            sc(12.0),
+            COLOR_TEXT_SEC,
+        );
+    }
 
     // Toggle Switch logic
     let toggle_x = s(210) as i32 + card_w as i32 - sc(80.0) as i32;
