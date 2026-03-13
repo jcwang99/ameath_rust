@@ -11,7 +11,9 @@ pub struct GeneralTabState<'a> {
     pub scroll_offset: f32,
     pub available_monitors: &'a [(String, String)],
     pub current_monitor_name: Option<&'a str>,
+    pub draw_card_backgrounds: bool,
     pub draw_control_chrome: bool,
+    pub gpu_slider_chrome: bool,
 }
 
 pub fn draw(
@@ -38,18 +40,20 @@ pub fn draw(
     let card1_y = (sy_val(120) as f32 + scroll_y) as i32;
 
     // 1. Pet Scale
-    draw_rounded_rect(
-        buffer,
-        w,
-        s(210) as i32,
-        card1_y,
-        card_w,
-        (140.0 * scale) as u32,
-        12,
-        COLOR_BG_CARD,
-        w,
-        h,
-    );
+    if state.draw_card_backgrounds {
+        draw_rounded_rect(
+            buffer,
+            w,
+            s(210) as i32,
+            card1_y,
+            card_w,
+            (140.0 * scale) as u32,
+            12,
+            COLOR_BG_CARD,
+            w,
+            h,
+        );
+    }
     draw_text(
         buffer,
         w,
@@ -69,7 +73,7 @@ pub fn draw(
     let track_h = sc(6.0) as u32;
 
     // Background track
-    if state.draw_control_chrome {
+    if state.draw_control_chrome && !state.gpu_slider_chrome {
         draw_rounded_rect(
             buffer,
             w,
@@ -86,7 +90,7 @@ pub fn draw(
 
     // Filled track
     let fill_w = (sc(300.0) * progress).max(sc(6.0)) as u32;
-    if state.draw_control_chrome {
+    if state.draw_control_chrome && !state.gpu_slider_chrome {
         draw_rounded_rect(
             buffer,
             w,
@@ -105,7 +109,7 @@ pub fn draw(
     let knob_size = sc(18.0) as u32;
     let knob_x = track_x + fill_w as i32 - (knob_size as i32 / 2);
     let knob_y = track_y + (track_h as i32 / 2) - (knob_size as i32 / 2);
-    if state.draw_control_chrome {
+    if state.draw_control_chrome && !state.gpu_slider_chrome {
         draw_rounded_rect(
             buffer,
             w,
@@ -135,18 +139,20 @@ pub fn draw(
 
     // 2. Behavior Mode
     let card2_y = (sy_val(280) as f32 + scroll_y * scale) as i32;
-    draw_rounded_rect(
-        buffer,
-        w,
-        s(210) as i32,
-        card2_y,
-        card_w,
-        (205.0 * scale) as u32,
-        12,
-        COLOR_BG_CARD,
-        w,
-        h,
-    );
+    if state.draw_card_backgrounds {
+        draw_rounded_rect(
+            buffer,
+            w,
+            s(210) as i32,
+            card2_y,
+            card_w,
+            (205.0 * scale) as u32,
+            12,
+            COLOR_BG_CARD,
+            w,
+            h,
+        );
+    }
     draw_text(
         buffer,
         w,
@@ -213,18 +219,20 @@ pub fn draw(
 
     // 3. Music Directory
     let card3_y = (sy_val(505) as f32 + scroll_y * scale) as i32;
-    draw_rounded_rect(
-        buffer,
-        w,
-        s(210) as i32,
-        card3_y,
-        card_w,
-        (140.0 * scale) as u32,
-        12,
-        COLOR_BG_CARD,
-        w,
-        h,
-    );
+    if state.draw_card_backgrounds {
+        draw_rounded_rect(
+            buffer,
+            w,
+            s(210) as i32,
+            card3_y,
+            card_w,
+            (140.0 * scale) as u32,
+            12,
+            COLOR_BG_CARD,
+            w,
+            h,
+        );
+    }
     draw_text(
         buffer,
         w,
@@ -278,18 +286,20 @@ pub fn draw(
 
     // 4. Window Layer
     let card4_y = (sy_val(665) as f32 + scroll_y * scale) as i32;
-    draw_rounded_rect(
-        buffer,
-        w,
-        s(210) as i32,
-        card4_y,
-        card_w,
-        (140.0 * scale) as u32,
-        12,
-        COLOR_BG_CARD,
-        w,
-        h,
-    );
+    if state.draw_card_backgrounds {
+        draw_rounded_rect(
+            buffer,
+            w,
+            s(210) as i32,
+            card4_y,
+            card_w,
+            (140.0 * scale) as u32,
+            12,
+            COLOR_BG_CARD,
+            w,
+            h,
+        );
+    }
     draw_text(
         buffer,
         w,
@@ -362,18 +372,20 @@ pub fn draw(
     let monitors_h = if rows > 0 { rows as f32 * 65.0 } else { 65.0 };
     let card5_h = (60.0 + monitors_h) * scale;
 
-    draw_rounded_rect(
-        buffer,
-        w,
-        s(210) as i32,
-        card5_y,
-        card_w,
-        card5_h as u32,
-        12,
-        COLOR_BG_CARD,
-        w,
-        h,
-    );
+    if state.draw_card_backgrounds {
+        draw_rounded_rect(
+            buffer,
+            w,
+            s(210) as i32,
+            card5_y,
+            card_w,
+            card5_h as u32,
+            12,
+            COLOR_BG_CARD,
+            w,
+            h,
+        );
+    }
     draw_text(
         buffer,
         w,
@@ -438,18 +450,20 @@ pub fn draw(
 
     // 6. Auto-Start
     let card6_y = (sy_val(825 + 60 + monitors_h as u32 + 20) as f32 + scroll_y * scale) as i32;
-    draw_rounded_rect(
-        buffer,
-        w,
-        s(210) as i32,
-        card6_y,
-        card_w,
-        (80.0 * scale) as u32,
-        12,
-        COLOR_BG_CARD,
-        w,
-        h,
-    );
+    if state.draw_card_backgrounds {
+        draw_rounded_rect(
+            buffer,
+            w,
+            s(210) as i32,
+            card6_y,
+            card_w,
+            (80.0 * scale) as u32,
+            12,
+            COLOR_BG_CARD,
+            w,
+            h,
+        );
+    }
     draw_text(
         buffer,
         w,

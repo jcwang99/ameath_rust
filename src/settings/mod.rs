@@ -1105,7 +1105,9 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     scroll_offset: input.scroll_offset,
                     available_monitors: &input.available_monitors,
                     current_monitor_name: input.current_monitor_name.as_deref(),
+                    draw_card_backgrounds: scene.draw_static_blocks,
                     draw_control_chrome: true,
+                    gpu_slider_chrome: scene.draw_static_blocks == false,
                 };
                 let (v, c, _) =
                     tabs::general::draw(buffer, w, h, scale, off_x, off_y, &mut gen_state);
@@ -1401,6 +1403,11 @@ impl SettingsWindow {
                     gpu_snapshot.has_error,
                     runtime.last_gpu_surface_count
                 );
+                if runtime.last_renderer_kind == SettingsRendererKind::GpuPrototype {
+                    tracing::info!(
+                        "Settings GPU prototype currently owns: app background, sidebar, header, primary cards, and verified slider chrome"
+                    );
+                }
                 {
                     let mut lock = rb_ptr.lock().unwrap();
                     *lock = Some(res);
