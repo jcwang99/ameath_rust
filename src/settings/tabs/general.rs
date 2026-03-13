@@ -16,6 +16,7 @@ pub struct GeneralTabState<'a> {
     pub gpu_slider_chrome: bool,
     pub gpu_behavior_chrome: bool,
     pub gpu_window_layer_chrome: bool,
+    pub gpu_music_input_chrome: bool,
 }
 
 pub fn draw(
@@ -246,7 +247,7 @@ pub fn draw(
         COLOR_TEXT_MAIN,
     );
     let p_btn_y = card3_y + sc(60.0) as i32;
-    if state.draw_control_chrome {
+    if state.draw_control_chrome && !state.gpu_music_input_chrome {
         draw_rounded_rect(
             buffer,
             w,

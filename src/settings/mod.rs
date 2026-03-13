@@ -1110,6 +1110,7 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     gpu_slider_chrome: scene.draw_static_blocks == false,
                     gpu_behavior_chrome: scene.draw_static_blocks == false,
                     gpu_window_layer_chrome: scene.draw_static_blocks == false,
+                    gpu_music_input_chrome: scene.draw_static_blocks == false,
                 };
                 let (v, c, _) =
                     tabs::general::draw(buffer, w, h, scale, off_x, off_y, &mut gen_state);
@@ -1407,7 +1408,7 @@ impl SettingsWindow {
                 );
                 if runtime.last_renderer_kind == SettingsRendererKind::GpuPrototype {
                     tracing::info!(
-                        "Settings GPU prototype currently owns: app background, sidebar, header, primary cards, verified slider chrome, verified behavior button chrome, and verified window-layer button chrome"
+                        "Settings GPU prototype currently owns: app background, sidebar, header, primary cards, verified slider chrome, verified behavior button chrome, verified window-layer button chrome, and verified music-input chrome"
                     );
                 }
                 {
