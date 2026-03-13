@@ -26,6 +26,10 @@ pub struct AiTabState<'a> {
     pub notification: Option<(String, std::time::Instant)>,
     pub field_scroll_offsets: [f32; 18],
     pub draw_card_background: bool,
+    pub gpu_standard_input_chrome: bool,
+    pub gpu_profile_button_chrome: bool,
+    pub gpu_response_mode_chrome: bool,
+    pub gpu_tts_ref_button_chrome: bool,
 }
 
 pub fn draw(
@@ -258,30 +262,32 @@ pub fn draw(
                 COLOR_BORDER
             };
 
-            draw_rounded_rect(
-                buffer,
-                w,
-                s(fx as u32) as i32,
-                card_y_raw + sc(fy + 25.0) as i32,
-                sc(fw) as u32,
-                sc(45.0) as u32,
-                8,
-                border_col,
-                w,
-                h,
-            );
-            draw_rounded_rect(
-                buffer,
-                w,
-                (s(fx as u32) as i32).saturating_add(1),
-                card_y_raw + sc(fy + 25.0) as i32 + 1,
-                (sc(fw) as u32).saturating_sub(2),
-                (sc(45.0) as u32).saturating_sub(2),
-                7,
-                COLOR_BG_CARD,
-                w,
-                h,
-            );
+            if !state.gpu_tts_ref_button_chrome {
+                draw_rounded_rect(
+                    buffer,
+                    w,
+                    s(fx as u32) as i32,
+                    card_y_raw + sc(fy + 25.0) as i32,
+                    sc(fw) as u32,
+                    sc(45.0) as u32,
+                    8,
+                    border_col,
+                    w,
+                    h,
+                );
+                draw_rounded_rect(
+                    buffer,
+                    w,
+                    (s(fx as u32) as i32).saturating_add(1),
+                    card_y_raw + sc(fy + 25.0) as i32 + 1,
+                    (sc(fw) as u32).saturating_sub(2),
+                    (sc(45.0) as u32).saturating_sub(2),
+                    7,
+                    COLOR_BG_CARD,
+                    w,
+                    h,
+                );
+            }
 
             let ref_path = ai_config.tts_reference_audio.to_string_lossy();
             let path_str = if ref_path.is_empty() {
@@ -326,31 +332,34 @@ pub fn draw(
             w,
         );
 
-        // Input Border & BG
-        draw_rounded_rect(
-            buffer,
-            w,
-            fx_abs,
-            input_y_abs,
-            input_w,
-            input_h,
-            8,
-            border_col,
-            w,
-            h,
-        );
-        draw_rounded_rect(
-            buffer,
-            w,
-            fx_abs + 1,
-            input_y_abs + 1,
-            input_w - 2,
-            input_h.saturating_sub(2),
-            7,
-            COLOR_BG_CARD,
-            w,
-            h,
-        );
+        let gpu_owned_input = state.gpu_standard_input_chrome
+            && matches!(i, 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 17);
+        if !gpu_owned_input {
+            draw_rounded_rect(
+                buffer,
+                w,
+                fx_abs,
+                input_y_abs,
+                input_w,
+                input_h,
+                8,
+                border_col,
+                w,
+                h,
+            );
+            draw_rounded_rect(
+                buffer,
+                w,
+                fx_abs + 1,
+                input_y_abs + 1,
+                input_w - 2,
+                input_h.saturating_sub(2),
+                7,
+                COLOR_BG_CARD,
+                w,
+                h,
+            );
+        }
 
         if i == 13 {
             // System Prompt content is handled by the dynamic overlay
@@ -446,18 +455,20 @@ pub fn draw(
             } else {
                 COLOR_BG_CARD
             };
-            draw_rounded_rect(
-                buffer,
-                w,
-                btn_x_start,
-                btn_y_start,
-                btn_w,
-                sc(45.0) as u32,
-                8,
-                prev_bg,
-                w,
-                h,
-            );
+            if !state.gpu_profile_button_chrome {
+                draw_rounded_rect(
+                    buffer,
+                    w,
+                    btn_x_start,
+                    btn_y_start,
+                    btn_w,
+                    sc(45.0) as u32,
+                    8,
+                    prev_bg,
+                    w,
+                    h,
+                );
+            }
             draw_text_dw_ex(
                 buffer,
                 w,
@@ -487,18 +498,20 @@ pub fn draw(
             } else {
                 COLOR_BG_CARD
             };
-            draw_rounded_rect(
-                buffer,
-                w,
-                next_x,
-                btn_y_start,
-                btn_w,
-                sc(45.0) as u32,
-                8,
-                next_bg,
-                w,
-                h,
-            );
+            if !state.gpu_profile_button_chrome {
+                draw_rounded_rect(
+                    buffer,
+                    w,
+                    next_x,
+                    btn_y_start,
+                    btn_w,
+                    sc(45.0) as u32,
+                    8,
+                    next_bg,
+                    w,
+                    h,
+                );
+            }
             draw_text_dw_ex(
                 buffer,
                 w,
@@ -530,18 +543,20 @@ pub fn draw(
             } else {
                 COLOR_BG_CARD
             };
-            draw_rounded_rect(
-                buffer,
-                w,
-                add_x,
-                btn_y_start,
-                add_w_abs,
-                sc(45.0) as u32,
-                8,
-                add_bg,
-                w,
-                h,
-            );
+            if !state.gpu_profile_button_chrome {
+                draw_rounded_rect(
+                    buffer,
+                    w,
+                    add_x,
+                    btn_y_start,
+                    add_w_abs,
+                    sc(45.0) as u32,
+                    8,
+                    add_bg,
+                    w,
+                    h,
+                );
+            }
             draw_text_dw_ex(
                 buffer,
                 w,
@@ -573,18 +588,20 @@ pub fn draw(
             } else {
                 COLOR_BG_CARD
             };
-            draw_rounded_rect(
-                buffer,
-                w,
-                del_x,
-                btn_y_start,
-                del_w_abs,
-                sc(45.0) as u32,
-                8,
-                del_bg,
-                w,
-                h,
-            );
+            if !state.gpu_profile_button_chrome {
+                draw_rounded_rect(
+                    buffer,
+                    w,
+                    del_x,
+                    btn_y_start,
+                    del_w_abs,
+                    sc(45.0) as u32,
+                    8,
+                    del_bg,
+                    w,
+                    h,
+                );
+            }
             draw_text_dw_ex(
                 buffer,
                 w,
@@ -729,30 +746,32 @@ pub fn draw(
             sc(fw) as u32,
         );
 
-        draw_rounded_rect(
-            buffer,
-            w,
-            fx_abs,
-            input_y_abs,
-            sc(fw) as u32,
-            input_h,
-            10,
-            COLOR_BORDER,
-            w,
-            h,
-        );
-        draw_rounded_rect(
-            buffer,
-            w,
-            fx_abs + 1,
-            input_y_abs + 1,
-            sc(fw) as u32 - 2,
-            input_h.saturating_sub(2),
-            9,
-            COLOR_BG_CARD,
-            w,
-            h,
-        );
+        if !state.gpu_response_mode_chrome {
+            draw_rounded_rect(
+                buffer,
+                w,
+                fx_abs,
+                input_y_abs,
+                sc(fw) as u32,
+                input_h,
+                10,
+                COLOR_BORDER,
+                w,
+                h,
+            );
+            draw_rounded_rect(
+                buffer,
+                w,
+                fx_abs + 1,
+                input_y_abs + 1,
+                sc(fw) as u32 - 2,
+                input_h.saturating_sub(2),
+                9,
+                COLOR_BG_CARD,
+                w,
+                h,
+            );
+        }
 
         let modes = [
             (crate::types::AiResponseMode::Auto, "Auto"),
@@ -774,7 +793,7 @@ pub fn draw(
                 && state.content_mouse_pos.1 <= fy + 70.0;
             let is_active = active_profile.response_mode == *mode;
 
-            if is_active || is_hovered {
+            if (is_active || is_hovered) && !state.gpu_response_mode_chrome {
                 draw_rounded_rect(
                     buffer,
                     w,
@@ -789,7 +808,7 @@ pub fn draw(
                 );
             }
 
-            if idx > 0 {
+            if idx > 0 && !state.gpu_response_mode_chrome {
                 draw_rect(
                     buffer,
                     w,

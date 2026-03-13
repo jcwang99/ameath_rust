@@ -916,6 +916,162 @@ impl SettingsGpuPrototypeRenderer {
                         12.0 * render_scale,
                         COLOR_BG_CARD,
                     ));
+
+                    let ai_fields = [
+                        (230.0, 130.0, 500.0),
+                        (230.0, 230.0, 500.0),
+                        (230.0, 330.0, 500.0),
+                        (230.0, 430.0, 150.0),
+                        (405.0, 430.0, 150.0),
+                        (580.0, 430.0, 150.0),
+                        (230.0, 530.0, 150.0),
+                        (230.0, 630.0, 500.0),
+                        (230.0, 730.0, 500.0),
+                        (230.0, 830.0, 500.0),
+                        (230.0, 930.0, 500.0),
+                        (230.0, 1530.0, 500.0),
+                    ];
+                    for (idx, (fx, fy, fw)) in ai_fields.iter().enumerate() {
+                        let field_index = [2usize, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 17][idx];
+                        let x = fx * render_scale + off_x;
+                        let y = (120.0 + fy + 25.0) * render_scale
+                            + off_y
+                            + scene.cpu_fallback_scene.input.scroll_offset * render_scale;
+                        let w = fw * render_scale;
+                        let h = 45.0 * render_scale;
+                        let border =
+                            if scene.cpu_fallback_scene.input.focused_field == Some(field_index) {
+                                COLOR_PRIMARY
+                            } else {
+                                COLOR_BORDER
+                            };
+                        content_cards.push((x, y, x + w, y + h, 8.0 * render_scale, border));
+                        content_cards.push((
+                            x + 1.0,
+                            y + 1.0,
+                            x + w - 1.0,
+                            y + h - 1.0,
+                            7.0 * render_scale,
+                            COLOR_BG_CARD,
+                        ));
+                    }
+
+                    let btn_y = (120.0 + 30.0 + 25.0) * render_scale
+                        + off_y
+                        + scene.cpu_fallback_scene.input.scroll_offset * render_scale;
+                    let profile_buttons = [
+                        (230.0, 30.0, 45.0),
+                        (430.0, 30.0, 45.0),
+                        (480.0, 35.0, 45.0),
+                        (525.0, 35.0, 45.0),
+                    ];
+                    let profile_states = [
+                        if scene.cpu_fallback_scene.input.pressed_btn == Some(0) {
+                            COLOR_PRIMARY
+                        } else {
+                            COLOR_BG_CARD
+                        },
+                        if scene.cpu_fallback_scene.input.pressed_btn == Some(1) {
+                            COLOR_PRIMARY
+                        } else {
+                            COLOR_BG_CARD
+                        },
+                        if scene.cpu_fallback_scene.input.pressed_btn == Some(2) {
+                            COLOR_PRIMARY
+                        } else {
+                            COLOR_BG_CARD
+                        },
+                        if scene.cpu_fallback_scene.input.pressed_btn == Some(3) {
+                            COLOR_PRIMARY
+                        } else {
+                            COLOR_BG_CARD
+                        },
+                    ];
+                    for ((x_design, w_design, h_design), color) in
+                        profile_buttons.into_iter().zip(profile_states)
+                    {
+                        let x = x_design * render_scale + off_x;
+                        let w = w_design * render_scale;
+                        let h = h_design * render_scale;
+                        content_cards.push((x, btn_y, x + w, btn_y + h, 8.0 * render_scale, color));
+                    }
+
+                    let ref_x = 230.0 * render_scale + off_x;
+                    let ref_y = (120.0 + 1430.0 + 25.0) * render_scale
+                        + off_y
+                        + scene.cpu_fallback_scene.input.scroll_offset * render_scale;
+                    let ref_w = 500.0 * render_scale;
+                    let ref_h = 45.0 * render_scale;
+                    content_cards.push((
+                        ref_x,
+                        ref_y,
+                        ref_x + ref_w,
+                        ref_y + ref_h,
+                        8.0 * render_scale,
+                        COLOR_BORDER,
+                    ));
+                    content_cards.push((
+                        ref_x + 1.0,
+                        ref_y + 1.0,
+                        ref_x + ref_w - 1.0,
+                        ref_y + ref_h - 1.0,
+                        7.0 * render_scale,
+                        COLOR_BG_CARD,
+                    ));
+
+                    let mode_x = 405.0 * render_scale + off_x;
+                    let mode_y = (120.0 + 1330.0 + 25.0) * render_scale
+                        + off_y
+                        + scene.cpu_fallback_scene.input.scroll_offset * render_scale;
+                    let mode_w = 325.0 * render_scale;
+                    let mode_h = 45.0 * render_scale;
+                    content_cards.push((
+                        mode_x,
+                        mode_y,
+                        mode_x + mode_w,
+                        mode_y + mode_h,
+                        10.0 * render_scale,
+                        COLOR_BORDER,
+                    ));
+                    content_cards.push((
+                        mode_x + 1.0,
+                        mode_y + 1.0,
+                        mode_x + mode_w - 1.0,
+                        mode_y + mode_h - 1.0,
+                        9.0 * render_scale,
+                        COLOR_BG_CARD,
+                    ));
+
+                    let segment_w = mode_w / 3.0;
+                    let active_segment = match scene
+                        .cpu_fallback_scene
+                        .input
+                        .ai_config
+                        .active_profile()
+                        .response_mode
+                    {
+                        crate::types::AiResponseMode::Auto => 0,
+                        crate::types::AiResponseMode::Streaming => 1,
+                        crate::types::AiResponseMode::NonStreaming => 2,
+                    };
+                    for idx in 0..3 {
+                        if idx == active_segment {
+                            let seg_x = mode_x + segment_w * idx as f32 + 2.0;
+                            let seg_w = if idx == 2 {
+                                mode_w - segment_w * idx as f32 - 4.0
+                            } else {
+                                segment_w - 4.0
+                            };
+                            content_cards.push((
+                                seg_x,
+                                mode_y + 2.0,
+                                seg_x + seg_w,
+                                mode_y + mode_h - 2.0,
+                                8.0 * render_scale,
+                                COLOR_PRIMARY,
+                            ));
+                        }
+                    }
                 }
                 3 => {
                     let card_left = 230.0 * render_scale + off_x;
@@ -1146,6 +1302,10 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     notification: input.notification,
                     field_scroll_offsets: input.field_scroll_offsets,
                     draw_card_background: scene.draw_static_blocks,
+                    gpu_standard_input_chrome: scene.draw_static_blocks == false,
+                    gpu_profile_button_chrome: scene.draw_static_blocks == false,
+                    gpu_response_mode_chrome: scene.draw_static_blocks == false,
+                    gpu_tts_ref_button_chrome: scene.draw_static_blocks == false,
                 };
                 let (v, c, rect) = tabs::ai::draw(
                     buffer,
@@ -1411,7 +1571,7 @@ impl SettingsWindow {
                 );
                 if runtime.last_renderer_kind == SettingsRendererKind::GpuPrototype {
                     tracing::info!(
-                        "Settings GPU prototype currently owns: app background, sidebar, header, primary cards, verified slider chrome, verified behavior button chrome, verified window-layer button chrome, verified music-input chrome, verified monitor button chrome, and verified startup-toggle chrome"
+                        "Settings GPU prototype currently owns: app background, sidebar, header, primary cards, verified General chrome groups, verified AI standard input chrome, verified AI profile button chrome, verified AI response-mode chrome, and verified AI TTS ref-button chrome"
                     );
                 }
                 {
