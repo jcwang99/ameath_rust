@@ -692,6 +692,24 @@ impl SettingsGpuPrototypeRenderer {
                             COLOR_BG_CARD,
                         ));
                     }
+
+                    let rows = (scene.cpu_fallback_scene.input.available_monitors.len() + 2) / 3;
+                    let monitors_h = if rows > 0 { rows as f32 * 65.0 } else { 65.0 };
+                    let extra_cards = [
+                        (825.0 + scroll_y, 60.0 + monitors_h),
+                        (825.0 + 60.0 + monitors_h + 20.0 + scroll_y, 80.0),
+                    ];
+                    for (logical_y, logical_h) in extra_cards {
+                        let top = logical_y * render_scale + off_y;
+                        content_cards.push((
+                            card_left,
+                            top,
+                            card_right,
+                            top + logical_h * render_scale,
+                            radius,
+                            COLOR_BG_CARD,
+                        ));
+                    }
                 }
                 2 => {
                     let left = 210.0 * render_scale + off_x;
@@ -704,6 +722,41 @@ impl SettingsGpuPrototypeRenderer {
                         12.0 * render_scale,
                         COLOR_BG_CARD,
                     ));
+                }
+                3 => {
+                    let card_left = 230.0 * render_scale + off_x;
+                    let card_width = 490.0 * render_scale;
+                    let radius = 8.0 * render_scale;
+                    let start_y = 140.0 * render_scale + off_y;
+                    let current_y = start_y + scene.cpu_fallback_scene.input.scroll_offset;
+                    let item_h_fixed = 180.0 * render_scale;
+                    let spacing = 10.0 * render_scale;
+                    let total_item_h = item_h_fixed + spacing;
+                    let min_y_vis = 120.0 * render_scale + off_y;
+                    let start_idx =
+                        ((-(current_y - min_y_vis) / total_item_h).floor() as i32).max(0) as usize;
+                    let end_idx = (start_idx
+                        + (scene.cpu_fallback_scene.input.h as f32 / total_item_h).ceil() as usize
+                        + 2)
+                    .min(scene.cpu_fallback_scene.input.history.len());
+
+                    for i in start_idx..end_idx {
+                        let role = &scene.cpu_fallback_scene.input.history[i].0;
+                        let card_color = if role == "user" {
+                            0x003A3A42
+                        } else {
+                            0x002D2D35
+                        };
+                        let top = current_y + (i as f32 * total_item_h);
+                        content_cards.push((
+                            card_left,
+                            top,
+                            card_left + card_width,
+                            top + item_h_fixed,
+                            radius,
+                            card_color,
+                        ));
+                    }
                 }
                 4 => {
                     let left = 210.0 * render_scale + off_x;
