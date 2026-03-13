@@ -227,8 +227,7 @@ impl SettingsGpuPrototypeCanvas {
         buffer: &mut [u32],
         sidebar_width: u32,
         header_height: u32,
-        current_tab: usize,
-        content_card: Option<(f32, f32, f32, f32, f32)>,
+        content_cards: &[(f32, f32, f32, f32, f32, u32)],
     ) {
         self.ensure_surface(d2d_factory, width as i32, height as i32);
 
@@ -290,31 +289,29 @@ impl SettingsGpuPrototypeCanvas {
                     );
                 }
 
-                if current_tab == 2 {
-                    if let Some((left, top, right, bottom, radius)) = content_card {
-                        if let Ok(card_brush) = rt.CreateSolidColorBrush(
-                            &D2D1_COLOR_F {
-                                r: ((COLOR_BG_CARD >> 16) & 0xFF) as f32 / 255.0,
-                                g: ((COLOR_BG_CARD >> 8) & 0xFF) as f32 / 255.0,
-                                b: (COLOR_BG_CARD & 0xFF) as f32 / 255.0,
-                                a: 1.0,
-                            },
-                            None,
-                        ) {
-                            rt.FillRoundedRectangle(
-                                &D2D1_ROUNDED_RECT {
-                                    rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                                        left,
-                                        top,
-                                        right,
-                                        bottom,
-                                    },
-                                    radiusX: radius,
-                                    radiusY: radius,
+                for (left, top, right, bottom, radius, color) in content_cards {
+                    if let Ok(card_brush) = rt.CreateSolidColorBrush(
+                        &D2D1_COLOR_F {
+                            r: ((color >> 16) & 0xFF) as f32 / 255.0,
+                            g: ((color >> 8) & 0xFF) as f32 / 255.0,
+                            b: (color & 0xFF) as f32 / 255.0,
+                            a: 1.0,
+                        },
+                        None,
+                    ) {
+                        rt.FillRoundedRectangle(
+                            &D2D1_ROUNDED_RECT {
+                                rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                    left: *left,
+                                    top: *top,
+                                    right: *right,
+                                    bottom: *bottom,
                                 },
-                                &card_brush,
-                            );
-                        }
+                                radiusX: *radius,
+                                radiusY: *radius,
+                            },
+                            &card_brush,
+                        );
                     }
                 }
 
@@ -658,15 +655,71 @@ impl SettingsGpuPrototypeRenderer {
             let off_y = (scene.cpu_fallback_scene.input.h as f32 - 750.0 * render_scale) / 2.0;
             let sidebar_width = (180.0 * render_scale + off_x) as u32;
             let header_height = (120.0 * render_scale + off_y) as u32;
-            let ai_card = if scene.cpu_fallback_scene.input.current_tab == 2 {
-                let left = 210.0 * render_scale + off_x;
-                let top = 120.0 * render_scale + off_y;
-                let right = left + 560.0 * render_scale;
-                let bottom = top + 1950.0 * render_scale;
-                Some((left, top, right, bottom, 12.0 * render_scale))
-            } else {
-                None
+            let mut content_cards = Vec::new();
+
+            match scene.cpu_fallback_scene.input.current_tab {
+                0 => {
+                    let left = 210.0 * render_scale + off_x;
+                    let top = 120.0 * render_scale + off_y;
+                    content_cards.push((
+                        left,
+                        top,
+                        left + 560.0 * render_scale,
+                        top + 200.0 * render_scale,
+                        12.0 * render_scale,
+                        COLOR_BG_CARD,
+                    ));
+                }
+                1 => {
+                    let scroll_y = scene.cpu_fallback_scene.input.scroll_offset;
+                    let card_left = 210.0 * render_scale + off_x;
+                    let card_right = card_left + 560.0 * render_scale;
+                    let radius = 12.0 * render_scale;
+                    let general_cards = [
+                        (120.0 + scroll_y / render_scale, 140.0),
+                        (280.0 + scroll_y, 205.0),
+                        (505.0 + scroll_y, 140.0),
+                        (665.0 + scroll_y, 140.0),
+                    ];
+                    for (logical_y, logical_h) in general_cards {
+                        let top = logical_y * render_scale + off_y;
+                        content_cards.push((
+                            card_left,
+                            top,
+                            card_right,
+                            top + logical_h * render_scale,
+                            radius,
+                            COLOR_BG_CARD,
+                        ));
+                    }
+                }
+                2 => {
+                    let left = 210.0 * render_scale + off_x;
+                    let top = 120.0 * render_scale + off_y;
+                    content_cards.push((
+                        left,
+                        top,
+                        left + 560.0 * render_scale,
+                        top + 1950.0 * render_scale,
+                        12.0 * render_scale,
+                        COLOR_BG_CARD,
+                    ));
+                }
+                4 => {
+                    let left = 210.0 * render_scale + off_x;
+                    let top = 120.0 * render_scale + off_y;
+                    content_cards.push((
+                        left,
+                        top,
+                        left + 560.0 * render_scale,
+                        top + 300.0 * render_scale,
+                        12.0 * render_scale,
+                        COLOR_BG_CARD,
+                    ));
+                }
+                _ => {}
             };
+
             resources.canvas.render_background(
                 &resources.d2d_factory,
                 scene.cpu_fallback_scene.input.w,
@@ -674,8 +727,7 @@ impl SettingsGpuPrototypeRenderer {
                 buffer,
                 sidebar_width,
                 header_height,
-                scene.cpu_fallback_scene.input.current_tab,
-                ai_card,
+                &content_cards,
             );
         }
 
