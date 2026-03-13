@@ -122,6 +122,7 @@ struct SettingsRenderScene {
     hash: u64,
     clear_background: bool,
     draw_static_blocks: bool,
+    draw_static_text: bool,
 }
 
 struct SettingsGpuPrototypeScene {
@@ -671,6 +672,7 @@ impl SettingsGpuPrototypeRenderer {
                 hash,
                 clear_background: false,
                 draw_static_blocks: false,
+                draw_static_text: false,
             },
             backend_label: "windows-gpu-prototype",
         }
@@ -710,6 +712,30 @@ impl SettingsGpuPrototypeRenderer {
             let header_height = (120.0 * render_scale + off_y) as u32;
             let mut content_cards = Vec::new();
             let mut text_runs = Vec::new();
+            let (title, sub) = match scene.cpu_fallback_scene.input.current_tab {
+                0 => ("Home", "Welcome to Ameath!"),
+                1 => ("Appearance", "Customize your pet's look"),
+                2 => ("AI Brain", "Connect Ameath to the cloud"),
+                3 => ("History", "Recent Local Memory (Last 50)"),
+                _ => ("About", "Ameath v0.1.0"),
+            };
+            gpu_groups.push("header_text");
+            text_runs.push(SettingsGpuTextRun {
+                text: title.to_string(),
+                x: 220.0 * render_scale + off_x,
+                y: 40.0 * render_scale + off_y,
+                font_size: 32.0 * render_scale,
+                color: COLOR_TEXT_MAIN,
+                bold: false,
+            });
+            text_runs.push(SettingsGpuTextRun {
+                text: sub.to_string(),
+                x: 220.0 * render_scale + off_x,
+                y: 85.0 * render_scale + off_y,
+                font_size: 16.0 * render_scale,
+                color: COLOR_TEXT_SEC,
+                bold: false,
+            });
 
             match scene.cpu_fallback_scene.input.current_tab {
                 0 => {
@@ -1372,6 +1398,7 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
             hash,
             clear_background: true,
             draw_static_blocks: true,
+            draw_static_text: true,
         }
     }
 
@@ -1444,26 +1471,28 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                 h,
             );
         }
-        draw_text(
-            buffer,
-            w,
-            &[],
-            title,
-            s(220) as i32,
-            sy_val(40) as i32,
-            sc(32.0),
-            COLOR_TEXT_MAIN,
-        );
-        draw_text(
-            buffer,
-            w,
-            &[],
-            sub,
-            s(220) as i32,
-            sy_val(85) as i32,
-            sc(16.0),
-            COLOR_TEXT_SEC,
-        );
+        if scene.draw_static_text {
+            draw_text(
+                buffer,
+                w,
+                &[],
+                title,
+                s(220) as i32,
+                sy_val(40) as i32,
+                sc(32.0),
+                COLOR_TEXT_MAIN,
+            );
+            draw_text(
+                buffer,
+                w,
+                &[],
+                sub,
+                s(220) as i32,
+                sy_val(85) as i32,
+                sc(16.0),
+                COLOR_TEXT_SEC,
+            );
+        }
 
         // Tab Content
         match input.current_tab {
@@ -1476,7 +1505,7 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     off_x,
                     off_y,
                     scene.draw_static_blocks,
-                    scene.draw_static_blocks,
+                    scene.draw_static_text,
                 );
                 vh = v;
                 ch = c;
@@ -1580,7 +1609,7 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     off_x,
                     off_y,
                     scene.draw_static_blocks,
-                    scene.draw_static_blocks,
+                    scene.draw_static_text,
                 );
                 vh = v;
                 ch = c;
