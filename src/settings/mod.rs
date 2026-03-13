@@ -1142,6 +1142,7 @@ impl SettingsGpuPrototypeRenderer {
                         "ai_profile_title_text",
                         "ai_standard_input_chrome",
                         "ai_eye_icon_chrome",
+                        "ai_profile_button_base_chrome",
                         "ai_tts_ref_button_chrome",
                         "ai_response_mode_chrome",
                         "ai_response_mode_label_text",
@@ -1264,6 +1265,35 @@ impl SettingsGpuPrototypeRenderer {
                                 eye_color,
                             ));
                         }
+                    }
+
+                    let mouse_lx =
+                        (scene.cpu_fallback_scene.input.mouse_pos.0 as f32 - off_x) / render_scale;
+                    let mouse_ly =
+                        (scene.cpu_fallback_scene.input.mouse_pos.1 as f32 - off_y) / render_scale;
+                    let content_mouse_y =
+                        mouse_ly - 120.0 - scene.cpu_fallback_scene.input.scroll_offset;
+                    let profile_buttons = [
+                        (0usize, 230.0, 30.0, 30.0),
+                        (1usize, 430.0, 30.0, 30.0),
+                        (2usize, 480.0, 35.0, 35.0),
+                        (3usize, 525.0, 35.0, 35.0),
+                    ];
+                    for (btn_idx, x_design, w_design, _h_design) in profile_buttons {
+                        let is_hover = mouse_lx >= x_design
+                            && mouse_lx <= x_design + w_design
+                            && content_mouse_y >= 55.0
+                            && content_mouse_y <= 100.0;
+                        if is_hover || scene.cpu_fallback_scene.input.pressed_btn == Some(btn_idx) {
+                            continue;
+                        }
+                        let x = x_design * render_scale + off_x;
+                        let y = (120.0 + 30.0 + 25.0) * render_scale
+                            + off_y
+                            + scene.cpu_fallback_scene.input.scroll_offset * render_scale;
+                        let w = w_design * render_scale;
+                        let h = 45.0 * render_scale;
+                        content_cards.push((x, y, x + w, y + h, 8.0 * render_scale, COLOR_BG_CARD));
                     }
 
                     let ref_x = 230.0 * render_scale + off_x;
@@ -1651,7 +1681,7 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     field_scroll_offsets: input.field_scroll_offsets,
                     draw_card_background: scene.draw_static_blocks,
                     gpu_standard_input_chrome: scene.draw_static_blocks == false,
-                    gpu_profile_button_chrome: false,
+                    gpu_profile_button_chrome: scene.draw_static_blocks == false,
                     gpu_response_mode_chrome: scene.draw_static_blocks == false,
                     gpu_tts_ref_button_chrome: scene.draw_static_blocks == false,
                     gpu_checkbox_chrome: false,

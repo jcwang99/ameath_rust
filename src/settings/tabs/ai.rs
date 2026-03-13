@@ -496,7 +496,7 @@ pub fn draw(
             } else {
                 COLOR_BG_CARD
             };
-            if !state.gpu_profile_button_chrome {
+            if !state.gpu_profile_button_chrome || is_prev_hover || state.pressed_btn == Some(0) {
                 draw_rounded_rect(
                     buffer,
                     w,
@@ -541,7 +541,7 @@ pub fn draw(
             } else {
                 COLOR_BG_CARD
             };
-            if !state.gpu_profile_button_chrome {
+            if !state.gpu_profile_button_chrome || is_next_hover || state.pressed_btn == Some(1) {
                 draw_rounded_rect(
                     buffer,
                     w,
@@ -588,7 +588,7 @@ pub fn draw(
             } else {
                 COLOR_BG_CARD
             };
-            if !state.gpu_profile_button_chrome {
+            if !state.gpu_profile_button_chrome || is_add_hover || state.pressed_btn == Some(2) {
                 draw_rounded_rect(
                     buffer,
                     w,
@@ -635,7 +635,7 @@ pub fn draw(
             } else {
                 COLOR_BG_CARD
             };
-            if !state.gpu_profile_button_chrome {
+            if !state.gpu_profile_button_chrome || is_del_hover || state.pressed_btn == Some(3) {
                 draw_rounded_rect(
                     buffer,
                     w,
