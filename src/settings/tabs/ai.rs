@@ -33,6 +33,7 @@ pub struct AiTabState<'a> {
     pub gpu_tts_ref_button_chrome: bool,
     pub gpu_square_checkbox_chrome: bool,
     pub gpu_multimodal_outer_chrome: bool,
+    pub gpu_multimodal_checkmark: bool,
     pub gpu_eye_icon_chrome: bool,
     pub gpu_dialog_chrome: bool,
     pub gpu_toast_chrome: bool,
@@ -755,7 +756,7 @@ pub fn draw(
                 );
             }
             // Checkmark
-            if is_multimodal {
+            if is_multimodal && !state.gpu_multimodal_checkmark {
                 draw_text_dw_ex(
                     buffer,
                     w,

@@ -1142,6 +1142,7 @@ impl SettingsGpuPrototypeRenderer {
                         "ai_profile_title_text",
                         "ai_standard_input_chrome",
                         "ai_multimodal_outer_chrome",
+                        "ai_multimodal_checkmark",
                         "ai_square_checkbox_chrome",
                         "ai_eye_icon_chrome",
                         "ai_profile_button_base_chrome",
@@ -1327,6 +1328,16 @@ impl SettingsGpuPrototypeRenderer {
                             7.0 * render_scale,
                             COLOR_BG_CARD,
                         ));
+                    }
+                    if multimodal_enabled {
+                        text_runs.push(SettingsGpuTextRun {
+                            text: "✓".to_string(),
+                            x: mm_x + 12.0 * render_scale,
+                            y: mm_y + 10.0 * render_scale,
+                            font_size: 20.0 * render_scale,
+                            color: 0x00FFFFFF,
+                            bold: false,
+                        });
                     }
 
                     let ai_fields = [
@@ -1893,6 +1904,7 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     gpu_tts_ref_button_chrome: scene.draw_static_blocks == false,
                     gpu_square_checkbox_chrome: scene.draw_static_blocks == false,
                     gpu_multimodal_outer_chrome: scene.draw_static_blocks == false,
+                    gpu_multimodal_checkmark: scene.draw_static_text == false,
                     gpu_eye_icon_chrome: scene.draw_static_blocks == false,
                     gpu_dialog_chrome: false,
                     gpu_toast_chrome: false,
