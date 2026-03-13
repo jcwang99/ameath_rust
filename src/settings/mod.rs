@@ -1705,6 +1705,7 @@ impl SettingsGpuPrototypeRenderer {
                 }
                 3 => {
                     gpu_groups.push("history_cards");
+                    gpu_groups.push("history_subscrollbar_chrome");
                     let card_left = 230.0 * render_scale + off_x;
                     let card_width = 490.0 * render_scale;
                     let radius = 8.0 * render_scale;
@@ -1738,6 +1739,55 @@ impl SettingsGpuPrototypeRenderer {
                             radius,
                             card_color,
                         ));
+
+                        let content = &scene.cpu_fallback_scene.input.history[i].1;
+                        let scroll = scene
+                            .cpu_fallback_scene
+                            .input
+                            .history_scroll_states
+                            .get(i)
+                            .copied()
+                            .unwrap_or(0.0);
+                        let view_h = item_h_fixed - 40.0 * render_scale;
+                        let (_, full_content_h) = get_metrics_dw_ex(
+                            content,
+                            16.0 * render_scale,
+                            (450.0 * render_scale) as u32,
+                            "Microsoft YaHei",
+                            false,
+                            false,
+                            false,
+                        );
+                        if full_content_h > view_h {
+                            let sb_x = card_left + 480.0 * render_scale;
+                            let sb_y = top + 35.0 * render_scale;
+                            let sb_w = 4.0 * render_scale;
+                            content_cards.push((
+                                sb_x,
+                                sb_y,
+                                sb_x + sb_w,
+                                sb_y + view_h,
+                                0.0,
+                                0x00333333,
+                            ));
+                            let ratio = view_h / full_content_h;
+                            let handle_h = (view_h * ratio).max(20.0 * render_scale);
+                            let max_scroll = full_content_h - view_h;
+                            let progress = if max_scroll > 0.0 {
+                                ((-scroll * render_scale).max(0.0).min(max_scroll)) / max_scroll
+                            } else {
+                                0.0
+                            };
+                            let handle_y = sb_y + ((view_h - handle_h) * progress);
+                            content_cards.push((
+                                sb_x,
+                                handle_y,
+                                sb_x + sb_w,
+                                handle_y + handle_h,
+                                0.0,
+                                0x007C4DFF,
+                            ));
+                        }
                     }
                 }
                 4 => {
@@ -2023,6 +2073,8 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     history_scroll_states: &mut scroll_states,
                     history_item_rects: &mut local_rects,
                     scroll_offset: input.scroll_offset * scale,
+                    draw_card_backgrounds: scene.draw_static_blocks,
+                    gpu_subscrollbar_chrome: scene.draw_static_blocks == false,
                 };
                 let (v, c, _) =
                     tabs::history::draw(buffer, w, h, scale, off_x, off_y, &mut history_state);

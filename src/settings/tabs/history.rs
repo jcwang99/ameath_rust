@@ -6,6 +6,8 @@ pub struct HistoryTabState<'a> {
     pub history_scroll_states: &'a mut Vec<f32>,
     pub history_item_rects: &'a mut Vec<(f64, f64, f64, f64)>,
     pub scroll_offset: f32,
+    pub draw_card_backgrounds: bool,
+    pub gpu_subscrollbar_chrome: bool,
 }
 
 pub fn draw(
@@ -71,18 +73,20 @@ pub fn draw(
         let card_h = item_h_fixed as u32;
 
         // 1. Background (Directly into main buffer)
-        draw_rounded_rect(
-            buffer,
-            w,
-            s(230) as i32,
-            y_pos_i,
-            card_w,
-            card_h,
-            8,
-            card_color,
-            w,
-            h,
-        );
+        if state.draw_card_backgrounds {
+            draw_rounded_rect(
+                buffer,
+                w,
+                s(230) as i32,
+                y_pos_i,
+                card_w,
+                card_h,
+                8,
+                card_color,
+                w,
+                h,
+            );
+        }
 
         // 2. Role
         draw_text_dw_ex(
@@ -132,17 +136,9 @@ pub fn draw(
             let sb_w = sc(4.0) as u32;
 
             // Draw track
-            draw_rect(
-                buffer,
-                w,
-                sb_x,
-                sb_y,
-                sb_w,
-                view_h as u32,
-                0x00333333, // dark track
-                w,
-                h,
-            );
+            if !state.gpu_subscrollbar_chrome {
+                draw_rect(buffer, w, sb_x, sb_y, sb_w, view_h as u32, 0x00333333, w, h);
+            }
 
             // Calculate and draw handle
             let ratio = view_h / full_content_h;
@@ -155,10 +151,9 @@ pub fn draw(
             };
             let handle_y = sb_y + ((view_h - handle_h as f32) * progress) as i32;
 
-            draw_rect(
-                buffer, w, sb_x, handle_y, sb_w, handle_h, 0x007C4DFF, // accent color handle
-                w, h,
-            );
+            if !state.gpu_subscrollbar_chrome {
+                draw_rect(buffer, w, sb_x, handle_y, sb_w, handle_h, 0x007C4DFF, w, h);
+            }
         }
     }
 
