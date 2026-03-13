@@ -25,6 +25,7 @@ use windows::Win32::Graphics::Direct2D::Common::{
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::{
     ID2D1DCRenderTarget, D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
+    D2D1_ROUNDED_RECT,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Gdi::{
@@ -226,6 +227,8 @@ impl SettingsGpuPrototypeCanvas {
         buffer: &mut [u32],
         sidebar_width: u32,
         header_height: u32,
+        current_tab: usize,
+        content_card: Option<(f32, f32, f32, f32, f32)>,
     ) {
         self.ensure_surface(d2d_factory, width as i32, height as i32);
 
@@ -285,6 +288,34 @@ impl SettingsGpuPrototypeCanvas {
                         },
                         &header_brush,
                     );
+                }
+
+                if current_tab == 2 {
+                    if let Some((left, top, right, bottom, radius)) = content_card {
+                        if let Ok(card_brush) = rt.CreateSolidColorBrush(
+                            &D2D1_COLOR_F {
+                                r: ((COLOR_BG_CARD >> 16) & 0xFF) as f32 / 255.0,
+                                g: ((COLOR_BG_CARD >> 8) & 0xFF) as f32 / 255.0,
+                                b: (COLOR_BG_CARD & 0xFF) as f32 / 255.0,
+                                a: 1.0,
+                            },
+                            None,
+                        ) {
+                            rt.FillRoundedRectangle(
+                                &D2D1_ROUNDED_RECT {
+                                    rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                        left,
+                                        top,
+                                        right,
+                                        bottom,
+                                    },
+                                    radiusX: radius,
+                                    radiusY: radius,
+                                },
+                                &card_brush,
+                            );
+                        }
+                    }
                 }
 
                 let _ = rt.EndDraw(None, None);
@@ -624,8 +655,18 @@ impl SettingsGpuPrototypeRenderer {
             );
             let render_scale = scale.0.min(scale.1);
             let off_x = (scene.cpu_fallback_scene.input.w as f32 - 800.0 * render_scale) / 2.0;
+            let off_y = (scene.cpu_fallback_scene.input.h as f32 - 750.0 * render_scale) / 2.0;
             let sidebar_width = (180.0 * render_scale + off_x) as u32;
-            let header_height = (120.0 * render_scale) as u32;
+            let header_height = (120.0 * render_scale + off_y) as u32;
+            let ai_card = if scene.cpu_fallback_scene.input.current_tab == 2 {
+                let left = 210.0 * render_scale + off_x;
+                let top = 120.0 * render_scale + off_y;
+                let right = left + 560.0 * render_scale;
+                let bottom = top + 1950.0 * render_scale;
+                Some((left, top, right, bottom, 12.0 * render_scale))
+            } else {
+                None
+            };
             resources.canvas.render_background(
                 &resources.d2d_factory,
                 scene.cpu_fallback_scene.input.w,
@@ -633,6 +674,8 @@ impl SettingsGpuPrototypeRenderer {
                 buffer,
                 sidebar_width,
                 header_height,
+                scene.cpu_fallback_scene.input.current_tab,
+                ai_card,
             );
         }
 
