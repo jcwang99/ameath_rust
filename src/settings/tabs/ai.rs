@@ -32,6 +32,7 @@ pub struct AiTabState<'a> {
     pub gpu_response_mode_chrome: bool,
     pub gpu_tts_ref_button_chrome: bool,
     pub gpu_checkbox_chrome: bool,
+    pub gpu_square_checkbox_chrome: bool,
     pub gpu_eye_icon_chrome: bool,
     pub gpu_dialog_chrome: bool,
     pub gpu_toast_chrome: bool,
@@ -150,7 +151,7 @@ pub fn draw(
             let box_size = sc(20.0) as i32;
 
             // Box Background
-            if !state.gpu_checkbox_chrome {
+            if !state.gpu_square_checkbox_chrome {
                 draw_rect(
                     buffer,
                     w,
@@ -166,7 +167,7 @@ pub fn draw(
 
             // Box Outline (Manual)
             let border_color = COLOR_BORDER;
-            if !state.gpu_checkbox_chrome {
+            if !state.gpu_square_checkbox_chrome {
                 draw_rect(
                     buffer,
                     w,
@@ -216,7 +217,7 @@ pub fn draw(
             if is_checked {
                 let inner = sc(12.0) as i32;
                 let offset = (box_size - inner) / 2;
-                if !state.gpu_checkbox_chrome {
+                if !state.gpu_square_checkbox_chrome {
                     draw_rect(
                         buffer,
                         w,
@@ -334,30 +335,7 @@ pub fn draw(
 
         // Label
         if i == 0 {
-            if state.gpu_profile_title_text {
-                let prefix = "Active Profile";
-                let suffix = format!(
-                    " ({}/{})",
-                    ai_config.active_profile_index + 1,
-                    ai_config.profiles.len()
-                );
-                let (prefix_w, _) =
-                    get_metrics_dw_ex(prefix, sc(14.0), w, "Microsoft YaHei", false, false, false);
-                draw_text_dw_ex(
-                    buffer,
-                    w,
-                    &suffix,
-                    fx_abs + prefix_w.ceil() as i32,
-                    fy_abs,
-                    sc(14.0),
-                    COLOR_TEXT_SEC,
-                    w,
-                    sc(20.0) as u32,
-                    0.0,
-                    0.0,
-                    w,
-                );
-            } else {
+            if !state.gpu_profile_title_text {
                 draw_text_dw_ex(
                     buffer,
                     w,

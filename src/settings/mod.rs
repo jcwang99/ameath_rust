@@ -1141,6 +1141,7 @@ impl SettingsGpuPrototypeRenderer {
                         "ai_static_labels",
                         "ai_profile_title_text",
                         "ai_standard_input_chrome",
+                        "ai_square_checkbox_chrome",
                         "ai_eye_icon_chrome",
                         "ai_profile_button_base_chrome",
                         "ai_profile_symbol_text",
@@ -1159,44 +1160,107 @@ impl SettingsGpuPrototypeRenderer {
                         COLOR_BG_CARD,
                     ));
 
-                    let ai_fields = [
-                        ("Active Profile", 265.0, 30.0, 14.0, COLOR_TEXT_SEC),
-                        ("Multimodal (Vision)", 565.0, 30.0, 14.0, COLOR_TEXT_SEC),
-                        ("API Key", 230.0, 130.0, 14.0, COLOR_TEXT_SEC),
-                        ("Base URL", 230.0, 230.0, 14.0, COLOR_TEXT_SEC),
-                        ("Model", 230.0, 330.0, 14.0, COLOR_TEXT_SEC),
-                        ("ReAct Steps", 230.0, 430.0, 14.0, COLOR_TEXT_SEC),
-                        ("L1 Summary", 405.0, 430.0, 14.0, COLOR_TEXT_SEC),
-                        ("L2 Merge", 580.0, 430.0, 14.0, COLOR_TEXT_SEC),
+                    let ai_fields = vec![
                         (
-                            "Interact Interval (min)",
+                            format!(
+                                "Active Profile ({}/{})",
+                                scene
+                                    .cpu_fallback_scene
+                                    .input
+                                    .ai_config
+                                    .active_profile_index
+                                    + 1,
+                                scene.cpu_fallback_scene.input.ai_config.profiles.len()
+                            ),
+                            265.0,
+                            30.0,
+                            14.0,
+                            COLOR_TEXT_SEC,
+                        ),
+                        (
+                            "Multimodal (Vision)".to_string(),
+                            565.0,
+                            30.0,
+                            14.0,
+                            COLOR_TEXT_SEC,
+                        ),
+                        ("API Key".to_string(), 230.0, 130.0, 14.0, COLOR_TEXT_SEC),
+                        ("Base URL".to_string(), 230.0, 230.0, 14.0, COLOR_TEXT_SEC),
+                        ("Model".to_string(), 230.0, 330.0, 14.0, COLOR_TEXT_SEC),
+                        (
+                            "ReAct Steps".to_string(),
+                            230.0,
+                            430.0,
+                            14.0,
+                            COLOR_TEXT_SEC,
+                        ),
+                        ("L1 Summary".to_string(), 405.0, 430.0, 14.0, COLOR_TEXT_SEC),
+                        ("L2 Merge".to_string(), 580.0, 430.0, 14.0, COLOR_TEXT_SEC),
+                        (
+                            "Interact Interval (min)".to_string(),
                             230.0,
                             530.0,
                             14.0,
                             COLOR_TEXT_SEC,
                         ),
-                        ("Tavily Key", 230.0, 630.0, 14.0, COLOR_TEXT_SEC),
-                        ("Brave Key", 230.0, 730.0, 14.0, COLOR_TEXT_SEC),
-                        ("Firecrawl URL", 230.0, 830.0, 14.0, COLOR_TEXT_SEC),
-                        ("Firecrawl Key", 230.0, 930.0, 14.0, COLOR_TEXT_SEC),
-                        ("System Prompt", 230.0, 1030.0, 14.0, COLOR_TEXT_SEC),
+                        ("Tavily Key".to_string(), 230.0, 630.0, 14.0, COLOR_TEXT_SEC),
+                        ("Brave Key".to_string(), 230.0, 730.0, 14.0, COLOR_TEXT_SEC),
                         (
-                            "Allow Screen Capture (Routine Checks)",
+                            "Firecrawl URL".to_string(),
+                            230.0,
+                            830.0,
+                            14.0,
+                            COLOR_TEXT_SEC,
+                        ),
+                        (
+                            "Firecrawl Key".to_string(),
+                            230.0,
+                            930.0,
+                            14.0,
+                            COLOR_TEXT_SEC,
+                        ),
+                        (
+                            "System Prompt".to_string(),
+                            230.0,
+                            1030.0,
+                            14.0,
+                            COLOR_TEXT_SEC,
+                        ),
+                        (
+                            "Allow Screen Capture (Routine Checks)".to_string(),
                             435.0,
                             567.5,
                             14.0,
                             COLOR_TEXT_MAIN,
                         ),
                         (
-                            "TTS Enabled (CosyVoice 3)",
+                            "TTS Enabled (CosyVoice 3)".to_string(),
                             260.0,
                             1367.5,
                             14.0,
                             COLOR_TEXT_MAIN,
                         ),
-                        ("TTS Ref Audio Path", 230.0, 1430.0, 14.0, COLOR_TEXT_SEC),
-                        ("TTS Prompt Text", 230.0, 1530.0, 14.0, COLOR_TEXT_SEC),
-                        ("Response Mode", 405.0, 1330.0, 14.0, COLOR_TEXT_SEC),
+                        (
+                            "TTS Ref Audio Path".to_string(),
+                            230.0,
+                            1430.0,
+                            14.0,
+                            COLOR_TEXT_SEC,
+                        ),
+                        (
+                            "TTS Prompt Text".to_string(),
+                            230.0,
+                            1530.0,
+                            14.0,
+                            COLOR_TEXT_SEC,
+                        ),
+                        (
+                            "Response Mode".to_string(),
+                            405.0,
+                            1330.0,
+                            14.0,
+                            COLOR_TEXT_SEC,
+                        ),
                     ];
                     for (text, x, y, size, color) in ai_fields {
                         text_runs.push(SettingsGpuTextRun {
@@ -1264,6 +1328,59 @@ impl SettingsGpuPrototypeRenderer {
                                 eye_y + 16.0 * render_scale,
                                 0.0,
                                 eye_color,
+                            ));
+                        }
+                    }
+
+                    let square_checkboxes = [
+                        (
+                            14usize,
+                            405.0,
+                            530.0,
+                            scene
+                                .cpu_fallback_scene
+                                .input
+                                .ai_config
+                                .active_interaction_screenshots_enabled,
+                            scene
+                                .cpu_fallback_scene
+                                .input
+                                .ai_config
+                                .active_profile()
+                                .is_multimodal,
+                        ),
+                        (
+                            15usize,
+                            230.0,
+                            1330.0,
+                            scene.cpu_fallback_scene.input.ai_config.tts_enabled,
+                            true,
+                        ),
+                    ];
+                    for (_field_idx, fx, fy, checked, visible) in square_checkboxes {
+                        if !visible {
+                            continue;
+                        }
+                        let x = fx * render_scale + off_x;
+                        let y = (120.0 + fy + 25.0 + 12.5) * render_scale
+                            + off_y
+                            + scene.cpu_fallback_scene.input.scroll_offset * render_scale;
+                        let dim = 20.0 * render_scale;
+                        content_cards.push((x, y, x + dim, y + dim, 0.0, COLOR_BG_LIGHT));
+                        content_cards.push((x, y, x + dim, y + 1.0, 0.0, COLOR_BORDER));
+                        content_cards.push((x, y + dim - 1.0, x + dim, y + dim, 0.0, COLOR_BORDER));
+                        content_cards.push((x, y, x + 1.0, y + dim, 0.0, COLOR_BORDER));
+                        content_cards.push((x + dim - 1.0, y, x + dim, y + dim, 0.0, COLOR_BORDER));
+                        if checked {
+                            let inner = 12.0 * render_scale;
+                            let offset = (dim - inner) / 2.0;
+                            content_cards.push((
+                                x + offset,
+                                y + offset,
+                                x + offset + inner,
+                                y + offset + inner,
+                                0.0,
+                                COLOR_PRIMARY,
                             ));
                         }
                     }
@@ -1727,6 +1844,7 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     gpu_response_mode_chrome: scene.draw_static_blocks == false,
                     gpu_tts_ref_button_chrome: scene.draw_static_blocks == false,
                     gpu_checkbox_chrome: false,
+                    gpu_square_checkbox_chrome: scene.draw_static_blocks == false,
                     gpu_eye_icon_chrome: scene.draw_static_blocks == false,
                     gpu_dialog_chrome: false,
                     gpu_toast_chrome: false,
