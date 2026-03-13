@@ -16,6 +16,22 @@ use std::sync::{Arc, Mutex};
 use winit::event_loop::{EventLoopProxy, EventLoopWindowTarget};
 use winit::window::Window;
 
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::{HANDLE, HWND, RECT};
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Direct2D::Common::{
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Direct2D::{
+    ID2D1DCRenderTarget, D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Gdi::{
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
+    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC,
+};
+
 #[derive(Clone)]
 pub struct SettingsRenderInput {
     pub w: u32,
@@ -84,11 +100,137 @@ struct SettingsRedrawPlan {
 struct SettingsRenderScene {
     input: SettingsRenderInput,
     hash: u64,
+    clear_background: bool,
 }
 
 struct SettingsGpuPrototypeScene {
     cpu_fallback_scene: SettingsRenderScene,
     backend_label: &'static str,
+}
+
+#[cfg(target_os = "windows")]
+struct SettingsGpuPrototypeCanvas {
+    hdc_mem: HDC,
+    h_bitmap: HBITMAP,
+    bits: *mut u32,
+    width: i32,
+    height: i32,
+    rt: Option<ID2D1DCRenderTarget>,
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for SettingsGpuPrototypeCanvas {
+    fn drop(&mut self) {
+        unsafe {
+            if self.h_bitmap.0 != 0 {
+                let _ = DeleteObject(self.h_bitmap);
+            }
+            if self.hdc_mem.0 != 0 {
+                let _ = DeleteDC(self.hdc_mem);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl SettingsGpuPrototypeCanvas {
+    fn new() -> Self {
+        unsafe {
+            let hdc_screen = GetDC(HWND(0));
+            let hdc_mem = CreateCompatibleDC(hdc_screen);
+            ReleaseDC(HWND(0), hdc_screen);
+            Self {
+                hdc_mem,
+                h_bitmap: HBITMAP(0),
+                bits: std::ptr::null_mut(),
+                width: 0,
+                height: 0,
+                rt: None,
+            }
+        }
+    }
+
+    fn ensure_surface(
+        &mut self,
+        d2d_factory: &windows::Win32::Graphics::Direct2D::ID2D1Factory,
+        width: i32,
+        height: i32,
+    ) {
+        unsafe {
+            if self.h_bitmap.0 == 0 || self.width < width || self.height < height {
+                if self.h_bitmap.0 != 0 {
+                    let _ = DeleteObject(self.h_bitmap);
+                }
+
+                let bmi = BITMAPINFO {
+                    bmiHeader: BITMAPINFOHEADER {
+                        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                        biWidth: width,
+                        biHeight: -height,
+                        biPlanes: 1,
+                        biBitCount: 32,
+                        biCompression: BI_RGB.0,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                let mut bits = std::ptr::null_mut();
+                self.h_bitmap =
+                    CreateDIBSection(self.hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, HANDLE(0), 0)
+                        .unwrap();
+                SelectObject(self.hdc_mem, self.h_bitmap);
+                self.bits = bits as *mut u32;
+                self.width = width;
+                self.height = height;
+            }
+
+            if self.rt.is_none() {
+                let props = D2D1_RENDER_TARGET_PROPERTIES {
+                    r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                    pixelFormat: D2D1_PIXEL_FORMAT {
+                        format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+                        alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                    },
+                    ..Default::default()
+                };
+                self.rt = Some(d2d_factory.CreateDCRenderTarget(&props).unwrap());
+            }
+        }
+    }
+
+    fn render_background(
+        &mut self,
+        d2d_factory: &windows::Win32::Graphics::Direct2D::ID2D1Factory,
+        width: u32,
+        height: u32,
+        buffer: &mut [u32],
+    ) {
+        self.ensure_surface(d2d_factory, width as i32, height as i32);
+
+        let rect = RECT {
+            left: 0,
+            top: 0,
+            right: width as i32,
+            bottom: height as i32,
+        };
+
+        if let Some(rt) = &self.rt {
+            unsafe {
+                rt.BindDC(self.hdc_mem, &rect).unwrap();
+                rt.BeginDraw();
+                rt.Clear(Some(&D2D1_COLOR_F {
+                    r: ((COLOR_BG_APP >> 16) & 0xFF) as f32 / 255.0,
+                    g: ((COLOR_BG_APP >> 8) & 0xFF) as f32 / 255.0,
+                    b: (COLOR_BG_APP & 0xFF) as f32 / 255.0,
+                    a: 1.0,
+                }));
+                let _ = rt.EndDraw(None, None);
+
+                let src = std::slice::from_raw_parts(self.bits, (width * height) as usize);
+                buffer[..src.len()].copy_from_slice(src);
+            }
+        }
+    }
 }
 
 trait SettingsRendererBackend {
@@ -107,7 +249,6 @@ enum SettingsGpuPrototypeInitStatus {
     FailedFallback,
 }
 
-#[derive(Debug, Clone)]
 struct SettingsGpuPrototypeResources {
     backend_label: String,
     logical_surface_size: (u32, u32),
@@ -117,6 +258,8 @@ struct SettingsGpuPrototypeResources {
     #[cfg(target_os = "windows")]
     #[allow(dead_code)]
     dwrite_factory: windows::Win32::Graphics::DirectWrite::IDWriteFactory,
+    #[cfg(target_os = "windows")]
+    canvas: SettingsGpuPrototypeCanvas,
 }
 
 struct SettingsGpuPrototypeState {
@@ -158,6 +301,7 @@ impl SettingsGpuPrototypeState {
                 logical_surface_size: (input.w, input.h),
                 d2d_factory: get_d2d_factory().clone(),
                 dwrite_factory: get_dwrite_factory().clone(),
+                canvas: SettingsGpuPrototypeCanvas::new(),
             });
         }
 
@@ -250,7 +394,8 @@ impl SettingsWorkerRuntime {
                 req.hash,
             ),
             SettingsRendererKind::GpuPrototype => {
-                render_with_backend::<SettingsGpuPrototypeRenderer>(
+                SettingsGpuPrototypeRenderer::render_with_runtime(
+                    &mut self.gpu_prototype,
                     &mut req.buffer,
                     req.input.clone(),
                     req.hash,
@@ -363,7 +508,11 @@ struct SettingsGpuPrototypeRenderer;
 impl SettingsGpuPrototypeRenderer {
     fn build_gpu_scene(input: SettingsRenderInput, hash: u64) -> SettingsGpuPrototypeScene {
         SettingsGpuPrototypeScene {
-            cpu_fallback_scene: SettingsRenderScene { input, hash },
+            cpu_fallback_scene: SettingsRenderScene {
+                input,
+                hash,
+                clear_background: false,
+            },
             backend_label: "windows-gpu-prototype",
         }
     }
@@ -378,13 +527,38 @@ impl SettingsGpuPrototypeRenderer {
         );
         SettingsCpuRenderer::render(buffer, scene.cpu_fallback_scene)
     }
+
+    fn render_with_runtime(
+        state: &mut SettingsGpuPrototypeState,
+        buffer: &mut [u32],
+        input: SettingsRenderInput,
+        hash: u64,
+    ) -> RenderResult {
+        let scene = Self::build_gpu_scene(input, hash);
+
+        #[cfg(target_os = "windows")]
+        if let Some(resources) = &mut state.resources {
+            resources.canvas.render_background(
+                &resources.d2d_factory,
+                scene.cpu_fallback_scene.input.w,
+                scene.cpu_fallback_scene.input.h,
+                buffer,
+            );
+        }
+
+        Self::render_with_cpu_fallback(buffer, scene)
+    }
 }
 
 impl SettingsRendererBackend for SettingsCpuRenderer {
     type Scene = SettingsRenderScene;
 
     fn build_scene(input: SettingsRenderInput, hash: u64) -> Self::Scene {
-        SettingsRenderScene { input, hash }
+        SettingsRenderScene {
+            input,
+            hash,
+            clear_background: true,
+        }
     }
 
     fn render(buffer: &mut [u32], scene: Self::Scene) -> RenderResult {
@@ -399,7 +573,9 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
         let mut active_sys_prompt_content_height = 0.0f32;
         let mut history_item_rects = Vec::new();
 
-        buffer.fill(COLOR_BG_APP);
+        if scene.clear_background {
+            buffer.fill(COLOR_BG_APP);
+        }
 
         let scale = (w as f32 / 800.0).min(h as f32 / 750.0);
         let off_x = (w as f32 - 800.0 * scale) / 2.0;
