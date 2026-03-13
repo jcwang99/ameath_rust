@@ -30,6 +30,7 @@ pub struct AiTabState<'a> {
     pub gpu_profile_button_chrome: bool,
     pub gpu_response_mode_chrome: bool,
     pub gpu_tts_ref_button_chrome: bool,
+    pub gpu_checkbox_chrome: bool,
 }
 
 pub fn draw(
@@ -142,79 +143,85 @@ pub fn draw(
             let box_size = sc(20.0) as i32;
 
             // Box Background
-            draw_rect(
-                buffer,
-                w,
-                box_x,
-                box_y,
-                box_size as u32,
-                box_size as u32,
-                COLOR_BG_LIGHT,
-                w,
-                h,
-            );
+            if !state.gpu_checkbox_chrome {
+                draw_rect(
+                    buffer,
+                    w,
+                    box_x,
+                    box_y,
+                    box_size as u32,
+                    box_size as u32,
+                    COLOR_BG_LIGHT,
+                    w,
+                    h,
+                );
+            }
 
             // Box Outline (Manual)
             let border_color = COLOR_BORDER;
-            draw_rect(
-                buffer,
-                w,
-                box_x,
-                box_y,
-                box_size as u32,
-                1,
-                border_color,
-                w,
-                h,
-            ); // Top
-            draw_rect(
-                buffer,
-                w,
-                box_x,
-                box_y + box_size - 1,
-                box_size as u32,
-                1,
-                border_color,
-                w,
-                h,
-            ); // Bottom
-            draw_rect(
-                buffer,
-                w,
-                box_x,
-                box_y,
-                1,
-                box_size as u32,
-                border_color,
-                w,
-                h,
-            ); // Left
-            draw_rect(
-                buffer,
-                w,
-                box_x + box_size - 1,
-                box_y,
-                1,
-                box_size as u32,
-                border_color,
-                w,
-                h,
-            ); // Right
+            if !state.gpu_checkbox_chrome {
+                draw_rect(
+                    buffer,
+                    w,
+                    box_x,
+                    box_y,
+                    box_size as u32,
+                    1,
+                    border_color,
+                    w,
+                    h,
+                );
+                draw_rect(
+                    buffer,
+                    w,
+                    box_x,
+                    box_y + box_size - 1,
+                    box_size as u32,
+                    1,
+                    border_color,
+                    w,
+                    h,
+                );
+                draw_rect(
+                    buffer,
+                    w,
+                    box_x,
+                    box_y,
+                    1,
+                    box_size as u32,
+                    border_color,
+                    w,
+                    h,
+                );
+                draw_rect(
+                    buffer,
+                    w,
+                    box_x + box_size - 1,
+                    box_y,
+                    1,
+                    box_size as u32,
+                    border_color,
+                    w,
+                    h,
+                );
+            }
 
             if is_checked {
                 let inner = sc(12.0) as i32;
                 let offset = (box_size - inner) / 2;
-                draw_rect(
-                    buffer,
-                    w,
-                    box_x + offset,
-                    box_y + offset,
-                    inner as u32,
-                    inner as u32,
-                    COLOR_PRIMARY,
-                    w,
-                    h,
-                );
+                if !state.gpu_checkbox_chrome {
+                    draw_rect(
+                        buffer,
+                        w,
+                        box_x + offset,
+                        box_y + offset,
+                        inner as u32,
+                        inner as u32,
+                        COLOR_PRIMARY,
+                        w,
+                        h,
+                    );
+                }
             }
 
             draw_text_dw_ex(
@@ -682,11 +689,17 @@ pub fn draw(
             };
 
             // Draw border
-            draw_rounded_rect(
-                buffer, w, fx_abs, toggle_y, toggle_dim, toggle_dim, 8, toggle_bg, w, h,
-            );
+            if !state.gpu_checkbox_chrome {
+                draw_rounded_rect(
+                    buffer, w, fx_abs, toggle_y, toggle_dim, toggle_dim, 8, toggle_bg, w, h,
+                );
+            }
             // Draw inner box for border effect
-            if !is_multimodal && state.pressed_btn != Some(101) && !is_hover {
+            if !state.gpu_checkbox_chrome
+                && !is_multimodal
+                && state.pressed_btn != Some(101)
+                && !is_hover
+            {
                 draw_rounded_rect(
                     buffer,
                     w,

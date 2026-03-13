@@ -1107,6 +1107,99 @@ impl SettingsGpuPrototypeRenderer {
                             card_color,
                         ));
                     }
+
+                    let checkbox_specs = [
+                        (
+                            405.0,
+                            530.0,
+                            20.0,
+                            scene
+                                .cpu_fallback_scene
+                                .input
+                                .ai_config
+                                .active_interaction_screenshots_enabled,
+                            false,
+                        ),
+                        (
+                            230.0,
+                            1330.0,
+                            20.0,
+                            scene.cpu_fallback_scene.input.ai_config.tts_enabled,
+                            false,
+                        ),
+                        (
+                            565.0,
+                            30.0,
+                            45.0,
+                            scene
+                                .cpu_fallback_scene
+                                .input
+                                .ai_config
+                                .active_profile()
+                                .is_multimodal,
+                            true,
+                        ),
+                    ];
+                    for (fx, fy, box_dim, checked, rounded) in checkbox_specs {
+                        if fy == 530.0
+                            && !scene
+                                .cpu_fallback_scene
+                                .input
+                                .ai_config
+                                .active_profile()
+                                .is_multimodal
+                        {
+                            continue;
+                        }
+                        let x = fx * render_scale + off_x;
+                        let y = (120.0 + fy + 25.0 + if fy == 30.0 { 0.0 } else { 12.5 })
+                            * render_scale
+                            + off_y
+                            + scene.cpu_fallback_scene.input.scroll_offset * render_scale;
+                        let dim = box_dim * render_scale;
+                        let outer_color = if checked {
+                            COLOR_PRIMARY
+                        } else if rounded {
+                            COLOR_TEXT_SEC
+                        } else {
+                            COLOR_BORDER
+                        };
+                        content_cards.push((
+                            x,
+                            y,
+                            x + dim,
+                            y + dim,
+                            if rounded { 8.0 * render_scale } else { 0.0 },
+                            if rounded && !checked {
+                                outer_color
+                            } else {
+                                COLOR_BG_LIGHT
+                            },
+                        ));
+                        if checked {
+                            let inner = if rounded { 0.0 } else { 12.0 * render_scale };
+                            if !rounded {
+                                let offset = (dim - inner) / 2.0;
+                                content_cards.push((
+                                    x + offset,
+                                    y + offset,
+                                    x + offset + inner,
+                                    y + offset + inner,
+                                    0.0,
+                                    COLOR_PRIMARY,
+                                ));
+                            }
+                        } else if rounded {
+                            content_cards.push((
+                                x + 1.0,
+                                y + 1.0,
+                                x + dim - 1.0,
+                                y + dim - 1.0,
+                                7.0 * render_scale,
+                                COLOR_BG_CARD,
+                            ));
+                        }
+                    }
                 }
                 4 => {
                     let left = 210.0 * render_scale + off_x;
@@ -1306,6 +1399,7 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     gpu_profile_button_chrome: scene.draw_static_blocks == false,
                     gpu_response_mode_chrome: scene.draw_static_blocks == false,
                     gpu_tts_ref_button_chrome: scene.draw_static_blocks == false,
+                    gpu_checkbox_chrome: false,
                 };
                 let (v, c, rect) = tabs::ai::draw(
                     buffer,
