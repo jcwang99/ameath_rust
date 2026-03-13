@@ -40,6 +40,8 @@ pub struct AiTabState<'a> {
     pub gpu_profile_symbol_text: bool,
     pub gpu_response_mode_label_text: bool,
     pub gpu_profile_title_text: bool,
+    pub gpu_profile_value_text: bool,
+    pub gpu_profile_input_chrome: bool,
 }
 
 pub fn draw(
@@ -369,8 +371,9 @@ pub fn draw(
             );
         }
 
-        let gpu_owned_input = state.gpu_standard_input_chrome
-            && matches!(i, 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 17);
+        let gpu_owned_input = (state.gpu_standard_input_chrome
+            && matches!(i, 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 17))
+            || (i == 0 && state.gpu_profile_input_chrome && !is_focused);
         if !gpu_owned_input {
             draw_rounded_rect(
                 buffer,
@@ -459,20 +462,23 @@ pub fn draw(
         };
         let final_text: String = display_chars.iter().collect();
 
-        draw_text_dw_ex(
-            buffer,
-            w,
-            &final_text,
-            fx_abs + sc(15.0) as i32,
-            input_y_abs + sc(12.0) as i32,
-            sc(14.0),
-            display_col,
-            input_w.saturating_sub(sc(30.0) as u32),
-            sc(30.0) as u32,
-            0.0,
-            state.field_scroll_offsets[i],
-            1000000,
-        );
+        let gpu_handles_value = i == 0 && state.gpu_profile_value_text && !is_focused;
+        if !gpu_handles_value {
+            draw_text_dw_ex(
+                buffer,
+                w,
+                &final_text,
+                fx_abs + sc(15.0) as i32,
+                input_y_abs + sc(12.0) as i32,
+                sc(14.0),
+                display_col,
+                input_w.saturating_sub(sc(30.0) as u32),
+                sc(30.0) as u32,
+                0.0,
+                state.field_scroll_offsets[i],
+                1000000,
+            );
+        }
 
         // Profile Controls [<] [>] [+] [-] standardized row
         if i == 0 {

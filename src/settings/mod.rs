@@ -1140,6 +1140,8 @@ impl SettingsGpuPrototypeRenderer {
                         "ai_main_card",
                         "ai_static_labels",
                         "ai_profile_title_text",
+                        "ai_profile_value_text",
+                        "ai_profile_input_chrome",
                         "ai_standard_input_chrome",
                         "ai_multimodal_outer_chrome",
                         "ai_multimodal_checkmark",
@@ -1275,6 +1277,69 @@ impl SettingsGpuPrototypeRenderer {
                             color,
                             bold: false,
                         });
+                    }
+                    let profile_name = if scene
+                        .cpu_fallback_scene
+                        .input
+                        .ai_config
+                        .active_profile()
+                        .name
+                        .is_empty()
+                    {
+                        "None".to_string()
+                    } else {
+                        scene
+                            .cpu_fallback_scene
+                            .input
+                            .ai_config
+                            .active_profile()
+                            .name
+                            .clone()
+                    };
+                    text_runs.push(SettingsGpuTextRun {
+                        text: profile_name,
+                        x: 265.0 * render_scale + off_x + 15.0 * render_scale,
+                        y: (120.0 + 30.0 + 25.0 + 12.0) * render_scale
+                            + off_y
+                            + scene.cpu_fallback_scene.input.scroll_offset * render_scale,
+                        font_size: 14.0 * render_scale,
+                        color: if scene
+                            .cpu_fallback_scene
+                            .input
+                            .ai_config
+                            .active_profile()
+                            .name
+                            .is_empty()
+                        {
+                            COLOR_TEXT_DIM
+                        } else {
+                            COLOR_TEXT_MAIN
+                        },
+                        bold: false,
+                    });
+                    if scene.cpu_fallback_scene.input.focused_field != Some(0) {
+                        let px = 265.0 * render_scale + off_x;
+                        let py = (120.0 + 30.0 + 25.0) * render_scale
+                            + off_y
+                            + scene.cpu_fallback_scene.input.scroll_offset * render_scale;
+                        let pw = 160.0 * render_scale;
+                        let ph = 45.0 * render_scale;
+                        content_cards.push((
+                            px,
+                            py,
+                            px + pw,
+                            py + ph,
+                            8.0 * render_scale,
+                            COLOR_BORDER,
+                        ));
+                        content_cards.push((
+                            px + 1.0,
+                            py + 1.0,
+                            px + pw - 1.0,
+                            py + ph - 1.0,
+                            7.0 * render_scale,
+                            COLOR_BG_CARD,
+                        ));
                     }
 
                     let mouse_lx =
@@ -1911,6 +1976,8 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     gpu_profile_symbol_text: scene.draw_static_text == false,
                     gpu_response_mode_label_text: scene.draw_static_text == false,
                     gpu_profile_title_text: scene.draw_static_text == false,
+                    gpu_profile_value_text: scene.draw_static_text == false,
+                    gpu_profile_input_chrome: scene.draw_static_blocks == false,
                 };
                 let (v, c, rect) = tabs::ai::draw(
                     buffer,
