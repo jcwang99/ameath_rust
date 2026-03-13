@@ -1139,11 +1139,12 @@ impl SettingsGpuPrototypeRenderer {
                     gpu_groups.extend([
                         "ai_main_card",
                         "ai_static_labels",
+                        "ai_profile_title_text",
                         "ai_standard_input_chrome",
                         "ai_eye_icon_chrome",
-                        "ai_profile_button_chrome",
                         "ai_tts_ref_button_chrome",
                         "ai_response_mode_chrome",
+                        "ai_response_mode_label_text",
                     ]);
                     let left = 210.0 * render_scale + off_x;
                     let top = 120.0 * render_scale + off_y;
@@ -1158,6 +1159,7 @@ impl SettingsGpuPrototypeRenderer {
 
                     let ai_fields = [
                         ("Active Profile", 265.0, 30.0, 14.0, COLOR_TEXT_SEC),
+                        ("Multimodal (Vision)", 565.0, 30.0, 14.0, COLOR_TEXT_SEC),
                         ("API Key", 230.0, 130.0, 14.0, COLOR_TEXT_SEC),
                         ("Base URL", 230.0, 230.0, 14.0, COLOR_TEXT_SEC),
                         ("Model", 230.0, 330.0, 14.0, COLOR_TEXT_SEC),
@@ -1175,6 +1177,7 @@ impl SettingsGpuPrototypeRenderer {
                         ("Brave Key", 230.0, 730.0, 14.0, COLOR_TEXT_SEC),
                         ("Firecrawl URL", 230.0, 830.0, 14.0, COLOR_TEXT_SEC),
                         ("Firecrawl Key", 230.0, 930.0, 14.0, COLOR_TEXT_SEC),
+                        ("System Prompt", 230.0, 1030.0, 14.0, COLOR_TEXT_SEC),
                         (
                             "Allow Screen Capture (Routine Checks)",
                             435.0,
@@ -1263,46 +1266,6 @@ impl SettingsGpuPrototypeRenderer {
                         }
                     }
 
-                    let btn_y = (120.0 + 30.0 + 25.0) * render_scale
-                        + off_y
-                        + scene.cpu_fallback_scene.input.scroll_offset * render_scale;
-                    let profile_buttons = [
-                        (230.0, 30.0, 45.0),
-                        (430.0, 30.0, 45.0),
-                        (480.0, 35.0, 45.0),
-                        (525.0, 35.0, 45.0),
-                    ];
-                    let profile_states = [
-                        if scene.cpu_fallback_scene.input.pressed_btn == Some(0) {
-                            COLOR_PRIMARY
-                        } else {
-                            COLOR_BG_CARD
-                        },
-                        if scene.cpu_fallback_scene.input.pressed_btn == Some(1) {
-                            COLOR_PRIMARY
-                        } else {
-                            COLOR_BG_CARD
-                        },
-                        if scene.cpu_fallback_scene.input.pressed_btn == Some(2) {
-                            COLOR_PRIMARY
-                        } else {
-                            COLOR_BG_CARD
-                        },
-                        if scene.cpu_fallback_scene.input.pressed_btn == Some(3) {
-                            COLOR_PRIMARY
-                        } else {
-                            COLOR_BG_CARD
-                        },
-                    ];
-                    for ((x_design, w_design, h_design), color) in
-                        profile_buttons.into_iter().zip(profile_states)
-                    {
-                        let x = x_design * render_scale + off_x;
-                        let w = w_design * render_scale;
-                        let h = h_design * render_scale;
-                        content_cards.push((x, btn_y, x + w, btn_y + h, 8.0 * render_scale, color));
-                    }
-
                     let ref_x = 230.0 * render_scale + off_x;
                     let ref_y = (120.0 + 1430.0 + 25.0) * render_scale
                         + off_y
@@ -1379,6 +1342,35 @@ impl SettingsGpuPrototypeRenderer {
                             ));
                         }
                     }
+                    let mode_labels = [
+                        ("Auto", 405.0 + 12.0, 1330.0 + 25.0 + 12.0),
+                        (
+                            "Streaming",
+                            405.0 + 325.0 / 3.0 + 12.0,
+                            1330.0 + 25.0 + 12.0,
+                        ),
+                        (
+                            "Non-stream",
+                            405.0 + 325.0 / 3.0 * 2.0 + 12.0,
+                            1330.0 + 25.0 + 12.0,
+                        ),
+                    ];
+                    for (idx, (label, x, y)) in mode_labels.into_iter().enumerate() {
+                        text_runs.push(SettingsGpuTextRun {
+                            text: label.to_string(),
+                            x: x * render_scale + off_x,
+                            y: (120.0 + y) * render_scale
+                                + off_y
+                                + scene.cpu_fallback_scene.input.scroll_offset * render_scale,
+                            font_size: 14.0 * render_scale,
+                            color: if idx == active_segment {
+                                0x00FFFFFF
+                            } else {
+                                COLOR_TEXT_MAIN
+                            },
+                            bold: false,
+                        });
+                    }
                 }
                 3 => {
                     gpu_groups.push("history_cards");
@@ -1386,7 +1378,8 @@ impl SettingsGpuPrototypeRenderer {
                     let card_width = 490.0 * render_scale;
                     let radius = 8.0 * render_scale;
                     let start_y = 140.0 * render_scale + off_y;
-                    let current_y = start_y + scene.cpu_fallback_scene.input.scroll_offset;
+                    let current_y =
+                        start_y + scene.cpu_fallback_scene.input.scroll_offset * render_scale;
                     let item_h_fixed = 180.0 * render_scale;
                     let spacing = 10.0 * render_scale;
                     let total_item_h = item_h_fixed + spacing;
@@ -1649,7 +1642,7 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     system_prompt_metrics_cache: &mut sys_metrics,
                     system_prompt_hash: input.system_prompt_hash,
                     draw_cursor: false,
-                    draw_static_text: scene.draw_static_text,
+                    draw_static_text: scene.draw_static_text || input.focused_field == Some(0),
                     mouse_pos: (lx, ly),
                     content_mouse_pos: (lx, dly),
                     pressed_btn: input.pressed_btn,
@@ -1658,13 +1651,16 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     field_scroll_offsets: input.field_scroll_offsets,
                     draw_card_background: scene.draw_static_blocks,
                     gpu_standard_input_chrome: scene.draw_static_blocks == false,
-                    gpu_profile_button_chrome: scene.draw_static_blocks == false,
+                    gpu_profile_button_chrome: false,
                     gpu_response_mode_chrome: scene.draw_static_blocks == false,
                     gpu_tts_ref_button_chrome: scene.draw_static_blocks == false,
                     gpu_checkbox_chrome: false,
                     gpu_eye_icon_chrome: scene.draw_static_blocks == false,
                     gpu_dialog_chrome: false,
                     gpu_toast_chrome: false,
+                    gpu_profile_symbol_text: false,
+                    gpu_response_mode_label_text: scene.draw_static_text == false,
+                    gpu_profile_title_text: scene.draw_static_text == false,
                 };
                 let (v, c, rect) = tabs::ai::draw(
                     buffer,

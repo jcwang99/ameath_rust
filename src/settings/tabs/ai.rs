@@ -35,6 +35,9 @@ pub struct AiTabState<'a> {
     pub gpu_eye_icon_chrome: bool,
     pub gpu_dialog_chrome: bool,
     pub gpu_toast_chrome: bool,
+    pub gpu_profile_symbol_text: bool,
+    pub gpu_response_mode_label_text: bool,
+    pub gpu_profile_title_text: bool,
 }
 
 pub fn draw(
@@ -330,7 +333,30 @@ pub fn draw(
         };
 
         // Label
-        if state.draw_static_text {
+        if i == 0 && state.gpu_profile_title_text && !state.draw_static_text {
+            let prefix = "Active Profile";
+            let suffix = format!(
+                " ({}/{})",
+                ai_config.active_profile_index + 1,
+                ai_config.profiles.len()
+            );
+            let (prefix_w, _) =
+                get_metrics_dw_ex(prefix, sc(14.0), w, "Microsoft YaHei", false, false, false);
+            draw_text_dw_ex(
+                buffer,
+                w,
+                &suffix,
+                fx_abs + prefix_w.ceil() as i32,
+                fy_abs,
+                sc(14.0),
+                COLOR_TEXT_SEC,
+                w,
+                sc(20.0) as u32,
+                0.0,
+                0.0,
+                w,
+            );
+        } else if state.draw_static_text || i == 0 {
             draw_text_dw_ex(
                 buffer,
                 w,
@@ -484,20 +510,22 @@ pub fn draw(
                     h,
                 );
             }
-            draw_text_dw_ex(
-                buffer,
-                w,
-                "<",
-                btn_x_start + sc(10.0) as i32,
-                btn_y_start + sc(8.0) as i32,
-                sc(20.0),
-                COLOR_TEXT_MAIN,
-                btn_w,
-                sc(45.0) as u32,
-                0.0,
-                0.0,
-                btn_w,
-            );
+            if !state.gpu_profile_symbol_text {
+                draw_text_dw_ex(
+                    buffer,
+                    w,
+                    "<",
+                    btn_x_start + sc(10.0) as i32,
+                    btn_y_start + sc(8.0) as i32,
+                    sc(20.0),
+                    COLOR_TEXT_MAIN,
+                    btn_w,
+                    sc(45.0) as u32,
+                    0.0,
+                    0.0,
+                    btn_w,
+                );
+            }
 
             // [>] Next Profile (at 430)
             let next_x_design = 430.0;
@@ -527,20 +555,22 @@ pub fn draw(
                     h,
                 );
             }
-            draw_text_dw_ex(
-                buffer,
-                w,
-                ">",
-                next_x + sc(10.0) as i32,
-                btn_y_start + sc(8.0) as i32,
-                sc(20.0),
-                COLOR_TEXT_MAIN,
-                btn_w,
-                sc(45.0) as u32,
-                0.0,
-                0.0,
-                btn_w,
-            );
+            if !state.gpu_profile_symbol_text {
+                draw_text_dw_ex(
+                    buffer,
+                    w,
+                    ">",
+                    next_x + sc(10.0) as i32,
+                    btn_y_start + sc(8.0) as i32,
+                    sc(20.0),
+                    COLOR_TEXT_MAIN,
+                    btn_w,
+                    sc(45.0) as u32,
+                    0.0,
+                    0.0,
+                    btn_w,
+                );
+            }
 
             // [+] Add Profile (at 480)
             let add_x_design = 480.0;
@@ -572,20 +602,22 @@ pub fn draw(
                     h,
                 );
             }
-            draw_text_dw_ex(
-                buffer,
-                w,
-                "+",
-                add_x + sc(10.0) as i32,
-                btn_y_start + sc(8.0) as i32,
-                sc(20.0),
-                COLOR_TEXT_MAIN,
-                add_w_abs,
-                sc(45.0) as u32,
-                0.0,
-                0.0,
-                add_w_abs,
-            );
+            if !state.gpu_profile_symbol_text {
+                draw_text_dw_ex(
+                    buffer,
+                    w,
+                    "+",
+                    add_x + sc(10.0) as i32,
+                    btn_y_start + sc(8.0) as i32,
+                    sc(20.0),
+                    COLOR_TEXT_MAIN,
+                    add_w_abs,
+                    sc(45.0) as u32,
+                    0.0,
+                    0.0,
+                    add_w_abs,
+                );
+            }
 
             // [-] Delete Profile (at 525)
             let del_x_design = 525.0;
@@ -617,20 +649,22 @@ pub fn draw(
                     h,
                 );
             }
-            draw_text_dw_ex(
-                buffer,
-                w,
-                "-",
-                del_x + sc(14.0) as i32,
-                btn_y_start + sc(6.0) as i32,
-                sc(24.0),
-                if is_del_hover { 0x00FFFFFF } else { 0x00FF6666 },
-                del_w_abs,
-                sc(45.0) as u32,
-                0.0,
-                0.0,
-                sc(45.0) as u32,
-            );
+            if !state.gpu_profile_symbol_text {
+                draw_text_dw_ex(
+                    buffer,
+                    w,
+                    "-",
+                    del_x + sc(14.0) as i32,
+                    btn_y_start + sc(6.0) as i32,
+                    sc(24.0),
+                    if is_del_hover { 0x00FFFFFF } else { 0x00FF6666 },
+                    del_w_abs,
+                    sc(45.0) as u32,
+                    0.0,
+                    0.0,
+                    sc(45.0) as u32,
+                );
+            }
         }
 
         // Eye Icon
@@ -673,20 +707,22 @@ pub fn draw(
             && state.content_mouse_pos.1 <= fy + 70.0;
 
         if fy_abs > min_y_vis && fy_abs < max_y_vis {
-            draw_text_dw_ex(
-                buffer,
-                w,
-                "Multimodal (Vision)",
-                fx_abs,
-                fy_abs,
-                sc(14.0),
-                COLOR_TEXT_SEC,
-                sc(45.0) as u32 + 500,
-                sc(20.0) as u32,
-                0.0,
-                0.0,
-                sc(45.0) as u32 + 500,
-            );
+            if state.draw_static_text {
+                draw_text_dw_ex(
+                    buffer,
+                    w,
+                    "Multimodal (Vision)",
+                    fx_abs,
+                    fy_abs,
+                    sc(14.0),
+                    COLOR_TEXT_SEC,
+                    sc(45.0) as u32 + 500,
+                    sc(20.0) as u32,
+                    0.0,
+                    0.0,
+                    sc(45.0) as u32 + 500,
+                );
+            }
             let is_multimodal = active_profile.is_multimodal;
             let toggle_bg = if is_multimodal {
                 COLOR_PRIMARY
@@ -847,24 +883,26 @@ pub fn draw(
                 );
             }
 
-            draw_text_dw_ex(
-                buffer,
-                w,
-                label,
-                seg_x_abs + sc(12.0) as i32,
-                input_y_abs + sc(12.0) as i32,
-                sc(14.0),
-                if is_active {
-                    0x00FFFFFF
-                } else {
-                    COLOR_TEXT_MAIN
-                },
-                seg_w_abs.saturating_sub(sc(20.0) as u32),
-                sc(24.0) as u32,
-                0.0,
-                0.0,
-                seg_w_abs.saturating_sub(sc(20.0) as u32),
-            );
+            if !state.gpu_response_mode_label_text {
+                draw_text_dw_ex(
+                    buffer,
+                    w,
+                    label,
+                    seg_x_abs + sc(12.0) as i32,
+                    input_y_abs + sc(12.0) as i32,
+                    sc(14.0),
+                    if is_active {
+                        0x00FFFFFF
+                    } else {
+                        COLOR_TEXT_MAIN
+                    },
+                    seg_w_abs.saturating_sub(sc(20.0) as u32),
+                    sc(24.0) as u32,
+                    0.0,
+                    0.0,
+                    seg_w_abs.saturating_sub(sc(20.0) as u32),
+                );
+            }
         }
     }
 
