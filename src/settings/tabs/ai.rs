@@ -26,6 +26,7 @@ pub struct AiTabState<'a> {
     pub notification: Option<(String, std::time::Instant)>,
     pub field_scroll_offsets: [f32; 18],
     pub draw_card_background: bool,
+    pub draw_static_text: bool,
     pub gpu_standard_input_chrome: bool,
     pub gpu_profile_button_chrome: bool,
     pub gpu_response_mode_chrome: bool,
@@ -227,20 +228,22 @@ pub fn draw(
                 }
             }
 
-            draw_text_dw_ex(
-                buffer,
-                w,
-                label,
-                (box_x + box_size + 10) as i32,
-                box_y + sc(1.0) as i32, // Vertically center text with box
-                sc(14.0),               // Smaller font
-                COLOR_TEXT_MAIN,
-                (w as f32 - (box_x + box_size + 10) as f32) as u32,
-                sc(30.0) as u32,
-                0.0,
-                0.0,
-                1000000,
-            );
+            if state.draw_static_text {
+                draw_text_dw_ex(
+                    buffer,
+                    w,
+                    label,
+                    (box_x + box_size + 10) as i32,
+                    box_y + sc(1.0) as i32,
+                    sc(14.0),
+                    COLOR_TEXT_MAIN,
+                    (w as f32 - (box_x + box_size + 10) as f32) as u32,
+                    sc(30.0) as u32,
+                    0.0,
+                    0.0,
+                    1000000,
+                );
+            }
             continue;
         }
 
@@ -327,20 +330,22 @@ pub fn draw(
         };
 
         // Label
-        draw_text_dw_ex(
-            buffer,
-            w,
-            label,
-            fx_abs,
-            fy_abs,
-            sc(14.0),
-            COLOR_TEXT_SEC,
-            w,
-            sc(20.0) as u32,
-            0.0,
-            0.0,
-            w,
-        );
+        if state.draw_static_text {
+            draw_text_dw_ex(
+                buffer,
+                w,
+                label,
+                fx_abs,
+                fy_abs,
+                sc(14.0),
+                COLOR_TEXT_SEC,
+                w,
+                sc(20.0) as u32,
+                0.0,
+                0.0,
+                w,
+            );
+        }
 
         let gpu_owned_input = state.gpu_standard_input_chrome
             && matches!(i, 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 17);
@@ -749,20 +754,22 @@ pub fn draw(
         let input_y_abs = fy_abs + sc(25.0) as i32;
         let input_h = sc(45.0) as u32;
 
-        draw_text_dw_ex(
-            buffer,
-            w,
-            "Response Mode",
-            fx_abs,
-            fy_abs,
-            sc(14.0),
-            COLOR_TEXT_SEC,
-            sc(fw) as u32,
-            sc(20.0) as u32,
-            0.0,
-            0.0,
-            sc(fw) as u32,
-        );
+        if state.draw_static_text {
+            draw_text_dw_ex(
+                buffer,
+                w,
+                "Response Mode",
+                fx_abs,
+                fy_abs,
+                sc(14.0),
+                COLOR_TEXT_SEC,
+                sc(fw) as u32,
+                sc(20.0) as u32,
+                0.0,
+                0.0,
+                sc(fw) as u32,
+            );
+        }
 
         if !state.gpu_response_mode_chrome {
             draw_rounded_rect(

@@ -1138,6 +1138,7 @@ impl SettingsGpuPrototypeRenderer {
                 2 => {
                     gpu_groups.extend([
                         "ai_main_card",
+                        "ai_static_labels",
                         "ai_standard_input_chrome",
                         "ai_eye_icon_chrome",
                         "ai_profile_button_chrome",
@@ -1154,6 +1155,56 @@ impl SettingsGpuPrototypeRenderer {
                         12.0 * render_scale,
                         COLOR_BG_CARD,
                     ));
+
+                    let ai_fields = [
+                        ("Active Profile", 265.0, 30.0, 14.0, COLOR_TEXT_SEC),
+                        ("API Key", 230.0, 130.0, 14.0, COLOR_TEXT_SEC),
+                        ("Base URL", 230.0, 230.0, 14.0, COLOR_TEXT_SEC),
+                        ("Model", 230.0, 330.0, 14.0, COLOR_TEXT_SEC),
+                        ("ReAct Steps", 230.0, 430.0, 14.0, COLOR_TEXT_SEC),
+                        ("L1 Summary", 405.0, 430.0, 14.0, COLOR_TEXT_SEC),
+                        ("L2 Merge", 580.0, 430.0, 14.0, COLOR_TEXT_SEC),
+                        (
+                            "Interact Interval (min)",
+                            230.0,
+                            530.0,
+                            14.0,
+                            COLOR_TEXT_SEC,
+                        ),
+                        ("Tavily Key", 230.0, 630.0, 14.0, COLOR_TEXT_SEC),
+                        ("Brave Key", 230.0, 730.0, 14.0, COLOR_TEXT_SEC),
+                        ("Firecrawl URL", 230.0, 830.0, 14.0, COLOR_TEXT_SEC),
+                        ("Firecrawl Key", 230.0, 930.0, 14.0, COLOR_TEXT_SEC),
+                        (
+                            "Allow Screen Capture (Routine Checks)",
+                            435.0,
+                            567.5,
+                            14.0,
+                            COLOR_TEXT_MAIN,
+                        ),
+                        (
+                            "TTS Enabled (CosyVoice 3)",
+                            260.0,
+                            1367.5,
+                            14.0,
+                            COLOR_TEXT_MAIN,
+                        ),
+                        ("TTS Ref Audio Path", 230.0, 1430.0, 14.0, COLOR_TEXT_SEC),
+                        ("TTS Prompt Text", 230.0, 1530.0, 14.0, COLOR_TEXT_SEC),
+                        ("Response Mode", 405.0, 1330.0, 14.0, COLOR_TEXT_SEC),
+                    ];
+                    for (text, x, y, size, color) in ai_fields {
+                        text_runs.push(SettingsGpuTextRun {
+                            text: text.to_string(),
+                            x: x * render_scale + off_x,
+                            y: (120.0 + y) * render_scale
+                                + off_y
+                                + scene.cpu_fallback_scene.input.scroll_offset * render_scale,
+                            font_size: size * render_scale,
+                            color,
+                            bold: false,
+                        });
+                    }
 
                     let ai_fields = [
                         (230.0, 130.0, 500.0),
@@ -1598,6 +1649,7 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     system_prompt_metrics_cache: &mut sys_metrics,
                     system_prompt_hash: input.system_prompt_hash,
                     draw_cursor: false,
+                    draw_static_text: scene.draw_static_text,
                     mouse_pos: (lx, ly),
                     content_mouse_pos: (lx, dly),
                     pressed_btn: input.pressed_btn,
