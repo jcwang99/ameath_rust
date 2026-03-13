@@ -17,6 +17,8 @@ pub struct GeneralTabState<'a> {
     pub gpu_behavior_chrome: bool,
     pub gpu_window_layer_chrome: bool,
     pub gpu_music_input_chrome: bool,
+    pub gpu_monitor_chrome: bool,
+    pub gpu_startup_toggle_chrome: bool,
 }
 
 pub fn draw(
@@ -418,7 +420,7 @@ pub fn draw(
             COLOR_TEXT_MAIN
         };
 
-        if state.draw_control_chrome {
+        if state.draw_control_chrome && !state.gpu_monitor_chrome {
             draw_rounded_rect(
                 buffer,
                 w,
@@ -500,7 +502,7 @@ pub fn draw(
     };
 
     // Background
-    if state.draw_control_chrome {
+    if state.draw_control_chrome && !state.gpu_startup_toggle_chrome {
         draw_rounded_rect(
             buffer, w, toggle_x, toggle_y, toggle_w, toggle_h, 12, bg_color, w, h,
         );
