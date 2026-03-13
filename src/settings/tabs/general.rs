@@ -15,6 +15,7 @@ pub struct GeneralTabState<'a> {
     pub draw_control_chrome: bool,
     pub gpu_slider_chrome: bool,
     pub gpu_behavior_chrome: bool,
+    pub gpu_window_layer_chrome: bool,
 }
 
 pub fn draw(
@@ -325,7 +326,7 @@ pub fn draw(
         } else {
             COLOR_BORDER
         };
-        if state.draw_control_chrome {
+        if state.draw_control_chrome && !state.gpu_window_layer_chrome {
             draw_rounded_rect(
                 buffer,
                 w,
