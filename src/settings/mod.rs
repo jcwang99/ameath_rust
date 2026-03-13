@@ -452,6 +452,7 @@ struct SettingsWorkerRuntime {
     gpu_prototype: SettingsGpuPrototypeState,
     last_renderer_kind: SettingsRendererKind,
     last_gpu_surface_count: usize,
+    last_gpu_groups: Vec<&'static str>,
 }
 
 impl SettingsWorkerRuntime {
@@ -460,6 +461,7 @@ impl SettingsWorkerRuntime {
             gpu_prototype: SettingsGpuPrototypeState::new(),
             last_renderer_kind: SettingsRendererKind::Cpu,
             last_gpu_surface_count: 0,
+            last_gpu_groups: Vec::new(),
         }
     }
 
@@ -499,6 +501,7 @@ impl SettingsWorkerRuntime {
         match renderer_kind {
             SettingsRendererKind::Cpu => {
                 self.last_gpu_surface_count = 0;
+                self.last_gpu_groups.clear();
                 render_with_backend::<SettingsCpuRenderer>(
                     &mut req.buffer,
                     req.input.clone(),
@@ -506,13 +509,15 @@ impl SettingsWorkerRuntime {
                 )
             }
             SettingsRendererKind::GpuPrototype => {
-                let (result, surface_count) = SettingsGpuPrototypeRenderer::render_with_runtime(
-                    &mut self.gpu_prototype,
-                    &mut req.buffer,
-                    req.input.clone(),
-                    req.hash,
-                );
+                let (result, surface_count, groups) =
+                    SettingsGpuPrototypeRenderer::render_with_runtime(
+                        &mut self.gpu_prototype,
+                        &mut req.buffer,
+                        req.input.clone(),
+                        req.hash,
+                    );
                 self.last_gpu_surface_count = surface_count;
+                self.last_gpu_groups = groups;
                 result
             }
         }
@@ -648,9 +653,10 @@ impl SettingsGpuPrototypeRenderer {
         buffer: &mut [u32],
         input: SettingsRenderInput,
         hash: u64,
-    ) -> (RenderResult, usize) {
+    ) -> (RenderResult, usize, Vec<&'static str>) {
         let scene = Self::build_gpu_scene(input, hash);
         let mut gpu_surface_count = 0usize;
+        let mut gpu_groups = vec!["app_background", "sidebar", "header"];
 
         #[cfg(target_os = "windows")]
         if let Some(resources) = &mut state.resources {
@@ -667,6 +673,7 @@ impl SettingsGpuPrototypeRenderer {
 
             match scene.cpu_fallback_scene.input.current_tab {
                 0 => {
+                    gpu_groups.push("home_card");
                     let left = 210.0 * render_scale + off_x;
                     let top = 120.0 * render_scale + off_y;
                     content_cards.push((
@@ -679,6 +686,15 @@ impl SettingsGpuPrototypeRenderer {
                     ));
                 }
                 1 => {
+                    gpu_groups.extend([
+                        "general_cards",
+                        "general_slider_chrome",
+                        "general_behavior_chrome",
+                        "general_music_input_chrome",
+                        "general_window_layer_chrome",
+                        "general_monitor_chrome",
+                        "general_startup_toggle_chrome",
+                    ]);
                     let scroll_y = scene.cpu_fallback_scene.input.scroll_offset;
                     let card_left = 210.0 * render_scale + off_x;
                     let card_right = card_left + 560.0 * render_scale;
@@ -906,6 +922,13 @@ impl SettingsGpuPrototypeRenderer {
                     ));
                 }
                 2 => {
+                    gpu_groups.extend([
+                        "ai_main_card",
+                        "ai_standard_input_chrome",
+                        "ai_profile_button_chrome",
+                        "ai_tts_ref_button_chrome",
+                        "ai_response_mode_chrome",
+                    ]);
                     let left = 210.0 * render_scale + off_x;
                     let top = 120.0 * render_scale + off_y;
                     content_cards.push((
@@ -1074,6 +1097,7 @@ impl SettingsGpuPrototypeRenderer {
                     }
                 }
                 3 => {
+                    gpu_groups.push("history_cards");
                     let card_left = 230.0 * render_scale + off_x;
                     let card_width = 490.0 * render_scale;
                     let radius = 8.0 * render_scale;
@@ -1202,6 +1226,7 @@ impl SettingsGpuPrototypeRenderer {
                     }
                 }
                 4 => {
+                    gpu_groups.push("about_card");
                     let left = 210.0 * render_scale + off_x;
                     let top = 120.0 * render_scale + off_y;
                     content_cards.push((
@@ -1231,6 +1256,7 @@ impl SettingsGpuPrototypeRenderer {
         (
             Self::render_with_cpu_fallback(buffer, scene),
             gpu_surface_count,
+            gpu_groups,
         )
     }
 }
@@ -1665,7 +1691,8 @@ impl SettingsWindow {
                 );
                 if runtime.last_renderer_kind == SettingsRendererKind::GpuPrototype {
                     tracing::info!(
-                        "Settings GPU prototype currently owns: app background, sidebar, header, primary cards, verified General chrome groups, verified AI standard input chrome, verified AI profile button chrome, verified AI response-mode chrome, and verified AI TTS ref-button chrome"
+                        "Settings GPU prototype groups: {}",
+                        runtime.last_gpu_groups.join(", ")
                     );
                 }
                 {
