@@ -20,12 +20,12 @@ use winit::window::Window;
 use windows::Win32::Foundation::{HANDLE, HWND, RECT};
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_POINT_2F,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::{
-    ID2D1DCRenderTarget, D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
-    D2D1_ROUNDED_RECT,
+    ID2D1DCRenderTarget, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_RENDER_TARGET_PROPERTIES,
+    D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_ROUNDED_RECT,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Gdi::{
@@ -129,6 +129,16 @@ struct SettingsGpuPrototypeScene {
     backend_label: &'static str,
 }
 
+#[derive(Clone)]
+struct SettingsGpuTextRun {
+    text: String,
+    x: f32,
+    y: f32,
+    font_size: f32,
+    color: u32,
+    bold: bool,
+}
+
 #[cfg(target_os = "windows")]
 struct SettingsGpuPrototypeCanvas {
     hdc_mem: HDC,
@@ -228,6 +238,7 @@ impl SettingsGpuPrototypeCanvas {
         sidebar_width: u32,
         header_height: u32,
         content_cards: &[(f32, f32, f32, f32, f32, u32)],
+        text_runs: &[SettingsGpuTextRun],
     ) {
         self.ensure_surface(d2d_factory, width as i32, height as i32);
 
@@ -311,6 +322,34 @@ impl SettingsGpuPrototypeCanvas {
                                 radiusY: *radius,
                             },
                             &card_brush,
+                        );
+                    }
+                }
+
+                for run in text_runs {
+                    if let Ok(text_brush) = rt.CreateSolidColorBrush(
+                        &D2D1_COLOR_F {
+                            r: ((run.color >> 16) & 0xFF) as f32 / 255.0,
+                            g: ((run.color >> 8) & 0xFF) as f32 / 255.0,
+                            b: (run.color & 0xFF) as f32 / 255.0,
+                            a: 1.0,
+                        },
+                        None,
+                    ) {
+                        let layout = get_or_create_layout_ex(
+                            &run.text,
+                            run.font_size,
+                            width,
+                            "Segoe UI",
+                            run.bold,
+                            false,
+                            false,
+                        );
+                        rt.DrawTextLayout(
+                            D2D_POINT_2F { x: run.x, y: run.y },
+                            &layout,
+                            &text_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
                         );
                     }
                 }
@@ -670,6 +709,7 @@ impl SettingsGpuPrototypeRenderer {
             let sidebar_width = (180.0 * render_scale + off_x) as u32;
             let header_height = (120.0 * render_scale + off_y) as u32;
             let mut content_cards = Vec::new();
+            let mut text_runs = Vec::new();
 
             match scene.cpu_fallback_scene.input.current_tab {
                 0 => {
@@ -685,6 +725,22 @@ impl SettingsGpuPrototypeRenderer {
                         12.0 * render_scale,
                         COLOR_BG_CARD,
                     ));
+                    text_runs.push(SettingsGpuTextRun {
+                        text: "Welcome back!".to_string(),
+                        x: 230.0 * render_scale + off_x,
+                        y: 150.0 * render_scale + off_y,
+                        font_size: 24.0 * render_scale,
+                        color: COLOR_TEXT_MAIN,
+                        bold: false,
+                    });
+                    text_runs.push(SettingsGpuTextRun {
+                        text: "Select a tab on the left to configure your desktop pet.".to_string(),
+                        x: 230.0 * render_scale + off_x,
+                        y: 200.0 * render_scale + off_y,
+                        font_size: 14.0 * render_scale,
+                        color: COLOR_TEXT_SEC,
+                        bold: false,
+                    });
                 }
                 1 => {
                     gpu_groups.extend([
@@ -1258,6 +1314,30 @@ impl SettingsGpuPrototypeRenderer {
                         12.0 * render_scale,
                         COLOR_BG_CARD,
                     ));
+                    text_runs.push(SettingsGpuTextRun {
+                        text: "Ameath".to_string(),
+                        x: 230.0 * render_scale + off_x,
+                        y: 150.0 * render_scale + off_y,
+                        font_size: 24.0 * render_scale,
+                        color: COLOR_TEXT_MAIN,
+                        bold: false,
+                    });
+                    text_runs.push(SettingsGpuTextRun {
+                        text: "Version 0.1.0".to_string(),
+                        x: 230.0 * render_scale + off_x,
+                        y: 190.0 * render_scale + off_y,
+                        font_size: 14.0 * render_scale,
+                        color: COLOR_TEXT_SEC,
+                        bold: false,
+                    });
+                    text_runs.push(SettingsGpuTextRun {
+                        text: "A desktop pet powered by Rust and AI.".to_string(),
+                        x: 230.0 * render_scale + off_x,
+                        y: 230.0 * render_scale + off_y,
+                        font_size: 14.0 * render_scale,
+                        color: COLOR_TEXT_SEC,
+                        bold: false,
+                    });
                 }
                 _ => {}
             };
@@ -1270,6 +1350,7 @@ impl SettingsGpuPrototypeRenderer {
                 sidebar_width,
                 header_height,
                 &content_cards,
+                &text_runs,
             );
             gpu_surface_count = 2 + content_cards.len();
         }
@@ -1387,8 +1468,16 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
         // Tab Content
         match input.current_tab {
             0 => {
-                let (v, c, _) =
-                    tabs::home::draw(buffer, w, h, scale, off_x, off_y, scene.draw_static_blocks);
+                let (v, c, _) = tabs::home::draw(
+                    buffer,
+                    w,
+                    h,
+                    scale,
+                    off_x,
+                    off_y,
+                    scene.draw_static_blocks,
+                    scene.draw_static_blocks,
+                );
                 vh = v;
                 ch = c;
             }
@@ -1483,8 +1572,16 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                 history_item_rects = local_rects;
             }
             4 => {
-                let (v, c, _) =
-                    tabs::about::draw(buffer, w, h, scale, off_x, off_y, scene.draw_static_blocks);
+                let (v, c, _) = tabs::about::draw(
+                    buffer,
+                    w,
+                    h,
+                    scale,
+                    off_x,
+                    off_y,
+                    scene.draw_static_blocks,
+                    scene.draw_static_blocks,
+                );
                 vh = v;
                 ch = c;
             }

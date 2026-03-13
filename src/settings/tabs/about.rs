@@ -10,6 +10,7 @@ pub fn draw(
     off_x: f32,
     off_y: f32,
     draw_card_background: bool,
+    draw_text_content: bool,
 ) -> (f32, f32, Option<(i32, i32, u32, u32)>) {
     let s = |val: u32| -> u32 { (val as f32 * scale + off_x) as u32 };
     let sy_val = |val: u32| -> u32 { (val as f32 * scale + off_y) as u32 };
@@ -30,38 +31,40 @@ pub fn draw(
         );
     }
 
-    draw_text(
-        buffer,
-        w,
-        &[],
-        "Ameath",
-        s(230) as i32,
-        sy_val(150) as i32,
-        sc(24.0),
-        COLOR_TEXT_MAIN,
-    );
+    if draw_text_content {
+        draw_text(
+            buffer,
+            w,
+            &[],
+            "Ameath",
+            s(230) as i32,
+            sy_val(150) as i32,
+            sc(24.0),
+            COLOR_TEXT_MAIN,
+        );
 
-    draw_text(
-        buffer,
-        w,
-        &[],
-        "Version 0.1.0",
-        s(230) as i32,
-        sy_val(190) as i32,
-        sc(14.0),
-        COLOR_TEXT_SEC,
-    );
+        draw_text(
+            buffer,
+            w,
+            &[],
+            "Version 0.1.0",
+            s(230) as i32,
+            sy_val(190) as i32,
+            sc(14.0),
+            COLOR_TEXT_SEC,
+        );
 
-    draw_text(
-        buffer,
-        w,
-        &[],
-        "A desktop pet powered by Rust and AI.",
-        s(230) as i32,
-        sy_val(230) as i32,
-        sc(14.0),
-        COLOR_TEXT_SEC,
-    );
+        draw_text(
+            buffer,
+            w,
+            &[],
+            "A desktop pet powered by Rust and AI.",
+            s(230) as i32,
+            sy_val(230) as i32,
+            sc(14.0),
+            COLOR_TEXT_SEC,
+        );
+    }
 
     let viewport_height = 600.0;
     let content_height = 300.0;
