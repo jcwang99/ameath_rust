@@ -1285,16 +1285,20 @@ impl SettingsGpuPrototypeRenderer {
                             && mouse_lx <= x_design + w_design
                             && content_mouse_y >= 55.0
                             && content_mouse_y <= 100.0;
-                        if is_hover || scene.cpu_fallback_scene.input.pressed_btn == Some(btn_idx) {
-                            continue;
-                        }
                         let x = x_design * render_scale + off_x;
                         let y = (120.0 + 30.0 + 25.0) * render_scale
                             + off_y
                             + scene.cpu_fallback_scene.input.scroll_offset * render_scale;
                         let w = w_design * render_scale;
                         let h = 45.0 * render_scale;
-                        content_cards.push((x, y, x + w, y + h, 8.0 * render_scale, COLOR_BG_CARD));
+                        let color = if scene.cpu_fallback_scene.input.pressed_btn == Some(btn_idx) {
+                            COLOR_PRIMARY
+                        } else if is_hover {
+                            0x00444444
+                        } else {
+                            COLOR_BG_CARD
+                        };
+                        content_cards.push((x, y, x + w, y + h, 8.0 * render_scale, color));
                     }
                     let profile_symbols = [
                         (0usize, "<", 230.0 + 10.0, 8.0, 20.0, COLOR_TEXT_MAIN),
