@@ -553,28 +553,6 @@ impl ChatGpuPrototypeCanvas {
                         );
                     }
                 }
-
-                if let Some((cx, cy, cw, ch)) = scene.cursor_rect {
-                    if let Ok(cursor_brush) = rt.CreateSolidColorBrush(
-                        &D2D1_COLOR_F {
-                            r: ((scene.cursor_color >> 16) & 0xFF) as f32 / 255.0,
-                            g: ((scene.cursor_color >> 8) & 0xFF) as f32 / 255.0,
-                            b: (scene.cursor_color & 0xFF) as f32 / 255.0,
-                            a: 1.0,
-                        },
-                        None,
-                    ) {
-                        rt.FillRectangle(
-                            &windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                                left: cx as f32,
-                                top: cy as f32,
-                                right: cx as f32 + cw as f32,
-                                bottom: cy as f32 + ch as f32,
-                            },
-                            &cursor_brush,
-                        );
-                    }
-                }
                 let _ = rt.EndDraw(None, None);
                 let src = std::slice::from_raw_parts(self.bits, scene.width * scene.height);
                 buffer[..src.len()].copy_from_slice(src);
