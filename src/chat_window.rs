@@ -104,6 +104,7 @@ struct ChatRenderScene {
     cursor_color: u32,
     draw_background: bool,
     draw_thumbnail_images: bool,
+    draw_thumbnail_shells: bool,
     plus_button_hovered: bool,
     thumbnail_hovered: Option<usize>,
     has_slots: bool,
@@ -333,89 +334,90 @@ impl ChatGpuPrototypeCanvas {
                     );
                 }
 
-                let mut thumb_x_cursor = 10.0f32;
-                for (i, slot) in slots.iter().enumerate() {
-                    let frame_color: u32 = if scene.thumbnail_hovered == Some(i) {
-                        0xFF5A2F2F
-                    } else {
-                        match slot.status {
-                            ImageStatus::Processing => 0xFF303036,
-                            ImageStatus::Ready { .. } => 0xFF383838,
-                        }
-                    };
-                    if let Ok(frame_brush) = rt.CreateSolidColorBrush(
-                        &D2D1_COLOR_F {
-                            r: ((frame_color >> 16) & 0xFF) as f32 / 255.0,
-                            g: ((frame_color >> 8) & 0xFF) as f32 / 255.0,
-                            b: (frame_color & 0xFF) as f32 / 255.0,
-                            a: 1.0,
-                        },
-                        None,
-                    ) {
-                        rt.FillRoundedRectangle(
-                            &D2D1_ROUNDED_RECT {
-                                rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                                    left: thumb_x_cursor,
-                                    top: 10.0,
-                                    right: thumb_x_cursor + 80.0,
-                                    bottom: 90.0,
-                                },
-                                radiusX: 8.0,
-                                radiusY: 8.0,
-                            },
-                            &frame_brush,
-                        );
-                    }
-                    if let Ok(inner_brush) = rt.CreateSolidColorBrush(
-                        &D2D1_COLOR_F {
-                            r: 0x22 as f32 / 255.0,
-                            g: 0x22 as f32 / 255.0,
-                            b: 0x24 as f32 / 255.0,
-                            a: 1.0,
-                        },
-                        None,
-                    ) {
-                        rt.FillRoundedRectangle(
-                            &D2D1_ROUNDED_RECT {
-                                rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                                    left: thumb_x_cursor + 2.0,
-                                    top: 12.0,
-                                    right: thumb_x_cursor + 78.0,
-                                    bottom: 88.0,
-                                },
-                                radiusX: 6.0,
-                                radiusY: 6.0,
-                            },
-                            &inner_brush,
-                        );
-                    }
-                    if matches!(slot.status, ImageStatus::Processing) {
-                        if let Ok(dot_brush) = rt.CreateSolidColorBrush(
+                if scene.draw_thumbnail_shells {
+                    let mut thumb_x_cursor = 10.0f32;
+                    for (i, slot) in slots.iter().enumerate() {
+                        let frame_color: u32 = if scene.thumbnail_hovered == Some(i) {
+                            0xFF5A2F2F
+                        } else {
+                            match slot.status {
+                                ImageStatus::Processing => 0xFF303036,
+                                ImageStatus::Ready { .. } => 0xFF383838,
+                            }
+                        };
+                        if let Ok(frame_brush) = rt.CreateSolidColorBrush(
                             &D2D1_COLOR_F {
-                                r: 0xAA as f32 / 255.0,
-                                g: 0xAA as f32 / 255.0,
-                                b: 0xB4 as f32 / 255.0,
+                                r: ((frame_color >> 16) & 0xFF) as f32 / 255.0,
+                                g: ((frame_color >> 8) & 0xFF) as f32 / 255.0,
+                                b: (frame_color & 0xFF) as f32 / 255.0,
                                 a: 1.0,
                             },
                             None,
                         ) {
-                            for dot in 0..3 {
-                                rt.FillEllipse(
-                                    &D2D1_ELLIPSE {
-                                        point: D2D_POINT_2F {
-                                            x: thumb_x_cursor + 28.0 + dot as f32 * 12.0,
-                                            y: 50.0,
-                                        },
-                                        radiusX: 3.0,
-                                        radiusY: 3.0,
+                            rt.FillRoundedRectangle(
+                                &D2D1_ROUNDED_RECT {
+                                    rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                        left: thumb_x_cursor,
+                                        top: 10.0,
+                                        right: thumb_x_cursor + 80.0,
+                                        bottom: 90.0,
                                     },
-                                    &dot_brush,
-                                );
+                                    radiusX: 8.0,
+                                    radiusY: 8.0,
+                                },
+                                &frame_brush,
+                            );
+                        }
+                        if let Ok(inner_brush) = rt.CreateSolidColorBrush(
+                            &D2D1_COLOR_F {
+                                r: 0x22 as f32 / 255.0,
+                                g: 0x22 as f32 / 255.0,
+                                b: 0x24 as f32 / 255.0,
+                                a: 1.0,
+                            },
+                            None,
+                        ) {
+                            rt.FillRoundedRectangle(
+                                &D2D1_ROUNDED_RECT {
+                                    rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                        left: thumb_x_cursor + 2.0,
+                                        top: 12.0,
+                                        right: thumb_x_cursor + 78.0,
+                                        bottom: 88.0,
+                                    },
+                                    radiusX: 6.0,
+                                    radiusY: 6.0,
+                                },
+                                &inner_brush,
+                            );
+                        }
+                        if matches!(slot.status, ImageStatus::Processing) {
+                            if let Ok(dot_brush) = rt.CreateSolidColorBrush(
+                                &D2D1_COLOR_F {
+                                    r: 0xAA as f32 / 255.0,
+                                    g: 0xAA as f32 / 255.0,
+                                    b: 0xB4 as f32 / 255.0,
+                                    a: 1.0,
+                                },
+                                None,
+                            ) {
+                                for dot in 0..3 {
+                                    rt.FillEllipse(
+                                        &D2D1_ELLIPSE {
+                                            point: D2D_POINT_2F {
+                                                x: thumb_x_cursor + 28.0 + dot as f32 * 12.0,
+                                                y: 50.0,
+                                            },
+                                            radiusX: 3.0,
+                                            radiusY: 3.0,
+                                        },
+                                        &dot_brush,
+                                    );
+                                }
                             }
                         }
-                    }
-                    if let ImageStatus::Ready { thumb, .. } = &slot.status {
-                        let bmp_props = windows::Win32::Graphics::Direct2D::D2D1_BITMAP_PROPERTIES {
+                        if let ImageStatus::Ready { thumb, .. } = &slot.status {
+                            let bmp_props = windows::Win32::Graphics::Direct2D::D2D1_BITMAP_PROPERTIES {
                             pixelFormat: D2D1_PIXEL_FORMAT {
                                 format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
                                 alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
@@ -423,34 +425,75 @@ impl ChatGpuPrototypeCanvas {
                             dpiX: 96.0,
                             dpiY: 96.0,
                         };
-                        if let Ok(bitmap) = rt.CreateBitmap(
-                            windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U {
-                                width: thumb.width,
-                                height: thumb.height,
-                            },
-                            Some(thumb.pixels.as_ptr() as *const _),
-                            thumb.width * 4,
-                            &bmp_props,
-                        ) {
-                            let off_x = (80.0 - thumb.width as f32) / 2.0;
-                            let off_y = (80.0 - thumb.height as f32) / 2.0;
-                            rt.DrawBitmap(
+                            if let Ok(bitmap) = rt.CreateBitmap(
+                                windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U {
+                                    width: thumb.width,
+                                    height: thumb.height,
+                                },
+                                Some(thumb.pixels.as_ptr() as *const _),
+                                thumb.width * 4,
+                                &bmp_props,
+                            ) {
+                                let off_x = (80.0 - thumb.width as f32) / 2.0;
+                                let off_y = (80.0 - thumb.height as f32) / 2.0;
+                                let dest_rect =
+                                    windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                        left: thumb_x_cursor + off_x,
+                                        top: 10.0 + off_y,
+                                        right: thumb_x_cursor + off_x + thumb.width as f32,
+                                        bottom: 10.0 + off_y + thumb.height as f32,
+                                    };
+                                rt.DrawBitmap(
                                 &bitmap,
-                                Some(&windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                                    left: thumb_x_cursor + off_x,
-                                    top: 10.0 + off_y,
-                                    right: thumb_x_cursor + off_x + thumb.width as f32,
-                                    bottom: 10.0 + off_y + thumb.height as f32,
-                                }),
-                                1.0,
+                                Some(&dest_rect),
+                                if scene.thumbnail_hovered == Some(i) { 0.72 } else { 1.0 },
                                 windows::Win32::Graphics::Direct2D::D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
                                 None,
                             );
+                                if scene.thumbnail_hovered == Some(i) {
+                                    if let Ok(hover_brush) = rt.CreateSolidColorBrush(
+                                        &D2D1_COLOR_F {
+                                            r: 1.0,
+                                            g: 0.36,
+                                            b: 0.50,
+                                            a: 0.30,
+                                        },
+                                        None,
+                                    ) {
+                                        rt.FillRectangle(&dest_rect, &hover_brush);
+                                    }
+                                    if let Ok(outline_brush) = rt.CreateSolidColorBrush(
+                                        &D2D1_COLOR_F {
+                                            r: 1.0,
+                                            g: 0.42,
+                                            b: 0.58,
+                                            a: 0.95,
+                                        },
+                                        None,
+                                    ) {
+                                        rt.DrawRoundedRectangle(
+                                        &D2D1_ROUNDED_RECT {
+                                            rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                                left: thumb_x_cursor,
+                                                top: 10.0,
+                                                right: thumb_x_cursor + 80.0,
+                                                bottom: 90.0,
+                                            },
+                                            radiusX: 8.0,
+                                            radiusY: 8.0,
+                                        },
+                                        &outline_brush,
+                                        2.0,
+                                        None,
+                                    );
+                                    }
+                                }
+                            }
                         }
-                    }
-                    thumb_x_cursor += 90.0;
-                    if thumb_x_cursor + 80.0 > scene.width as f32 {
-                        break;
+                        thumb_x_cursor += 90.0;
+                        if thumb_x_cursor + 80.0 > scene.width as f32 {
+                            break;
+                        }
                     }
                 }
 
@@ -513,7 +556,8 @@ impl ChatRendererBackend for ChatGpuPrototypeRenderer {
     fn build_scene(window: &mut ChatWindow) -> Self::Scene {
         let mut scene = window.prepare_render_scene();
         scene.draw_background = false;
-        scene.draw_thumbnail_images = false;
+        scene.draw_thumbnail_images = true;
+        scene.draw_thumbnail_shells = false;
         scene
     }
 
@@ -1367,6 +1411,7 @@ impl ChatWindow {
             cursor_color: 0xFF00FF00,
             draw_background: true,
             draw_thumbnail_images: true,
+            draw_thumbnail_shells: true,
             plus_button_hovered: self.plus_button_hovered,
             thumbnail_hovered: self.hovered_thumb,
             has_slots: !self.slots.is_empty(),
