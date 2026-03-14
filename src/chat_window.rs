@@ -105,6 +105,7 @@ struct ChatRenderScene {
     draw_background: bool,
     plus_button_hovered: bool,
     thumbnail_hovered: Option<usize>,
+    has_slots: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -366,6 +367,29 @@ impl ChatGpuPrototypeCanvas {
                         if thumb_x_cursor + 80.0 > scene.width as f32 {
                             break;
                         }
+                    }
+                }
+
+                if scene.has_slots {
+                    let strip_y = 100.0;
+                    if let Ok(strip_brush) = rt.CreateSolidColorBrush(
+                        &D2D1_COLOR_F {
+                            r: ((scene.bg_color >> 16) & 0xFF) as f32 / 255.0,
+                            g: ((scene.bg_color >> 8) & 0xFF) as f32 / 255.0,
+                            b: (scene.bg_color & 0xFF) as f32 / 255.0,
+                            a: 1.0,
+                        },
+                        None,
+                    ) {
+                        rt.FillRectangle(
+                            &windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                left: 0.0,
+                                top: strip_y,
+                                right: scene.width as f32,
+                                bottom: scene.height as f32,
+                            },
+                            &strip_brush,
+                        );
                     }
                 }
                 let _ = rt.EndDraw(None, None);
@@ -1259,6 +1283,7 @@ impl ChatWindow {
             draw_background: true,
             plus_button_hovered: self.plus_button_hovered,
             thumbnail_hovered: self.hovered_thumb,
+            has_slots: !self.slots.is_empty(),
         }
     }
 
