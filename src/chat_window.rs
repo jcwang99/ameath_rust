@@ -103,6 +103,7 @@ struct ChatRenderScene {
     text_color: u32,
     cursor_color: u32,
     draw_background: bool,
+    draw_thumbnail_images: bool,
     plus_button_hovered: bool,
     thumbnail_hovered: Option<usize>,
     has_slots: bool,
@@ -413,6 +414,40 @@ impl ChatGpuPrototypeCanvas {
                             }
                         }
                     }
+                    if let ImageStatus::Ready { thumb, .. } = &slot.status {
+                        let bmp_props = windows::Win32::Graphics::Direct2D::D2D1_BITMAP_PROPERTIES {
+                            pixelFormat: D2D1_PIXEL_FORMAT {
+                                format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+                                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                            },
+                            dpiX: 96.0,
+                            dpiY: 96.0,
+                        };
+                        if let Ok(bitmap) = rt.CreateBitmap(
+                            windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U {
+                                width: thumb.width,
+                                height: thumb.height,
+                            },
+                            Some(thumb.pixels.as_ptr() as *const _),
+                            thumb.width * 4,
+                            &bmp_props,
+                        ) {
+                            let off_x = (80.0 - thumb.width as f32) / 2.0;
+                            let off_y = (80.0 - thumb.height as f32) / 2.0;
+                            rt.DrawBitmap(
+                                &bitmap,
+                                Some(&windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                    left: thumb_x_cursor + off_x,
+                                    top: 10.0 + off_y,
+                                    right: thumb_x_cursor + off_x + thumb.width as f32,
+                                    bottom: 10.0 + off_y + thumb.height as f32,
+                                }),
+                                1.0,
+                                windows::Win32::Graphics::Direct2D::D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                                None,
+                            );
+                        }
+                    }
                     thumb_x_cursor += 90.0;
                     if thumb_x_cursor + 80.0 > scene.width as f32 {
                         break;
@@ -478,6 +513,7 @@ impl ChatRendererBackend for ChatGpuPrototypeRenderer {
     fn build_scene(window: &mut ChatWindow) -> Self::Scene {
         let mut scene = window.prepare_render_scene();
         scene.draw_background = false;
+        scene.draw_thumbnail_images = false;
         scene
     }
 
@@ -1330,6 +1366,7 @@ impl ChatWindow {
             text_color: 0xFFFFFFFF,
             cursor_color: 0xFF00FF00,
             draw_background: true,
+            draw_thumbnail_images: true,
             plus_button_hovered: self.plus_button_hovered,
             thumbnail_hovered: self.hovered_thumb,
             has_slots: !self.slots.is_empty(),
@@ -1401,38 +1438,40 @@ impl ChatWindow {
             }
         }
 
-        // Draw Thumbnails
-        let mut thumb_x_cursor = 10;
-        for (i, slot) in self.slots.iter().enumerate() {
-            let is_hovered = self.hovered_thumb == Some(i);
-            if let ImageStatus::Ready { thumb, .. } = &slot.status {
-                let t_w = thumb.width as usize;
-                let t_h = thumb.height as usize;
-                let off_x = (80 - t_w) / 2;
-                let off_y = (80 - t_h) / 2;
+        if scene.draw_thumbnail_images {
+            let mut thumb_x_cursor = 10;
+            for (i, slot) in self.slots.iter().enumerate() {
+                let is_hovered = self.hovered_thumb == Some(i);
+                if let ImageStatus::Ready { thumb, .. } = &slot.status {
+                    let t_w = thumb.width as usize;
+                    let t_h = thumb.height as usize;
+                    let off_x = (80 - t_w) / 2;
+                    let off_y = (80 - t_h) / 2;
 
-                for ty in 0..t_h {
-                    for tx in 0..t_w {
-                        let px = thumb_x_cursor + off_x + tx;
-                        let py = 10 + off_y + ty;
-                        if px < buf_w && py < buf_h {
-                            let mut color = thumb.pixels[ty * t_w + tx];
-                            if is_hovered {
-                                let r_val = (((color >> 16) & 0xFF) as f32 * 0.5 + 127.0) as u32;
-                                let g_val = (((color >> 8) & 0xFF) as f32 * 0.5) as u32;
-                                let b_val = ((color & 0xFF) as f32 * 0.5) as u32;
-                                color = (0xFF << 24) | (r_val << 16) | (g_val << 8) | b_val;
-                            }
-                            if (color >> 24) & 0xFF > 0 {
-                                buffer[py as usize * buf_w + px as usize] = color;
+                    for ty in 0..t_h {
+                        for tx in 0..t_w {
+                            let px = thumb_x_cursor + off_x + tx;
+                            let py = 10 + off_y + ty;
+                            if px < buf_w && py < buf_h {
+                                let mut color = thumb.pixels[ty * t_w + tx];
+                                if is_hovered {
+                                    let r_val =
+                                        (((color >> 16) & 0xFF) as f32 * 0.5 + 127.0) as u32;
+                                    let g_val = (((color >> 8) & 0xFF) as f32 * 0.5) as u32;
+                                    let b_val = ((color & 0xFF) as f32 * 0.5) as u32;
+                                    color = (0xFF << 24) | (r_val << 16) | (g_val << 8) | b_val;
+                                }
+                                if (color >> 24) & 0xFF > 0 {
+                                    buffer[py as usize * buf_w + px as usize] = color;
+                                }
                             }
                         }
                     }
                 }
-            }
-            thumb_x_cursor += 90;
-            if thumb_x_cursor + 80 > buf_w {
-                break;
+                thumb_x_cursor += 90;
+                if thumb_x_cursor + 80 > buf_w {
+                    break;
+                }
             }
         }
 
