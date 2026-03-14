@@ -105,9 +105,23 @@ struct ChatRenderScene {
     draw_background: bool,
     draw_thumbnail_images: bool,
     draw_thumbnail_shells: bool,
+    draw_selection_highlight: bool,
     plus_button_hovered: bool,
     thumbnail_hovered: Option<usize>,
     has_slots: bool,
+    selection_rects: Vec<(i32, i32, u32, u32)>,
+}
+
+fn chat_gpu_groups(scene: &ChatRenderScene, slot_count: usize) -> Vec<&'static str> {
+    let mut groups = vec!["window_shell", "plus_button_shell"];
+    if scene.has_slots {
+        groups.push("content_background_strip");
+    }
+    if slot_count > 0 {
+        groups.push("thumbnail_slot_shells");
+        groups.push("thumbnail_processing_indicator");
+    }
+    groups
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +138,13 @@ impl ChatRendererKind {
         match raw.as_str() {
             "gpu" | "gpu-prototype" | "prototype" => ChatRendererKind::GpuPrototype,
             _ => ChatRendererKind::Cpu,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            ChatRendererKind::Cpu => "cpu",
+            ChatRendererKind::GpuPrototype => "gpu-prototype",
         }
     }
 }
@@ -416,80 +437,6 @@ impl ChatGpuPrototypeCanvas {
                                 }
                             }
                         }
-                        if let ImageStatus::Ready { thumb, .. } = &slot.status {
-                            let bmp_props = windows::Win32::Graphics::Direct2D::D2D1_BITMAP_PROPERTIES {
-                            pixelFormat: D2D1_PIXEL_FORMAT {
-                                format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
-                                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-                            },
-                            dpiX: 96.0,
-                            dpiY: 96.0,
-                        };
-                            if let Ok(bitmap) = rt.CreateBitmap(
-                                windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U {
-                                    width: thumb.width,
-                                    height: thumb.height,
-                                },
-                                Some(thumb.pixels.as_ptr() as *const _),
-                                thumb.width * 4,
-                                &bmp_props,
-                            ) {
-                                let off_x = (80.0 - thumb.width as f32) / 2.0;
-                                let off_y = (80.0 - thumb.height as f32) / 2.0;
-                                let dest_rect =
-                                    windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                                        left: thumb_x_cursor + off_x,
-                                        top: 10.0 + off_y,
-                                        right: thumb_x_cursor + off_x + thumb.width as f32,
-                                        bottom: 10.0 + off_y + thumb.height as f32,
-                                    };
-                                rt.DrawBitmap(
-                                &bitmap,
-                                Some(&dest_rect),
-                                if scene.thumbnail_hovered == Some(i) { 0.72 } else { 1.0 },
-                                windows::Win32::Graphics::Direct2D::D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-                                None,
-                            );
-                                if scene.thumbnail_hovered == Some(i) {
-                                    if let Ok(hover_brush) = rt.CreateSolidColorBrush(
-                                        &D2D1_COLOR_F {
-                                            r: 1.0,
-                                            g: 0.36,
-                                            b: 0.50,
-                                            a: 0.30,
-                                        },
-                                        None,
-                                    ) {
-                                        rt.FillRectangle(&dest_rect, &hover_brush);
-                                    }
-                                    if let Ok(outline_brush) = rt.CreateSolidColorBrush(
-                                        &D2D1_COLOR_F {
-                                            r: 1.0,
-                                            g: 0.42,
-                                            b: 0.58,
-                                            a: 0.95,
-                                        },
-                                        None,
-                                    ) {
-                                        rt.DrawRoundedRectangle(
-                                        &D2D1_ROUNDED_RECT {
-                                            rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                                                left: thumb_x_cursor,
-                                                top: 10.0,
-                                                right: thumb_x_cursor + 80.0,
-                                                bottom: 90.0,
-                                            },
-                                            radiusX: 8.0,
-                                            radiusY: 8.0,
-                                        },
-                                        &outline_brush,
-                                        2.0,
-                                        None,
-                                    );
-                                    }
-                                }
-                            }
-                        }
                         thumb_x_cursor += 90.0;
                         if thumb_x_cursor + 80.0 > scene.width as f32 {
                             break;
@@ -516,6 +463,28 @@ impl ChatGpuPrototypeCanvas {
                                 bottom: scene.height as f32,
                             },
                             &strip_brush,
+                        );
+                    }
+                }
+
+                if let Ok(sel_brush) = rt.CreateSolidColorBrush(
+                    &D2D1_COLOR_F {
+                        r: 0xAA as f32 / 255.0,
+                        g: 0xDD as f32 / 255.0,
+                        b: 0xFF as f32 / 255.0,
+                        a: 120.0 / 255.0,
+                    },
+                    None,
+                ) {
+                    for (x, y, rw, rh) in &scene.selection_rects {
+                        rt.FillRectangle(
+                            &windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                left: *x as f32,
+                                top: *y as f32,
+                                right: *x as f32 + *rw as f32,
+                                bottom: *y as f32 + *rh as f32,
+                            },
+                            &sel_brush,
                         );
                     }
                 }
@@ -557,11 +526,20 @@ impl ChatRendererBackend for ChatGpuPrototypeRenderer {
         let mut scene = window.prepare_render_scene();
         scene.draw_background = false;
         scene.draw_thumbnail_images = true;
-        scene.draw_thumbnail_shells = false;
+        scene.draw_thumbnail_shells = true;
+        scene.draw_selection_highlight = false;
         scene
     }
 
     fn render(window: &mut ChatWindow, scene: &Self::Scene) {
+        let groups = chat_gpu_groups(scene, window.slots.len());
+        tracing::info!(
+            "Chat GPU prototype render: size={}x{}, slots={}, groups={}",
+            scene.width,
+            scene.height,
+            window.slots.len(),
+            groups.join(", ")
+        );
         let mut buffer = window.surface.buffer_mut().unwrap();
         if buffer.len() != scene.width * scene.height {
             buffer.present().unwrap();
@@ -628,7 +606,11 @@ impl ChatWindow {
         let (image_tx, image_rx) = std::sync::mpsc::channel();
 
         let renderer_kind = ChatRendererKind::from_env();
-        tracing::info!("Chat renderer preference from env: {:?}", renderer_kind);
+        tracing::info!(
+            "Chat renderer preference from env: {} ({:?})",
+            renderer_kind.as_str(),
+            renderer_kind
+        );
 
         Self {
             window,
@@ -1319,6 +1301,7 @@ impl ChatWindow {
         let padding = 10.0;
         let line_height = v_metrics.ascent - v_metrics.descent + v_metrics.line_gap;
         let max_width = 600.0 - (padding * 2.0);
+        let mut selection_rects = Vec::new();
 
         // 1. Calculate layout & Render to text_buffer if invalid
         if !self.layout_valid {
@@ -1402,6 +1385,50 @@ impl ChatWindow {
         }
 
         let size = self.window.inner_size();
+        if let Some(sel_start) = self.selection_start {
+            if sel_start != self.cursor_byte_idx {
+                let sel_min = sel_start.min(self.cursor_byte_idx);
+                let sel_max = sel_start.max(self.cursor_byte_idx);
+                let mut byte_offset = 0;
+                let mut char_iter = self.input_text.chars();
+
+                for line in &self.cached_layout {
+                    let mut line_min_x = f32::MAX;
+                    let mut line_max_x = f32::MIN;
+                    let mut has_intersection = false;
+                    let mut line_baseline_y = 0.0;
+
+                    for glyph in line {
+                        let char_len = if let Some(c) = char_iter.next() {
+                            c.len_utf8()
+                        } else {
+                            0
+                        };
+                        let glyph_start = byte_offset;
+                        let glyph_end = byte_offset + char_len;
+                        byte_offset += char_len;
+
+                        if glyph_start < sel_max && glyph_end > sel_min {
+                            let pos = glyph.position();
+                            let width = glyph.unpositioned().h_metrics().advance_width;
+                            line_min_x = line_min_x.min(pos.x);
+                            line_max_x = line_max_x.max(pos.x + width);
+                            line_baseline_y = pos.y;
+                            has_intersection = true;
+                        }
+                    }
+
+                    if has_intersection {
+                        selection_rects.push((
+                            line_min_x as i32,
+                            (line_baseline_y - v_metrics.ascent) as i32,
+                            (line_max_x - line_min_x) as u32,
+                            (v_metrics.ascent - v_metrics.descent) as u32,
+                        ));
+                    }
+                }
+            }
+        }
         ChatRenderScene {
             width: size.width as usize,
             height: size.height as usize,
@@ -1412,9 +1439,11 @@ impl ChatWindow {
             draw_background: true,
             draw_thumbnail_images: true,
             draw_thumbnail_shells: true,
+            draw_selection_highlight: true,
             plus_button_hovered: self.plus_button_hovered,
             thumbnail_hovered: self.hovered_thumb,
             has_slots: !self.slots.is_empty(),
+            selection_rects,
         }
     }
 
@@ -1550,67 +1579,25 @@ impl ChatWindow {
         }
 
         // Draw Selection Highlight
-        if let Some(sel_start) = self.selection_start {
-            if sel_start != self.cursor_byte_idx {
-                let sel_min = sel_start.min(self.cursor_byte_idx);
-                let sel_max = sel_start.max(self.cursor_byte_idx);
+        if scene.draw_selection_highlight {
+            for (rx, ry, rw, rh) in &scene.selection_rects {
+                for sy in *ry..(*ry + *rh as i32) {
+                    for sx in *rx..(*rx + *rw as i32) {
+                        if sx >= 0 && sx < buf_w as i32 && sy >= 0 && sy < buf_h as i32 {
+                            let idx = sy as usize * buf_w + sx as usize;
+                            let bg = buffer[idx];
+                            let sel_color = 0x00AADDFF;
+                            let alpha = 120;
 
-                let _text_y_base = if self.slots.is_empty() { 0.0 } else { 100.0 };
-                let mut byte_offset = 0;
-                let mut char_iter = self.input_text.chars();
-
-                for line in &self.cached_layout {
-                    let mut line_min_x = f32::MAX;
-                    let mut line_max_x = f32::MIN;
-                    let mut has_intersection = false;
-                    let mut line_baseline_y = 0.0;
-
-                    for glyph in line {
-                        let char_len = if let Some(c) = char_iter.next() {
-                            c.len_utf8()
-                        } else {
-                            0
-                        };
-                        let glyph_start = byte_offset;
-                        let glyph_end = byte_offset + char_len;
-                        byte_offset += char_len;
-
-                        if glyph_start < sel_max && glyph_end > sel_min {
-                            let pos = glyph.position();
-                            let width = glyph.unpositioned().h_metrics().advance_width;
-                            line_min_x = line_min_x.min(pos.x);
-                            line_max_x = line_max_x.max(pos.x + width);
-                            line_baseline_y = pos.y;
-                            has_intersection = true;
-                        }
-                    }
-
-                    if has_intersection {
-                        let rx = line_min_x as i32;
-                        let ry = (line_baseline_y - v_metrics.ascent) as i32;
-                        let rw = (line_max_x - line_min_x) as u32;
-                        let rh = (v_metrics.ascent - v_metrics.descent) as u32;
-
-                        for sy in ry..(ry + rh as i32) {
-                            for sx in rx..(rx + rw as i32) {
-                                if sx >= 0 && sx < buf_w as i32 && sy >= 0 && sy < buf_h as i32 {
-                                    let idx = sy as usize * buf_w + sx as usize;
-                                    let bg = buffer[idx];
-                                    let sel_color = 0x00AADDFF; // Selection blue
-                                    let alpha = 120; // Semi-transparent
-
-                                    let r = (((sel_color >> 16) & 0xFF) * alpha
-                                        + ((bg >> 16) & 0xFF) * (255 - alpha))
-                                        / 255;
-                                    let g = (((sel_color >> 8) & 0xFF) * alpha
-                                        + ((bg >> 8) & 0xFF) * (255 - alpha))
-                                        / 255;
-                                    let b = ((sel_color & 0xFF) * alpha
-                                        + (bg & 0xFF) * (255 - alpha))
-                                        / 255;
-                                    buffer[idx] = (0xFF << 24) | (r << 16) | (g << 8) | b;
-                                }
-                            }
+                            let r = (((sel_color >> 16) & 0xFF) * alpha
+                                + ((bg >> 16) & 0xFF) * (255 - alpha))
+                                / 255;
+                            let g = (((sel_color >> 8) & 0xFF) * alpha
+                                + ((bg >> 8) & 0xFF) * (255 - alpha))
+                                / 255;
+                            let b =
+                                ((sel_color & 0xFF) * alpha + (bg & 0xFF) * (255 - alpha)) / 255;
+                            buffer[idx] = (0xFF << 24) | (r << 16) | (g << 8) | b;
                         }
                     }
                 }
