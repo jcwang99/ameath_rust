@@ -1,9 +1,27 @@
+#[cfg(target_os = "windows")]
+use crate::render::get_d2d_factory;
 use rusttype::PositionedGlyph;
 use rusttype::{point, Font, Scale};
 use softbuffer::{Context, Surface};
 use std::cell::Cell;
 use std::num::NonZeroU32;
 use std::rc::Rc;
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::{HANDLE, HWND, RECT};
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Direct2D::Common::{
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Direct2D::{
+    ID2D1DCRenderTarget, D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
+    D2D1_ROUNDED_RECT,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Gdi::{
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
+    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC,
+};
 use winit::{
     dpi::{LogicalPosition, PhysicalSize},
     event::{ElementState, KeyEvent, WindowEvent},
@@ -68,6 +86,7 @@ pub struct ChatWindow {
     ignore_next_char: bool,
     is_selecting: bool,
     redraw_pending: Cell<bool>,
+    renderer_kind: ChatRendererKind,
 }
 
 pub enum ChatAction {
@@ -83,6 +102,25 @@ struct ChatRenderScene {
     border_color: u32,
     text_color: u32,
     cursor_color: u32,
+    draw_background: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChatRendererKind {
+    Cpu,
+    GpuPrototype,
+}
+
+impl ChatRendererKind {
+    fn from_env() -> Self {
+        let raw = std::env::var("AMEATH_CHAT_RENDERER")
+            .unwrap_or_else(|_| "cpu".to_string())
+            .to_ascii_lowercase();
+        match raw.as_str() {
+            "gpu" | "gpu-prototype" | "prototype" => ChatRendererKind::GpuPrototype,
+            _ => ChatRendererKind::Cpu,
+        }
+    }
 }
 
 trait ChatRendererBackend {
@@ -90,6 +128,193 @@ trait ChatRendererBackend {
 
     fn build_scene(window: &mut ChatWindow) -> Self::Scene;
     fn render(window: &mut ChatWindow, scene: &Self::Scene);
+}
+
+#[cfg(target_os = "windows")]
+struct ChatGpuPrototypeCanvas {
+    hdc_mem: HDC,
+    h_bitmap: HBITMAP,
+    bits: *mut u32,
+    width: i32,
+    height: i32,
+    rt: Option<ID2D1DCRenderTarget>,
+}
+
+#[cfg(target_os = "windows")]
+impl ChatGpuPrototypeCanvas {
+    fn new() -> Self {
+        unsafe {
+            let hdc_screen = GetDC(HWND(0));
+            let hdc_mem = CreateCompatibleDC(hdc_screen);
+            ReleaseDC(HWND(0), hdc_screen);
+            Self {
+                hdc_mem,
+                h_bitmap: HBITMAP(0),
+                bits: std::ptr::null_mut(),
+                width: 0,
+                height: 0,
+                rt: None,
+            }
+        }
+    }
+
+    fn ensure_surface(&mut self, width: i32, height: i32) {
+        unsafe {
+            if self.h_bitmap.0 == 0 || self.width < width || self.height < height {
+                if self.h_bitmap.0 != 0 {
+                    let _ = DeleteObject(self.h_bitmap);
+                }
+                let bmi = BITMAPINFO {
+                    bmiHeader: BITMAPINFOHEADER {
+                        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                        biWidth: width,
+                        biHeight: -height,
+                        biPlanes: 1,
+                        biBitCount: 32,
+                        biCompression: BI_RGB.0,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                let mut bits = std::ptr::null_mut();
+                self.h_bitmap =
+                    CreateDIBSection(self.hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, HANDLE(0), 0)
+                        .unwrap();
+                SelectObject(self.hdc_mem, self.h_bitmap);
+                self.bits = bits as *mut u32;
+                self.width = width;
+                self.height = height;
+            }
+            if self.rt.is_none() {
+                let props = D2D1_RENDER_TARGET_PROPERTIES {
+                    r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                    pixelFormat: D2D1_PIXEL_FORMAT {
+                        format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+                        alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                    },
+                    ..Default::default()
+                };
+                self.rt = Some(get_d2d_factory().CreateDCRenderTarget(&props).unwrap());
+            }
+        }
+    }
+
+    fn render_background(&mut self, scene: &ChatRenderScene, buffer: &mut [u32]) {
+        self.ensure_surface(scene.width as i32, scene.height as i32);
+        let rect = RECT {
+            left: 0,
+            top: 0,
+            right: scene.width as i32,
+            bottom: scene.height as i32,
+        };
+        if let Some(rt) = &self.rt {
+            unsafe {
+                rt.BindDC(self.hdc_mem, &rect).unwrap();
+                rt.BeginDraw();
+                rt.Clear(Some(&D2D1_COLOR_F {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.0,
+                }));
+                if let Ok(border_brush) = rt.CreateSolidColorBrush(
+                    &D2D1_COLOR_F {
+                        r: ((scene.border_color >> 16) & 0xFF) as f32 / 255.0,
+                        g: ((scene.border_color >> 8) & 0xFF) as f32 / 255.0,
+                        b: (scene.border_color & 0xFF) as f32 / 255.0,
+                        a: 1.0,
+                    },
+                    None,
+                ) {
+                    rt.FillRoundedRectangle(
+                        &D2D1_ROUNDED_RECT {
+                            rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                left: 0.0,
+                                top: 0.0,
+                                right: scene.width as f32,
+                                bottom: scene.height as f32,
+                            },
+                            radiusX: 12.0,
+                            radiusY: 12.0,
+                        },
+                        &border_brush,
+                    );
+                }
+                if let Ok(bg_brush) = rt.CreateSolidColorBrush(
+                    &D2D1_COLOR_F {
+                        r: ((scene.bg_color >> 16) & 0xFF) as f32 / 255.0,
+                        g: ((scene.bg_color >> 8) & 0xFF) as f32 / 255.0,
+                        b: (scene.bg_color & 0xFF) as f32 / 255.0,
+                        a: 1.0,
+                    },
+                    None,
+                ) {
+                    rt.FillRoundedRectangle(
+                        &D2D1_ROUNDED_RECT {
+                            rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                left: 1.0,
+                                top: 1.0,
+                                right: scene.width as f32 - 1.0,
+                                bottom: scene.height as f32 - 1.0,
+                            },
+                            radiusX: 11.0,
+                            radiusY: 11.0,
+                        },
+                        &bg_brush,
+                    );
+                }
+                let _ = rt.EndDraw(None, None);
+                let src = std::slice::from_raw_parts(self.bits, scene.width * scene.height);
+                buffer[..src.len()].copy_from_slice(src);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for ChatGpuPrototypeCanvas {
+    fn drop(&mut self) {
+        unsafe {
+            if self.h_bitmap.0 != 0 {
+                let _ = DeleteObject(self.h_bitmap);
+            }
+            if self.hdc_mem.0 != 0 {
+                let _ = DeleteDC(self.hdc_mem);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct ChatGpuPrototypeRenderer;
+
+#[cfg(target_os = "windows")]
+thread_local! {
+    static CHAT_GPU_CANVAS: std::cell::RefCell<ChatGpuPrototypeCanvas> = std::cell::RefCell::new(ChatGpuPrototypeCanvas::new());
+}
+
+#[cfg(target_os = "windows")]
+impl ChatRendererBackend for ChatGpuPrototypeRenderer {
+    type Scene = ChatRenderScene;
+
+    fn build_scene(window: &mut ChatWindow) -> Self::Scene {
+        let mut scene = window.prepare_render_scene();
+        scene.draw_background = false;
+        scene
+    }
+
+    fn render(window: &mut ChatWindow, scene: &Self::Scene) {
+        let mut buffer = window.surface.buffer_mut().unwrap();
+        if buffer.len() != scene.width * scene.height {
+            buffer.present().unwrap();
+            return;
+        }
+        CHAT_GPU_CANVAS.with(|canvas| {
+            canvas.borrow_mut().render_background(scene, &mut buffer);
+        });
+        drop(buffer);
+        window.present_render_scene(scene);
+    }
 }
 
 struct ChatCpuRenderer;
@@ -142,6 +367,9 @@ impl ChatWindow {
 
         let (image_tx, image_rx) = std::sync::mpsc::channel();
 
+        let renderer_kind = ChatRendererKind::from_env();
+        tracing::info!("Chat renderer preference from env: {:?}", renderer_kind);
+
         Self {
             window,
             context,
@@ -169,6 +397,7 @@ impl ChatWindow {
             ignore_next_char: false,
             is_selecting: false,
             redraw_pending: Cell::new(false),
+            renderer_kind,
         }
     }
 
@@ -920,6 +1149,7 @@ impl ChatWindow {
             border_color: 0xFF444444,
             text_color: 0xFFFFFFFF,
             cursor_color: 0xFF00FF00,
+            draw_background: true,
         }
     }
 
@@ -938,53 +1168,50 @@ impl ChatWindow {
             return;
         }
 
-        // Colors
-        // Optimized Background Fill with Rounded Corners
-        buffer.fill(0); // Transparent outer
+        if scene.draw_background {
+            buffer.fill(0);
 
-        let r = 12i32;
-        let r_u = 12usize;
-        let r_sq = r * r;
+            let r = 12i32;
+            let r_u = 12usize;
+            let r_sq = r * r;
 
-        // Optimized Full Fill with fast paths
-        for y in 0..buf_h {
-            let row_start = y * buf_w;
-            let is_near_top = y < r_u;
-            let is_near_bottom = y >= buf_h - r_u;
+            for y in 0..buf_h {
+                let row_start = y * buf_w;
+                let is_near_top = y < r_u;
+                let is_near_bottom = y >= buf_h - r_u;
 
-            if !is_near_top && !is_near_bottom {
-                // Middle section: fast row fill (except borders)
-                buffer[row_start] = scene.border_color;
-                buffer[row_start + 1..row_start + buf_w - 1].fill(scene.bg_color);
-                buffer[row_start + buf_w - 1] = scene.border_color;
-            } else {
-                // Top or bottom sections: still need corner checks
-                for x in 0..buf_w {
-                    let mut draw_bg = true;
-                    let is_near_left = x < r_u;
-                    let is_near_right = x >= buf_w - r_u;
+                if !is_near_top && !is_near_bottom {
+                    buffer[row_start] = scene.border_color;
+                    buffer[row_start + 1..row_start + buf_w - 1].fill(scene.bg_color);
+                    buffer[row_start + buf_w - 1] = scene.border_color;
+                } else {
+                    for x in 0..buf_w {
+                        let mut draw_bg = true;
+                        let is_near_left = x < r_u;
+                        let is_near_right = x >= buf_w - r_u;
 
-                    if is_near_left || is_near_right {
-                        let dx = if is_near_left {
-                            r - x as i32
-                        } else {
-                            x as i32 - (buf_w as i32 - r - 1)
-                        };
-                        let dy = if is_near_top {
-                            r - y as i32
-                        } else {
-                            y as i32 - (buf_h as i32 - r - 1)
-                        };
-                        if dx * dx + dy * dy > r_sq {
-                            draw_bg = false;
+                        if is_near_left || is_near_right {
+                            let dx = if is_near_left {
+                                r - x as i32
+                            } else {
+                                x as i32 - (buf_w as i32 - r - 1)
+                            };
+                            let dy = if is_near_top {
+                                r - y as i32
+                            } else {
+                                y as i32 - (buf_h as i32 - r - 1)
+                            };
+                            if dx * dx + dy * dy > r_sq {
+                                draw_bg = false;
+                            }
                         }
-                    }
 
-                    if draw_bg {
-                        if x == 0 || x == buf_w - 1 || y == 0 || y == buf_h - 1 {
-                            buffer[row_start + x] = scene.border_color;
-                        } else {
-                            buffer[row_start + x] = scene.bg_color;
+                        if draw_bg {
+                            if x == 0 || x == buf_w - 1 || y == 0 || y == buf_h - 1 {
+                                buffer[row_start + x] = scene.border_color;
+                            } else {
+                                buffer[row_start + x] = scene.bg_color;
+                            }
                         }
                     }
                 }
@@ -1206,6 +1433,12 @@ impl ChatWindow {
     }
 
     fn redraw(&mut self) {
-        render_with_backend::<ChatCpuRenderer>(self);
+        match self.renderer_kind {
+            ChatRendererKind::Cpu => render_with_backend::<ChatCpuRenderer>(self),
+            #[cfg(target_os = "windows")]
+            ChatRendererKind::GpuPrototype => render_with_backend::<ChatGpuPrototypeRenderer>(self),
+            #[cfg(not(target_os = "windows"))]
+            ChatRendererKind::GpuPrototype => render_with_backend::<ChatCpuRenderer>(self),
+        }
     }
 }
