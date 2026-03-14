@@ -10,12 +10,12 @@ use std::rc::Rc;
 use windows::Win32::Foundation::{HANDLE, HWND, RECT};
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_POINT_2F,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::{
-    ID2D1DCRenderTarget, D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT,
-    D2D1_ROUNDED_RECT,
+    ID2D1DCRenderTarget, D2D1_ELLIPSE, D2D1_RENDER_TARGET_PROPERTIES,
+    D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_ROUNDED_RECT,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Gdi::{
@@ -334,39 +334,88 @@ impl ChatGpuPrototypeCanvas {
 
                 let mut thumb_x_cursor = 10.0f32;
                 for (i, slot) in slots.iter().enumerate() {
-                    if let ImageStatus::Ready { .. } = &slot.status {
-                        let frame_color: u32 = if scene.thumbnail_hovered == Some(i) {
-                            0xFF5A2F2F
-                        } else {
-                            0xFF383838
-                        };
-                        if let Ok(frame_brush) = rt.CreateSolidColorBrush(
+                    let frame_color: u32 = if scene.thumbnail_hovered == Some(i) {
+                        0xFF5A2F2F
+                    } else {
+                        match slot.status {
+                            ImageStatus::Processing => 0xFF303036,
+                            ImageStatus::Ready { .. } => 0xFF383838,
+                        }
+                    };
+                    if let Ok(frame_brush) = rt.CreateSolidColorBrush(
+                        &D2D1_COLOR_F {
+                            r: ((frame_color >> 16) & 0xFF) as f32 / 255.0,
+                            g: ((frame_color >> 8) & 0xFF) as f32 / 255.0,
+                            b: (frame_color & 0xFF) as f32 / 255.0,
+                            a: 1.0,
+                        },
+                        None,
+                    ) {
+                        rt.FillRoundedRectangle(
+                            &D2D1_ROUNDED_RECT {
+                                rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                    left: thumb_x_cursor,
+                                    top: 10.0,
+                                    right: thumb_x_cursor + 80.0,
+                                    bottom: 90.0,
+                                },
+                                radiusX: 8.0,
+                                radiusY: 8.0,
+                            },
+                            &frame_brush,
+                        );
+                    }
+                    if let Ok(inner_brush) = rt.CreateSolidColorBrush(
+                        &D2D1_COLOR_F {
+                            r: 0x22 as f32 / 255.0,
+                            g: 0x22 as f32 / 255.0,
+                            b: 0x24 as f32 / 255.0,
+                            a: 1.0,
+                        },
+                        None,
+                    ) {
+                        rt.FillRoundedRectangle(
+                            &D2D1_ROUNDED_RECT {
+                                rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                    left: thumb_x_cursor + 2.0,
+                                    top: 12.0,
+                                    right: thumb_x_cursor + 78.0,
+                                    bottom: 88.0,
+                                },
+                                radiusX: 6.0,
+                                radiusY: 6.0,
+                            },
+                            &inner_brush,
+                        );
+                    }
+                    if matches!(slot.status, ImageStatus::Processing) {
+                        if let Ok(dot_brush) = rt.CreateSolidColorBrush(
                             &D2D1_COLOR_F {
-                                r: ((frame_color >> 16) & 0xFF) as f32 / 255.0,
-                                g: ((frame_color >> 8) & 0xFF) as f32 / 255.0,
-                                b: (frame_color & 0xFF) as f32 / 255.0,
+                                r: 0xAA as f32 / 255.0,
+                                g: 0xAA as f32 / 255.0,
+                                b: 0xB4 as f32 / 255.0,
                                 a: 1.0,
                             },
                             None,
                         ) {
-                            rt.FillRoundedRectangle(
-                                &D2D1_ROUNDED_RECT {
-                                    rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
-                                        left: thumb_x_cursor as f32,
-                                        top: 10.0,
-                                        right: thumb_x_cursor + 80.0,
-                                        bottom: 90.0,
+                            for dot in 0..3 {
+                                rt.FillEllipse(
+                                    &D2D1_ELLIPSE {
+                                        point: D2D_POINT_2F {
+                                            x: thumb_x_cursor + 28.0 + dot as f32 * 12.0,
+                                            y: 50.0,
+                                        },
+                                        radiusX: 3.0,
+                                        radiusY: 3.0,
                                     },
-                                    radiusX: 8.0,
-                                    radiusY: 8.0,
-                                },
-                                &frame_brush,
-                            );
+                                    &dot_brush,
+                                );
+                            }
                         }
-                        thumb_x_cursor += 90.0;
-                        if thumb_x_cursor + 80.0 > scene.width as f32 {
-                            break;
-                        }
+                    }
+                    thumb_x_cursor += 90.0;
+                    if thumb_x_cursor + 80.0 > scene.width as f32 {
+                        break;
                     }
                 }
 
