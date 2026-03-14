@@ -240,6 +240,7 @@ impl SettingsGpuPrototypeCanvas {
         header_height: u32,
         content_cards: &[(f32, f32, f32, f32, f32, u32)],
         overlay_cards: &[(f32, f32, f32, f32, f32, u32, f32)],
+        foreground_cards: &[(f32, f32, f32, f32, f32, u32)],
         text_runs: &[SettingsGpuTextRun],
     ) {
         self.ensure_surface(d2d_factory, width as i32, height as i32);
@@ -363,6 +364,32 @@ impl SettingsGpuPrototypeCanvas {
                                 &card_brush,
                             );
                         }
+                    }
+                }
+
+                for (left, top, right, bottom, radius, color) in foreground_cards {
+                    if let Ok(card_brush) = rt.CreateSolidColorBrush(
+                        &D2D1_COLOR_F {
+                            r: ((color >> 16) & 0xFF) as f32 / 255.0,
+                            g: ((color >> 8) & 0xFF) as f32 / 255.0,
+                            b: (color & 0xFF) as f32 / 255.0,
+                            a: 1.0,
+                        },
+                        None,
+                    ) {
+                        rt.FillRoundedRectangle(
+                            &D2D1_ROUNDED_RECT {
+                                rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                    left: *left,
+                                    top: *top,
+                                    right: *right,
+                                    bottom: *bottom,
+                                },
+                                radiusX: *radius,
+                                radiusY: *radius,
+                            },
+                            &card_brush,
+                        );
                     }
                 }
 
@@ -750,7 +777,8 @@ impl SettingsGpuPrototypeRenderer {
             let sidebar_width = (180.0 * render_scale + off_x) as u32;
             let header_height = (120.0 * render_scale + off_y) as u32;
             let mut content_cards = Vec::new();
-            let mut overlay_cards: Vec<(f32, f32, f32, f32, f32, u32, f32)> = Vec::new();
+            let overlay_cards: Vec<(f32, f32, f32, f32, f32, u32, f32)> = Vec::new();
+            let foreground_cards = Vec::new();
             let mut text_runs = Vec::new();
             let (title, sub) = match scene.cpu_fallback_scene.input.current_tab {
                 0 => ("Home", "Welcome to Ameath!"),
@@ -1702,30 +1730,6 @@ impl SettingsGpuPrototypeRenderer {
                             bold: false,
                         });
                     }
-                    if let Some((_, start_time)) = &scene.cpu_fallback_scene.input.notification {
-                        let elapsed = start_time.elapsed().as_secs_f32();
-                        if elapsed < 2.0 {
-                            gpu_groups.push("ai_toast_chrome");
-                            let toast_w = 150.0 * render_scale;
-                            let toast_h = 40.0 * render_scale;
-                            let toast_x = (scene.cpu_fallback_scene.input.w as f32 - toast_w) / 2.0;
-                            let toast_y = scene.cpu_fallback_scene.input.h as f32 * 0.8;
-                            let alpha = if elapsed > 1.5 {
-                                ((2.0 - elapsed) / 0.5).clamp(0.0, 1.0)
-                            } else {
-                                1.0
-                            };
-                            overlay_cards.push((
-                                toast_x,
-                                toast_y,
-                                toast_x + toast_w,
-                                toast_y + toast_h,
-                                0.0,
-                                0x00444444,
-                                0.8 * alpha,
-                            ));
-                        }
-                    }
                 }
                 3 => {
                     gpu_groups.push("history_cards");
@@ -1878,6 +1882,7 @@ impl SettingsGpuPrototypeRenderer {
                 header_height,
                 &content_cards,
                 &overlay_cards,
+                &foreground_cards,
                 &text_runs,
             );
             gpu_surface_count = 2 + content_cards.len();
@@ -2079,7 +2084,8 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     gpu_multimodal_checkmark: scene.draw_static_text == false,
                     gpu_eye_icon_chrome: scene.draw_static_blocks == false,
                     gpu_dialog_chrome: false,
-                    gpu_toast_chrome: scene.draw_static_blocks == false,
+                    gpu_toast_chrome: false,
+                    gpu_toast_text: false,
                     gpu_profile_symbol_text: scene.draw_static_text == false,
                     gpu_response_mode_label_text: scene.draw_static_text == false,
                     gpu_profile_title_text: scene.draw_static_text == false,

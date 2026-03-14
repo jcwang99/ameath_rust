@@ -37,6 +37,7 @@ pub struct AiTabState<'a> {
     pub gpu_eye_icon_chrome: bool,
     pub gpu_dialog_chrome: bool,
     pub gpu_toast_chrome: bool,
+    pub gpu_toast_text: bool,
     pub gpu_profile_symbol_text: bool,
     pub gpu_response_mode_label_text: bool,
     pub gpu_profile_title_text: bool,
@@ -1360,20 +1361,22 @@ pub fn draw(
                     h,
                 );
             }
-            draw_text_dw_ex(
-                buffer,
-                w,
-                msg,
-                (toast_x + sc(25.0) as u32) as i32,
-                (toast_y + sc(10.0) as u32) as i32,
-                sc(14.0),
-                COLOR_TEXT_MAIN,
-                toast_w,
-                toast_h,
-                0.0,
-                0.0,
-                toast_w,
-            );
+            if !state.gpu_toast_text {
+                draw_text_dw_ex(
+                    buffer,
+                    w,
+                    msg,
+                    (toast_x + sc(25.0) as u32) as i32,
+                    (toast_y + sc(10.0) as u32) as i32,
+                    sc(14.0),
+                    COLOR_TEXT_MAIN,
+                    toast_w,
+                    toast_h,
+                    0.0,
+                    0.0,
+                    toast_w,
+                );
+            }
         }
     }
 
