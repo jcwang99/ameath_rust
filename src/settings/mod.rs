@@ -750,7 +750,7 @@ impl SettingsGpuPrototypeRenderer {
             let sidebar_width = (180.0 * render_scale + off_x) as u32;
             let header_height = (120.0 * render_scale + off_y) as u32;
             let mut content_cards = Vec::new();
-            let overlay_cards: Vec<(f32, f32, f32, f32, f32, u32, f32)> = Vec::new();
+            let mut overlay_cards: Vec<(f32, f32, f32, f32, f32, u32, f32)> = Vec::new();
             let mut text_runs = Vec::new();
             let (title, sub) = match scene.cpu_fallback_scene.input.current_tab {
                 0 => ("Home", "Welcome to Ameath!"),
@@ -1702,9 +1702,34 @@ impl SettingsGpuPrototypeRenderer {
                             bold: false,
                         });
                     }
+                    if let Some((_, start_time)) = &scene.cpu_fallback_scene.input.notification {
+                        let elapsed = start_time.elapsed().as_secs_f32();
+                        if elapsed < 2.0 {
+                            gpu_groups.push("ai_toast_chrome");
+                            let toast_w = 150.0 * render_scale;
+                            let toast_h = 40.0 * render_scale;
+                            let toast_x = (scene.cpu_fallback_scene.input.w as f32 - toast_w) / 2.0;
+                            let toast_y = scene.cpu_fallback_scene.input.h as f32 * 0.8;
+                            let alpha = if elapsed > 1.5 {
+                                ((2.0 - elapsed) / 0.5).clamp(0.0, 1.0)
+                            } else {
+                                1.0
+                            };
+                            overlay_cards.push((
+                                toast_x,
+                                toast_y,
+                                toast_x + toast_w,
+                                toast_y + toast_h,
+                                0.0,
+                                0x00444444,
+                                0.8 * alpha,
+                            ));
+                        }
+                    }
                 }
                 3 => {
                     gpu_groups.push("history_cards");
+                    gpu_groups.push("history_role_text");
                     gpu_groups.push("history_subscrollbar_chrome");
                     let card_left = 230.0 * render_scale + off_x;
                     let card_width = 490.0 * render_scale;
@@ -1730,6 +1755,11 @@ impl SettingsGpuPrototypeRenderer {
                         } else {
                             0x002D2D35
                         };
+                        let text_color = if role == "user" {
+                            COLOR_TEXT_MAIN
+                        } else {
+                            COLOR_TEXT_SEC
+                        };
                         let top = current_y + (i as f32 * total_item_h);
                         content_cards.push((
                             card_left,
@@ -1739,6 +1769,14 @@ impl SettingsGpuPrototypeRenderer {
                             radius,
                             card_color,
                         ));
+                        text_runs.push(SettingsGpuTextRun {
+                            text: role.clone(),
+                            x: card_left + 10.0 * render_scale,
+                            y: top + 10.0 * render_scale,
+                            font_size: 14.0 * render_scale,
+                            color: text_color,
+                            bold: false,
+                        });
 
                         let content = &scene.cpu_fallback_scene.input.history[i].1;
                         let scroll = scene
@@ -2041,7 +2079,7 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     gpu_multimodal_checkmark: scene.draw_static_text == false,
                     gpu_eye_icon_chrome: scene.draw_static_blocks == false,
                     gpu_dialog_chrome: false,
-                    gpu_toast_chrome: false,
+                    gpu_toast_chrome: scene.draw_static_blocks == false,
                     gpu_profile_symbol_text: scene.draw_static_text == false,
                     gpu_response_mode_label_text: scene.draw_static_text == false,
                     gpu_profile_title_text: scene.draw_static_text == false,
@@ -2074,6 +2112,7 @@ impl SettingsRendererBackend for SettingsCpuRenderer {
                     history_item_rects: &mut local_rects,
                     scroll_offset: input.scroll_offset * scale,
                     draw_card_backgrounds: scene.draw_static_blocks,
+                    draw_role_text: scene.draw_static_text,
                     gpu_subscrollbar_chrome: scene.draw_static_blocks == false,
                 };
                 let (v, c, _) =

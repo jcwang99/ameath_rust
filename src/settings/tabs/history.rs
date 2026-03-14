@@ -7,6 +7,7 @@ pub struct HistoryTabState<'a> {
     pub history_item_rects: &'a mut Vec<(f64, f64, f64, f64)>,
     pub scroll_offset: f32,
     pub draw_card_backgrounds: bool,
+    pub draw_role_text: bool,
     pub gpu_subscrollbar_chrome: bool,
 }
 
@@ -89,20 +90,22 @@ pub fn draw(
         }
 
         // 2. Role
-        draw_text_dw_ex(
-            buffer,
-            w,
-            role,
-            s(230) as i32 + sc(10.0) as i32,
-            y_pos_i + sc(10.0) as i32,
-            sc(14.0),
-            text_color,
-            card_w,
-            sc(30.0) as u32,
-            0.0,
-            0.0,
-            card_w,
-        );
+        if state.draw_role_text {
+            draw_text_dw_ex(
+                buffer,
+                w,
+                role,
+                s(230) as i32 + sc(10.0) as i32,
+                y_pos_i + sc(10.0) as i32,
+                sc(14.0),
+                text_color,
+                card_w,
+                sc(30.0) as u32,
+                0.0,
+                0.0,
+                card_w,
+            );
+        }
 
         // 3. Content
         draw_text_dw_ex(
