@@ -106,10 +106,12 @@ struct ChatRenderScene {
     draw_thumbnail_images: bool,
     draw_thumbnail_shells: bool,
     draw_selection_highlight: bool,
+    draw_cursor: bool,
     plus_button_hovered: bool,
     thumbnail_hovered: Option<usize>,
     has_slots: bool,
     selection_rects: Vec<(i32, i32, u32, u32)>,
+    cursor_rect: Option<(i32, i32, u32, u32)>,
 }
 
 fn chat_gpu_groups(scene: &ChatRenderScene, slot_count: usize) -> Vec<&'static str> {
@@ -488,6 +490,50 @@ impl ChatGpuPrototypeCanvas {
                         );
                     }
                 }
+
+                if let Some((cx, cy, cw, ch)) = scene.cursor_rect {
+                    if let Ok(cursor_brush) = rt.CreateSolidColorBrush(
+                        &D2D1_COLOR_F {
+                            r: ((scene.cursor_color >> 16) & 0xFF) as f32 / 255.0,
+                            g: ((scene.cursor_color >> 8) & 0xFF) as f32 / 255.0,
+                            b: (scene.cursor_color & 0xFF) as f32 / 255.0,
+                            a: 1.0,
+                        },
+                        None,
+                    ) {
+                        rt.FillRectangle(
+                            &windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                left: cx as f32,
+                                top: cy as f32,
+                                right: cx as f32 + cw as f32,
+                                bottom: cy as f32 + ch as f32,
+                            },
+                            &cursor_brush,
+                        );
+                    }
+                }
+
+                if let Some((cx, cy, cw, ch)) = scene.cursor_rect {
+                    if let Ok(cursor_brush) = rt.CreateSolidColorBrush(
+                        &D2D1_COLOR_F {
+                            r: ((scene.cursor_color >> 16) & 0xFF) as f32 / 255.0,
+                            g: ((scene.cursor_color >> 8) & 0xFF) as f32 / 255.0,
+                            b: (scene.cursor_color & 0xFF) as f32 / 255.0,
+                            a: 1.0,
+                        },
+                        None,
+                    ) {
+                        rt.FillRectangle(
+                            &windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                left: cx as f32,
+                                top: cy as f32,
+                                right: cx as f32 + cw as f32,
+                                bottom: cy as f32 + ch as f32,
+                            },
+                            &cursor_brush,
+                        );
+                    }
+                }
                 let _ = rt.EndDraw(None, None);
                 let src = std::slice::from_raw_parts(self.bits, scene.width * scene.height);
                 buffer[..src.len()].copy_from_slice(src);
@@ -528,6 +574,7 @@ impl ChatRendererBackend for ChatGpuPrototypeRenderer {
         scene.draw_thumbnail_images = true;
         scene.draw_thumbnail_shells = true;
         scene.draw_selection_highlight = false;
+        scene.draw_cursor = false;
         scene
     }
 
@@ -1385,6 +1432,7 @@ impl ChatWindow {
         }
 
         let size = self.window.inner_size();
+        let mut cursor_rect = None;
         if let Some(sel_start) = self.selection_start {
             if sel_start != self.cursor_byte_idx {
                 let sel_min = sel_start.min(self.cursor_byte_idx);
@@ -1429,6 +1477,46 @@ impl ChatWindow {
                 }
             }
         }
+
+        let text_y_base = if self.slots.is_empty() { 0.0 } else { 100.0 };
+        let mut cursor_pos = (padding as i32, (padding + text_y_base) as i32);
+        let mut found_cursor = false;
+        let mut byte_counter = 0;
+        let mut char_iter = self.input_text.chars();
+
+        for line in &self.cached_layout {
+            for glyph in line {
+                if byte_counter == self.cursor_byte_idx {
+                    cursor_pos = (
+                        glyph.position().x as i32,
+                        (glyph.position().y - v_metrics.ascent) as i32,
+                    );
+                    found_cursor = true;
+                }
+                if let Some(c) = char_iter.next() {
+                    byte_counter += c.len_utf8();
+                }
+            }
+        }
+
+        if !found_cursor && byte_counter == self.cursor_byte_idx {
+            if let Some(last_line) = self.cached_layout.last() {
+                if let Some(last_glyph) = last_line.last() {
+                    cursor_pos = (
+                        (last_glyph.position().x
+                            + last_glyph.unpositioned().h_metrics().advance_width)
+                            as i32,
+                        (last_glyph.position().y - v_metrics.ascent) as i32,
+                    );
+                }
+            }
+        }
+
+        let elapsed = self.cursor_blink_start.elapsed().as_millis();
+        if (elapsed % 1000) < 500 {
+            cursor_rect = Some((cursor_pos.0 + 1, cursor_pos.1, 2, 24));
+        }
+
         ChatRenderScene {
             width: size.width as usize,
             height: size.height as usize,
@@ -1440,10 +1528,12 @@ impl ChatWindow {
             draw_thumbnail_images: true,
             draw_thumbnail_shells: true,
             draw_selection_highlight: true,
+            draw_cursor: true,
             plus_button_hovered: self.plus_button_hovered,
             thumbnail_hovered: self.hovered_thumb,
             has_slots: !self.slots.is_empty(),
             selection_rects,
+            cursor_rect,
         }
     }
 
@@ -1664,15 +1754,13 @@ impl ChatWindow {
             }
         }
 
-        // Cursor Blink
-        let elapsed = self.cursor_blink_start.elapsed().as_millis();
-        if (elapsed % 1000) < 500 {
-            let cx = cursor_pos.0 + 1;
-            let cy = cursor_pos.1;
-            for y in cy..(cy + 24) {
-                for x in cx..(cx + 2) {
-                    if x >= 0 && x < buf_w as i32 && y >= 0 && y < buf_h as i32 {
-                        buffer[y as usize * buf_w + x as usize] = scene.cursor_color;
+        if scene.draw_cursor {
+            if let Some((cx, cy, cw, ch)) = scene.cursor_rect {
+                for y in cy..(cy + ch as i32) {
+                    for x in cx..(cx + cw as i32) {
+                        if x >= 0 && x < buf_w as i32 && y >= 0 && y < buf_h as i32 {
+                            buffer[y as usize * buf_w + x as usize] = scene.cursor_color;
+                        }
                     }
                 }
             }
