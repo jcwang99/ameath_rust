@@ -103,6 +103,7 @@ struct ChatRenderScene {
     text_color: u32,
     cursor_color: u32,
     draw_background: bool,
+    plus_button_hovered: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,6 +262,66 @@ impl ChatGpuPrototypeCanvas {
                             radiusY: 11.0,
                         },
                         &bg_brush,
+                    );
+                }
+
+                let btn_size = 32.0f32;
+                let btn_x = 10.0f32;
+                let btn_y = scene.height as f32 - 10.0 - btn_size;
+                let plus_bg: u32 = if scene.plus_button_hovered {
+                    0xFF444444
+                } else {
+                    0xFF3D3D3D
+                };
+                if let Ok(btn_brush) = rt.CreateSolidColorBrush(
+                    &D2D1_COLOR_F {
+                        r: ((plus_bg >> 16) & 0xFF) as f32 / 255.0,
+                        g: ((plus_bg >> 8) & 0xFF) as f32 / 255.0,
+                        b: (plus_bg & 0xFF) as f32 / 255.0,
+                        a: 1.0,
+                    },
+                    None,
+                ) {
+                    rt.FillRoundedRectangle(
+                        &D2D1_ROUNDED_RECT {
+                            rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                left: btn_x,
+                                top: btn_y,
+                                right: btn_x + btn_size,
+                                bottom: btn_y + btn_size,
+                            },
+                            radiusX: 16.0,
+                            radiusY: 16.0,
+                        },
+                        &btn_brush,
+                    );
+                }
+                if let Ok(plus_brush) = rt.CreateSolidColorBrush(
+                    &D2D1_COLOR_F {
+                        r: 0xBB as f32 / 255.0,
+                        g: 0xBB as f32 / 255.0,
+                        b: 0xBB as f32 / 255.0,
+                        a: 1.0,
+                    },
+                    None,
+                ) {
+                    rt.FillRectangle(
+                        &windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                            left: btn_x + 11.0,
+                            top: btn_y + 15.0,
+                            right: btn_x + 21.0,
+                            bottom: btn_y + 17.0,
+                        },
+                        &plus_brush,
+                    );
+                    rt.FillRectangle(
+                        &windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                            left: btn_x + 15.0,
+                            top: btn_y + 11.0,
+                            right: btn_x + 17.0,
+                            bottom: btn_y + 21.0,
+                        },
+                        &plus_brush,
                     );
                 }
                 let _ = rt.EndDraw(None, None);
@@ -1150,6 +1211,7 @@ impl ChatWindow {
             text_color: 0xFFFFFFFF,
             cursor_color: 0xFF00FF00,
             draw_background: true,
+            plus_button_hovered: self.plus_button_hovered,
         }
     }
 
@@ -1253,29 +1315,30 @@ impl ChatWindow {
             }
         }
 
-        // Draw Plus Button
-        let btn_size = 32;
-        let btn_x = 10;
-        let btn_y = buf_h - 10 - btn_size;
-        let plus_bg = if self.plus_button_hovered {
-            0xFF444444
-        } else {
-            0xFF3D3D3D
-        };
-        let radius = 16;
-        let r_sq = radius * radius;
+        if scene.draw_background {
+            let btn_size = 32;
+            let btn_x = 10;
+            let btn_y = buf_h - 10 - btn_size;
+            let plus_bg = if self.plus_button_hovered {
+                0xFF444444
+            } else {
+                0xFF3D3D3D
+            };
+            let radius = 16;
+            let r_sq = radius * radius;
 
-        for ty in 0..btn_size {
-            for tx in 0..btn_size {
-                let dx = tx as i32 - 16;
-                let dy = ty as i32 - 16;
-                if dx * dx + dy * dy <= r_sq {
-                    let px = (btn_x as i32 + tx as i32) as usize;
-                    let py = (btn_y as i32 + ty as i32) as usize;
-                    if px < buf_w && py < buf_h {
-                        let is_plus = (tx > 10 && tx < 22 && ty >= 15 && ty <= 16)
-                            || (ty > 10 && ty < 22 && tx >= 15 && tx <= 16);
-                        buffer[py * buf_w + px] = if is_plus { 0xFFBBBBBB } else { plus_bg };
+            for ty in 0..btn_size {
+                for tx in 0..btn_size {
+                    let dx = tx as i32 - 16;
+                    let dy = ty as i32 - 16;
+                    if dx * dx + dy * dy <= r_sq {
+                        let px = (btn_x as i32 + tx as i32) as usize;
+                        let py = (btn_y as i32 + ty as i32) as usize;
+                        if px < buf_w && py < buf_h {
+                            let is_plus = (tx > 10 && tx < 22 && ty >= 15 && ty <= 16)
+                                || (ty > 10 && ty < 22 && tx >= 15 && tx <= 16);
+                            buffer[py * buf_w + px] = if is_plus { 0xFFBBBBBB } else { plus_bg };
+                        }
                     }
                 }
             }
