@@ -107,11 +107,15 @@ struct ChatRenderScene {
     draw_thumbnail_shells: bool,
     draw_selection_highlight: bool,
     draw_cursor: bool,
+    draw_text_buffer: bool,
     plus_button_hovered: bool,
     thumbnail_hovered: Option<usize>,
     has_slots: bool,
     selection_rects: Vec<(i32, i32, u32, u32)>,
     cursor_rect: Option<(i32, i32, u32, u32)>,
+    text_buffer_w: u32,
+    text_buffer_h: u32,
+    text_y_start: usize,
 }
 
 fn chat_gpu_groups(scene: &ChatRenderScene, slot_count: usize) -> Vec<&'static str> {
@@ -491,6 +495,43 @@ impl ChatGpuPrototypeCanvas {
                     }
                 }
 
+                if scene.draw_text_buffer && scene.text_buffer_w > 0 && scene.text_buffer_h > 0 {
+                    let bmp_props = windows::Win32::Graphics::Direct2D::D2D1_BITMAP_PROPERTIES {
+                        pixelFormat: D2D1_PIXEL_FORMAT {
+                            format:
+                                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+                            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                        },
+                        dpiX: 96.0,
+                        dpiY: 96.0,
+                    };
+                    let text_buffer = current_text_buffer_for_gpu();
+                    if !text_buffer.is_empty() {
+                        if let Ok(bitmap) = rt.CreateBitmap(
+                            windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U {
+                                width: scene.text_buffer_w,
+                                height: scene.text_buffer_h,
+                            },
+                            Some(text_buffer.as_ptr() as *const _),
+                            scene.text_buffer_w * 4,
+                            &bmp_props,
+                        ) {
+                            rt.DrawBitmap(
+                                &bitmap,
+                                Some(&windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                    left: 0.0,
+                                    top: scene.text_y_start as f32,
+                                    right: scene.text_buffer_w as f32,
+                                    bottom: scene.text_y_start as f32 + scene.text_buffer_h as f32,
+                                }),
+                                1.0,
+                                windows::Win32::Graphics::Direct2D::D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                                None,
+                            );
+                        }
+                    }
+                }
+
                 if let Some((cx, cy, cw, ch)) = scene.cursor_rect {
                     if let Ok(cursor_brush) = rt.CreateSolidColorBrush(
                         &D2D1_COLOR_F {
@@ -562,6 +603,21 @@ struct ChatGpuPrototypeRenderer;
 #[cfg(target_os = "windows")]
 thread_local! {
     static CHAT_GPU_CANVAS: std::cell::RefCell<ChatGpuPrototypeCanvas> = std::cell::RefCell::new(ChatGpuPrototypeCanvas::new());
+    static CHAT_GPU_TEXT_BUFFER: std::cell::RefCell<Vec<u32>> = std::cell::RefCell::new(Vec::new());
+}
+
+#[cfg(target_os = "windows")]
+fn set_current_text_buffer_for_gpu(buffer: &[u32]) {
+    CHAT_GPU_TEXT_BUFFER.with(|stored| {
+        let mut stored = stored.borrow_mut();
+        stored.clear();
+        stored.extend_from_slice(buffer);
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn current_text_buffer_for_gpu() -> Vec<u32> {
+    CHAT_GPU_TEXT_BUFFER.with(|stored| stored.borrow().clone())
 }
 
 #[cfg(target_os = "windows")]
@@ -570,11 +626,13 @@ impl ChatRendererBackend for ChatGpuPrototypeRenderer {
 
     fn build_scene(window: &mut ChatWindow) -> Self::Scene {
         let mut scene = window.prepare_render_scene();
+        set_current_text_buffer_for_gpu(&window.text_buffer);
         scene.draw_background = false;
         scene.draw_thumbnail_images = true;
         scene.draw_thumbnail_shells = true;
         scene.draw_selection_highlight = false;
         scene.draw_cursor = false;
+        scene.draw_text_buffer = true;
         scene
     }
 
@@ -1529,11 +1587,15 @@ impl ChatWindow {
             draw_thumbnail_shells: true,
             draw_selection_highlight: true,
             draw_cursor: true,
+            draw_text_buffer: false,
             plus_button_hovered: self.plus_button_hovered,
             thumbnail_hovered: self.hovered_thumb,
             has_slots: !self.slots.is_empty(),
             selection_rects,
             cursor_rect,
+            text_buffer_w: self.text_buffer_w,
+            text_buffer_h: self.text_buffer_h,
+            text_y_start: (padding + (if self.slots.is_empty() { 0.0 } else { 100.0 })) as usize,
         }
     }
 
@@ -1694,26 +1756,28 @@ impl ChatWindow {
             }
         }
 
-        // Draw Text from Pre-rendered Buffer (Alpha Blending) - Region Optimized
-        let text_y_start = (padding + (if self.slots.is_empty() { 0.0 } else { 100.0 })) as usize;
-        let text_y_end = (text_y_start + self.text_buffer_h as usize).min(buf_h);
+        if !scene.draw_text_buffer {
+            let text_y_start = scene.text_y_start;
+            let text_y_end = (text_y_start + self.text_buffer_h as usize).min(buf_h);
 
-        for py in text_y_start..text_y_end {
-            let row_start = py * buf_w;
-            let src_row_start = py * 600;
-            for px in 0..buf_w {
-                let color_with_alpha = self.text_buffer[src_row_start + px];
-                let alpha = (color_with_alpha >> 24) & 0xFF;
-                if alpha > 0 {
-                    if alpha == 255 {
-                        buffer[row_start + px] = scene.text_color;
-                    } else {
-                        // Blend with background
-                        let bg = buffer[row_start + px];
-                        let r = ((0xFF * alpha + ((bg >> 16) & 0xFF) * (255 - alpha)) / 255) as u32;
-                        let g = ((0xFF * alpha + ((bg >> 8) & 0xFF) * (255 - alpha)) / 255) as u32;
-                        let b = ((0xFF * alpha + (bg & 0xFF) * (255 - alpha)) / 255) as u32;
-                        buffer[row_start + px] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+            for py in text_y_start..text_y_end {
+                let row_start = py * buf_w;
+                let src_row_start = py * 600;
+                for px in 0..buf_w {
+                    let color_with_alpha = self.text_buffer[src_row_start + px];
+                    let alpha = (color_with_alpha >> 24) & 0xFF;
+                    if alpha > 0 {
+                        if alpha == 255 {
+                            buffer[row_start + px] = scene.text_color;
+                        } else {
+                            let bg = buffer[row_start + px];
+                            let r =
+                                ((0xFF * alpha + ((bg >> 16) & 0xFF) * (255 - alpha)) / 255) as u32;
+                            let g =
+                                ((0xFF * alpha + ((bg >> 8) & 0xFF) * (255 - alpha)) / 255) as u32;
+                            let b = ((0xFF * alpha + (bg & 0xFF) * (255 - alpha)) / 255) as u32;
+                            buffer[row_start + px] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+                        }
                     }
                 }
             }
