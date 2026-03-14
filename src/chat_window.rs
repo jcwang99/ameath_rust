@@ -104,6 +104,7 @@ struct ChatRenderScene {
     cursor_color: u32,
     draw_background: bool,
     plus_button_hovered: bool,
+    thumbnail_hovered: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,7 +201,12 @@ impl ChatGpuPrototypeCanvas {
         }
     }
 
-    fn render_background(&mut self, scene: &ChatRenderScene, buffer: &mut [u32]) {
+    fn render_background(
+        &mut self,
+        scene: &ChatRenderScene,
+        slots: &[ImageSlot],
+        buffer: &mut [u32],
+    ) {
         self.ensure_surface(scene.width as i32, scene.height as i32);
         let rect = RECT {
             left: 0,
@@ -324,6 +330,44 @@ impl ChatGpuPrototypeCanvas {
                         &plus_brush,
                     );
                 }
+
+                let mut thumb_x_cursor = 10.0f32;
+                for (i, slot) in slots.iter().enumerate() {
+                    if let ImageStatus::Ready { .. } = &slot.status {
+                        let frame_color: u32 = if scene.thumbnail_hovered == Some(i) {
+                            0xFF5A2F2F
+                        } else {
+                            0xFF383838
+                        };
+                        if let Ok(frame_brush) = rt.CreateSolidColorBrush(
+                            &D2D1_COLOR_F {
+                                r: ((frame_color >> 16) & 0xFF) as f32 / 255.0,
+                                g: ((frame_color >> 8) & 0xFF) as f32 / 255.0,
+                                b: (frame_color & 0xFF) as f32 / 255.0,
+                                a: 1.0,
+                            },
+                            None,
+                        ) {
+                            rt.FillRoundedRectangle(
+                                &D2D1_ROUNDED_RECT {
+                                    rect: windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F {
+                                        left: thumb_x_cursor as f32,
+                                        top: 10.0,
+                                        right: thumb_x_cursor + 80.0,
+                                        bottom: 90.0,
+                                    },
+                                    radiusX: 8.0,
+                                    radiusY: 8.0,
+                                },
+                                &frame_brush,
+                            );
+                        }
+                        thumb_x_cursor += 90.0;
+                        if thumb_x_cursor + 80.0 > scene.width as f32 {
+                            break;
+                        }
+                    }
+                }
                 let _ = rt.EndDraw(None, None);
                 let src = std::slice::from_raw_parts(self.bits, scene.width * scene.height);
                 buffer[..src.len()].copy_from_slice(src);
@@ -371,7 +415,9 @@ impl ChatRendererBackend for ChatGpuPrototypeRenderer {
             return;
         }
         CHAT_GPU_CANVAS.with(|canvas| {
-            canvas.borrow_mut().render_background(scene, &mut buffer);
+            canvas
+                .borrow_mut()
+                .render_background(scene, &window.slots, &mut buffer);
         });
         drop(buffer);
         window.present_render_scene(scene);
@@ -1212,6 +1258,7 @@ impl ChatWindow {
             cursor_color: 0xFF00FF00,
             draw_background: true,
             plus_button_hovered: self.plus_button_hovered,
+            thumbnail_hovered: self.hovered_thumb,
         }
     }
 
