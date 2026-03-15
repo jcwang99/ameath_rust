@@ -27,7 +27,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
 
 #[cfg(target_os = "windows")]
-struct ScratchpadRenderer {
+pub struct ScratchpadRenderer {
     hdc_mem: HDC,
     h_bitmap: HBITMAP,
     rt: Option<ID2D1DCRenderTarget>,
@@ -64,7 +64,7 @@ impl ScratchpadRenderer {
         }
     }
 
-    fn new() -> Self {
+    pub fn new() -> Self {
         unsafe {
             let hdc_screen = GetDC(HWND(0));
             let hdc_mem = CreateCompatibleDC(hdc_screen);
@@ -80,7 +80,7 @@ impl ScratchpadRenderer {
         }
     }
 
-    fn prepare(&mut self, tw: i32, th: i32) -> (&ID2D1DCRenderTarget, *mut u32) {
+    pub fn prepare(&mut self, tw: i32, th: i32) -> (&ID2D1DCRenderTarget, *mut u32) {
         unsafe {
             // Check if buffer is too large (over 4MB) and needs reset to save memory
             const MAX_BUFFER_SIZE: i32 = 4 * 1024 * 1024 / 4; // 4MB in pixels (4 bytes each)
@@ -1096,15 +1096,58 @@ pub fn blit_alpha_pixels(
     let start_y_idx = start_y as usize;
     let end_y_idx = end_y as usize;
 
-    // Use par_chunks_mut to safely and efficiently parallelize mutation of different rows
-    buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize]
-        .par_chunks_mut(surface_w_usize)
-        .enumerate()
-        .for_each(|(i, row)| {
-            let y = (start_y_idx + i) as i32;
+    let total_pixels = (end_y - start_y) * (end_x_dest - start_x_dest);
+
+    if total_pixels > 15000 {
+        // Use par_chunks_mut to safely and efficiently parallelize mutation of different rows
+        buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize]
+            .par_chunks_mut(surface_w_usize)
+            .enumerate()
+            .for_each(|(i, row)| {
+                let y = (start_y_idx + i) as i32;
+                let dy = y - dest_y;
+                let src_y = dy + src_y_off;
+                if src_y >= 0 && src_y < th {
+                    let src_row_base = src_y as usize * tw_u;
+                    for x in start_x_dest..end_x_dest {
+                        let dx = x - dest_x;
+                        let src_x = dx + src_x_off;
+                        if src_x >= 0 && src_x < tw {
+                            let s_idx = src_row_base + src_x as usize;
+                            let edge_alpha = src_alpha[s_idx] as u32;
+                            if edge_alpha == 0 {
+                                continue;
+                            }
+
+                            let d = row[x as usize];
+                            let rb_dest = d & 0x00FF00FF;
+                            let g_dest = d & 0x0000FF00;
+                            let rb_src = color & 0x00FF00FF;
+                            let g_src = color & 0x0000FF00;
+
+                            let color_a = (color >> 24) & 0xFF;
+                            let sa = if color_a == 0 && color != 0 { 255 } else { color_a };
+                            let effective_a = (sa * edge_alpha) >> 8;
+                            let inv_a = 255 - effective_a;
+
+                            let rb_res = (rb_src * effective_a + rb_dest * inv_a) >> 8;
+                            let g_res = (g_src * effective_a + g_dest * inv_a) >> 8;
+                            let a_res = effective_a + (((d >> 24) & 0xFF) * inv_a >> 8);
+
+                            row[x as usize] =
+                                (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00) | (a_res << 24);
+                        }
+                    }
+                }
+            });
+    } else {
+        // Fallback to single-threaded for small areas to avoid Rayon overhead
+        for y_idx in start_y_idx..end_y_idx {
+            let y = y_idx as i32;
             let dy = y - dest_y;
             let src_y = dy + src_y_off;
             if src_y >= 0 && src_y < th {
+                let row_start = y_idx * surface_w_usize;
                 let src_row_base = src_y as usize * tw_u;
                 for x in start_x_dest..end_x_dest {
                     let dx = x - dest_x;
@@ -1116,7 +1159,8 @@ pub fn blit_alpha_pixels(
                             continue;
                         }
 
-                        let d = row[x as usize];
+                        let d_idx = row_start + x as usize;
+                        let d = buffer[d_idx];
                         let rb_dest = d & 0x00FF00FF;
                         let g_dest = d & 0x0000FF00;
                         let rb_src = color & 0x00FF00FF;
@@ -1131,12 +1175,13 @@ pub fn blit_alpha_pixels(
                         let g_res = (g_src * effective_a + g_dest * inv_a) >> 8;
                         let a_res = effective_a + (((d >> 24) & 0xFF) * inv_a >> 8);
 
-                        row[x as usize] =
+                        buffer[d_idx] =
                             (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00) | (a_res << 24);
                     }
                 }
             }
-        });
+        }
+    }
 }
 
 #[inline(always)]
@@ -1407,112 +1452,7 @@ pub fn get_selection_rects(
     Vec::new()
 }
 
-pub fn blit_32bit_premultiplied(
-    buffer: &mut [u32],
-    surface_w: u32,
-    surface_h: u32,
-    src_pixels: &[u32],
-    dest_x: i32,
-    dest_y: i32,
-    max_w: u32,
-    h: u32,
-) {
-    if dest_y < 0
-        || (dest_y + h as i32) > surface_h as i32
-        || dest_x < -(max_w as i32)
-        || dest_x >= surface_w as i32
-    {
-        return;
-    }
 
-    let tw = max_w as usize;
-    let start_x = dest_x.max(0);
-    let end_x = (dest_x + max_w as i32).min(surface_w as i32);
-    if start_x >= end_x {
-        return;
-    }
-
-    let surface_w = surface_w as usize;
-    let start_x_u = start_x as usize;
-    let end_x_u = end_x as usize;
-    let copy_len = end_x_u - start_x_u;
-    let x_off = (start_x - dest_x) as usize;
-
-    for y in 0..h {
-        let dy = (dest_y + y as i32) as usize;
-        let dest_row_base = dy * surface_w;
-        let src_row_base = y as usize * tw;
-
-        let src_slice = &src_pixels[src_row_base + x_off..src_row_base + x_off + copy_len];
-        let dest_slice =
-            &mut buffer[dest_row_base + start_x_u..dest_row_base + start_x_u + copy_len];
-
-        // Optimized blending:
-        // 1. Process leading non-opaque pixels
-        let mut i = 0;
-        while i < copy_len {
-            let s = src_slice[i];
-            let a = (s >> 24) & 0xFF;
-            if a == 255 {
-                break;
-            } // Found start of opaque run
-
-            if a > 0 {
-                let d = dest_slice[i];
-                let inv_a = 255 - a;
-                let rb_dest = d & 0x00FF00FF;
-                let g_dest = d & 0x0000FF00;
-                let rb_src = s & 0x00FF00FF;
-                let g_src = s & 0x0000FF00;
-                let rb_res = rb_src + ((rb_dest * inv_a) >> 8);
-                let g_res = g_src + ((g_dest * inv_a) >> 8);
-                dest_slice[i] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
-            }
-            // If a == 0, skip
-            i += 1;
-        }
-
-        // 2. Find end of opaque run
-        let start_opaque = i;
-        while i < copy_len {
-            let s = src_slice[i];
-            let a = (s >> 24) & 0xFF;
-            if a != 255 {
-                break;
-            }
-            i += 1;
-        }
-        let end_opaque = i;
-
-        // 3. Memcpy opaque run
-        if end_opaque > start_opaque {
-            dest_slice[start_opaque..end_opaque]
-                .copy_from_slice(&src_slice[start_opaque..end_opaque]);
-        }
-
-        // 4. Process trailing pixels
-        if i < copy_len {
-            for j in i..copy_len {
-                let s = src_slice[j];
-                let a = (s >> 24) & 0xFF;
-
-                if a == 255 {
-                    dest_slice[j] = s;
-                } else if a > 0 {
-                    let d = dest_slice[j];
-                    let inv_a = 255 - a;
-                    let rb_dest = d & 0x00FF00FF;
-                    let g_dest = d & 0x0000FF00;
-                    let rb_src = s & 0x00FF00FF;
-                    let g_src = s & 0x0000FF00;
-                    let rb_res = rb_src + ((rb_dest * inv_a) >> 8);
-                    let g_res = g_src + ((g_dest * inv_a) >> 8);
-                    dest_slice[j] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
-                }
-            }
-        }
-    }
-}
 
 pub fn draw_triangle(
     buffer: &mut [u32],
@@ -1585,6 +1525,74 @@ pub fn draw_triangle(
                 let a_res = alpha + (((d >> 24) & 0xFF) * inv_a >> 8);
                 buffer[idx] = (a_res << 24) | (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
             }
+        }
+    }
+}
+
+/// Blits a 32-bit premultiplied pixel buffer onto another.
+/// Optimized for asynchronous UI component composition.
+pub fn blit_32bit_premultiplied(
+    dst: &mut [u32],
+    dst_w: u32,
+    x: i32,
+    y: i32,
+    src_w: u32,
+    src_h: u32,
+    src: &[u32],
+    opacity: f32,
+    clip_w: u32,
+    clip_h: u32,
+) {
+    if opacity <= 0.0 { return; }
+    let global_alpha = (opacity * 255.0) as u32;
+
+    let surface_h = (dst.len() as u32) / dst_w.max(1);
+    let start_y = y.max(0);
+    let end_y = (y + src_h as i32).min(y + clip_h as i32).min(surface_h as i32);
+    let start_x = x.max(0);
+    let end_x = (x + src_w as i32).min(x + clip_w as i32).min(dst_w as i32);
+
+    if start_y >= end_y || start_x >= end_x { return; }
+
+    for dy in start_y..end_y {
+        let sy = dy - y;
+        let dst_row_base = (dy as usize) * (dst_w as usize);
+        let src_row_base = (sy as usize) * (src_w as usize);
+        
+        for dx in start_x..end_x {
+            let sx = dx - x;
+            let s_pixel = src[src_row_base + sx as usize];
+            
+            // Extract source components (premultiplied)
+            let sa = ((s_pixel >> 24) & 0xFF) * global_alpha >> 8;
+            if sa == 0 { continue; }
+
+            let sr = ((s_pixel >> 16) & 0xFF) * global_alpha >> 8;
+            let sg = ((s_pixel >> 8) & 0xFF) * global_alpha >> 8;
+            let sb = (s_pixel & 0xFF) * global_alpha >> 8;
+
+            let d_pixel = dst[dst_row_base + dx as usize];
+            
+            if sa >= 255 {
+                dst[dst_row_base + dx as usize] = (sa << 24) | (sr << 16) | (sg << 8) | sb;
+                continue;
+            }
+
+            // Standard premultiplied alpha blending:
+            // dest = src + dest * (1 - src_alpha)
+            let inv_sa = 255 - sa;
+            
+            let dr = (d_pixel >> 16) & 0xFF;
+            let dg = (d_pixel >> 8) & 0xFF;
+            let db = d_pixel & 0xFF;
+            let da = (d_pixel >> 24) & 0xFF;
+
+            let r = (sr + (dr * inv_sa >> 8)).min(255);
+            let g = (sg + (dg * inv_sa >> 8)).min(255);
+            let b = (sb + (db * inv_sa >> 8)).min(255);
+            let a = (sa + (da * inv_sa >> 8)).min(255);
+
+            dst[dst_row_base + dx as usize] = (a << 24) | (r << 16) | (g << 8) | b;
         }
     }
 }

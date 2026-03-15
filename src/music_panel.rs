@@ -12,6 +12,62 @@ pub fn get_max_scroll_offset(songs_len: usize) -> f32 {
     (content_h - visible_h).max(0.0)
 }
 
+pub const BASE_BUTTON_SIZE: i32 = 24;
+
+#[derive(Debug, Clone)]
+pub struct MusicRenderState {
+    pub current_song_name: String,
+    pub songs: Vec<String>,
+    pub is_playing: bool,
+    pub list_visible: bool,
+    pub list_scroll_offset: f32,
+    pub current_song_idx: usize,
+    pub current_duration: std::time::Duration,
+    pub total_duration: std::time::Duration,
+    pub panel_enabled: bool,
+    pub play_mode: crate::music_player::PlayMode,
+    pub scale: f32,
+    pub opacity: f32,
+    pub mx: f64,
+    pub my: f64,
+    pub timestamp: f64, // For synced animation if needed
+}
+
+impl MusicRenderState {
+    pub fn new(player: &MusicPlayer, scale: f32, opacity: f32, mx: f64, my: f64) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as f64;
+        
+        let (_, current_dur, total_dur) = player.get_progress();
+        
+        Self {
+            current_song_name: player.current_song_name().unwrap_or_else(|| "No Music".to_string()),
+            songs: player.songs().iter().map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()).collect(),
+            is_playing: player.is_playing(),
+            list_visible: player.list_visible,
+            list_scroll_offset: player.list_scroll_offset,
+            current_song_idx: player.current_idx(),
+            current_duration: current_dur,
+            total_duration: total_dur,
+            panel_enabled: player.panel_enabled,
+            play_mode: player.play_mode,
+            scale,
+            opacity,
+            mx,
+            my,
+            timestamp: now,
+        }
+    }
+}
+
+pub struct MusicRenderResult {
+    pub buffer: Vec<u32>,
+    pub width: u32,
+    pub height: u32,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum MusicPanelAction {
     PlayPause,
@@ -24,36 +80,35 @@ pub enum MusicPanelAction {
 }
 
 pub fn render_music_panel(
-    player: &MusicPlayer,
+    state: &MusicRenderState,
     buffer: &mut [u32],
     win_w: u32,
     win_h: u32,
     panel_x: i32,
     panel_y: i32,
-    scale: f32,
-    opacity: f32,
-    mx: f64,
-    my: f64,
 ) {
-    if !player.panel_enabled || opacity <= 0.0 {
+    if !state.panel_enabled || state.opacity <= 0.0 {
         return;
     }
+
+    let scale = state.scale;
+    let opacity = state.opacity;
+    let mx = state.mx;
+    let my = state.my;
 
     let w = (BASE_PANEL_WIDTH as f32 * scale) as u32;
     let mut h = (BASE_PANEL_HEIGHT as f32 * scale) as u32;
     
-    let songs = player.songs();
+    let songs = &state.songs;
     let max_visible_items = 8;
     let visible_items = songs.len().min(max_visible_items);
     
-    if player.list_visible && !songs.is_empty() {
+    if state.list_visible && !songs.is_empty() {
         let list_h = (visible_items as f32 * BASE_LIST_ITEM_HEIGHT as f32 * scale) as u32;
-        h += list_h; // 精简高度，移除多余的 5.0 * scale
+        h += list_h; 
     }
 
     // 1. Background
-    // Changed base color and applied a 0.85 alpha multiplier to the global opacity
-    // This allows the desktop background to subtly show through, creating a glassmorphism effect.
     let bg_color = ui_primitives::apply_opacity(0x151515, opacity * 0.85);
     ui_primitives::draw_rounded_rect(
         buffer,
@@ -68,12 +123,11 @@ pub fn render_music_panel(
         win_h,
     );
 
-    // 2. Cover Art (Rotating Disc) - APlayer Style
+    // 2. Cover Art (Rotating Disc)
     let cover_size = (45.0 * scale) as u32;
     let cover_x = panel_x + (12.0 * scale) as i32;
     let cover_y = panel_y + (12.0 * scale) as i32;
     
-    // Draw base disc (dark circle)
     ui_primitives::draw_rounded_rect(
         buffer,
         win_w,
@@ -82,15 +136,13 @@ pub fn render_music_panel(
         cover_size,
         cover_size,
         cover_size / 2,
-        ui_primitives::apply_opacity(0x0A0A0A, opacity), // Darkened disc base
+        ui_primitives::apply_opacity(0x0A0A0A, opacity),
         win_w,
         win_h,
     );
 
-    // Draw rotating "needle" or "reflection" to simulate spinning
-    if player.is_playing() {
-        use std::time::SystemTime;
-        let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_millis() as f64;
+    if state.is_playing {
+        let now = state.timestamp;
         let angle = (now / 20.0) % 360.0;
         let rad = angle.to_radians();
         let cx = (cover_x as f64 + cover_size as f64 / 2.0) as i32;
@@ -100,7 +152,6 @@ pub fn render_music_panel(
         let tx = cx + (r * rad.cos()) as i32;
         let ty = cy + (r * rad.sin()) as i32;
         
-        // Just a small highlight dot that rotates
         ui_primitives::draw_rounded_rect(
             buffer,
             win_w,
@@ -115,7 +166,6 @@ pub fn render_music_panel(
         );
     }
     
-    // Center point of the disc
     ui_primitives::draw_rounded_rect(
         buffer,
         win_w,
@@ -129,19 +179,18 @@ pub fn render_music_panel(
         win_h,
     );
 
-    // 3. Title (Next to cover) with Marquee effect
+    // 3. Title with Marquee effect
     let text_color = ui_primitives::apply_opacity(0xFFFFFF, opacity);
-    let name = player.current_song_name().unwrap_or_else(|| "No Music".to_string());
+    let name = &state.current_song_name;
     let title_x = cover_x + cover_size as i32 + (10.0 * scale) as i32;
     let title_max_w = (w as i32 - (title_x - panel_x) - (35.0 * scale) as i32).max(10) as u32;
     
     let font_size = 13.0 * scale;
-    let text_w = ui_primitives::get_text_width(&name, font_size, false);
+    let text_w = ui_primitives::get_text_width(name, font_size, false);
     
     let mut scroll_x = 0.0;
     if text_w > title_max_w as f32 {
-        use std::time::SystemTime;
-        let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_millis() as f64;
+        let now = state.timestamp;
         let speed = 40.0; 
         let text_overflow = text_w - title_max_w as f32;
         let pause_duration = 1.5; // seconds
@@ -192,7 +241,7 @@ pub fn render_music_panel(
     let list_font_scale = if list_hovered { 1.2 } else { 1.0 };
     let list_color = if list_hovered { 
         ui_primitives::apply_opacity(0xFFFFFF, opacity) 
-    } else if player.list_visible { 
+    } else if state.list_visible { 
         ui_primitives::apply_opacity(0xFB7299, opacity) 
     } else { 
         ui_primitives::apply_opacity(0x888888, opacity) 
@@ -226,7 +275,7 @@ pub fn render_music_panel(
 
     // Mode Toggle
     let mode_hovered = in_ctrl_row && mx_i >= ctrl_start_x && mx_i < ctrl_start_x + (25.0 * scale) as i32;
-    let mode_icon = match player.play_mode {
+    let mode_icon = match state.play_mode {
         crate::music_player::PlayMode::Sequential => "⮂", // Rightwards Arrow Over Leftwards Arrow
         crate::music_player::PlayMode::LoopSingle => "↻",  // Clockwise Open Circle Arrow
         crate::music_player::PlayMode::Random => "⤮",       // Rightwards Arrow with Lower Hook
@@ -278,7 +327,7 @@ pub fn render_music_panel(
     let pp_color = if pp_hovered { ui_primitives::apply_opacity(0xFFFFFF, opacity) } else { ui_primitives::apply_opacity(0xEEEEEE, opacity) };
     let pp_w = (16.0 * scale * pp_font_scale) as u32;
     let pp_h = (16.0 * scale * pp_font_scale) as u32;
-    if player.is_playing() {
+    if state.is_playing {
         // draw two vertical bars
         ui_primitives::draw_rounded_rect(
             buffer, win_w,
@@ -329,7 +378,11 @@ pub fn render_music_panel(
     let prog_y = panel_y + (75.0 * scale) as i32;
     let prog_x = panel_x + (12.0 * scale) as i32;
     let prog_w = w - (24.0 * scale) as u32;
-    let (progress, current_dur, total_dur) = player.get_progress();
+    let current_dur = state.current_duration;
+    let total_dur = state.total_duration;
+    let progress = if total_dur.as_secs_f32() > 0.0 {
+        current_dur.as_secs_f32() / total_dur.as_secs_f32()
+    } else { 0.0 };
 
     // --- Dynamic Hover & Glow Logic ---
     let mut prog_hovered = false;
@@ -418,8 +471,9 @@ pub fn render_music_panel(
         );
     }
 
-    // Time text (Mini style: 01:23 / 03:45 at bottom right)
-    let time_text = format!("{:02}:{:02}/{:02}:{:02}", 
+    let current_dur: std::time::Duration = state.current_duration;
+    let total_dur: std::time::Duration = state.total_duration;
+    let time_text = format!("{:02}:{:02} / {:02}:{:02}",
         current_dur.as_secs() / 60, current_dur.as_secs() % 60,
         total_dur.as_secs() / 60, total_dur.as_secs() % 60);
     ui_primitives::draw_text_dw_ex(
@@ -438,7 +492,8 @@ pub fn render_music_panel(
     );
 
     // 5. Playlist
-    if player.list_visible && !songs.is_empty() {
+    let songs = &state.songs;
+    if state.list_visible && !songs.is_empty() {
         let max_visible_items = MAX_VISIBLE_ITEMS;
         // BASE_PANEL_HEIGHT (100) is the background height of the control area. 
         // We start list slightly earlier to merge the visual gap.
@@ -447,14 +502,14 @@ pub fn render_music_panel(
         
         // Ensure scroll offset is clamped (safety)
         let max_offset = get_max_scroll_offset(songs.len());
-        let current_offset = player.list_scroll_offset.clamp(0.0, max_offset);
+        let current_offset = state.list_scroll_offset.clamp(0.0, max_offset);
         
         let start_idx = (current_offset / BASE_LIST_ITEM_HEIGHT as f32).floor() as usize;
         let end_idx = (start_idx + max_visible_items + 1).min(songs.len());
 
         for i in start_idx..end_idx {
             // High-precision Y calculation to prevent rounding errors causing mis-clipping
-            let ry_f = (i as f32 * BASE_LIST_ITEM_HEIGHT as f32 - player.list_scroll_offset) * scale;
+            let ry_f = (i as f32 * BASE_LIST_ITEM_HEIGHT as f32 - state.list_scroll_offset) * scale;
             let item_y = list_y + ry_f as i32;
             
             // Clip items outside of the list area with small buffer
@@ -463,7 +518,7 @@ pub fn render_music_panel(
                 continue;
             }
 
-            let is_current = i == player.current_idx();
+            let is_current = i == state.current_song_idx;
             let mut is_hovered = false;
             
             // Check if mouse is hovering over this list item
@@ -478,91 +533,191 @@ pub fn render_music_panel(
             // Removed: background draw_rect for is_current/is_hovered
             // We now rely purely on text stylings based on visual cues
 
-            let song_name = songs[i].file_name().and_then(|f| f.to_str()).unwrap_or("Unknown");
+            let song_path = std::path::Path::new(&songs[i]);
+            let song_name = song_path.file_name().and_then(|f| f.to_str()).unwrap_or("Unknown");
             let display_name = if let Some(dot_idx) = song_name.rfind('.') {
                 &song_name[..dot_idx]
             } else {
                 song_name
             };
             
-            let item_text = format!("{:02}. {}", i + 1, display_name);
-            let item_text_w = ui_primitives::get_text_width(&item_text, 11.0 * scale, false);
-            let item_max_w = w - (40.0 * scale) as u32;
+            let item_text = format!("{}. {}", i + 1, display_name);
             
-            let mut item_scroll_x = 0.0;
-            // Marquee for current playing song if it's too long
-            if is_current && item_text_w > item_max_w as f32 {
-                use std::time::SystemTime;
-                let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_millis() as f64;
-                let speed = 30.0;
-                let overflow = item_text_w - item_max_w as f32;
-                let cycle = (overflow / speed + 2.0) * 2.0;
-                let t = (now / 1000.0) % cycle as f64;
-                item_scroll_x = if t < 1.0 { 0.0 } 
-                               else if t < 1.0 + (overflow / speed) as f64 { -((t - 1.0) as f32 * speed) }
-                               else if t < 2.0 + (overflow / speed) as f64 { -overflow }
-                               else { -(overflow - (t - (2.0 + (overflow / speed) as f64)) as f32 * speed) };
-                item_scroll_x = item_scroll_x.min(0.0).max(-overflow);
+            let item_max_w = (w as i32 - (20.0 * scale) as i32).max(10) as u32;
+            let item_h = (BASE_LIST_ITEM_HEIGHT as f32 * scale) as i32;
+
+            // Highlight bar
+            if is_hovered || is_current {
+                let bar_color = if is_current { 
+                    ui_primitives::apply_opacity(0xFB7299, opacity * 0.2) 
+                } else { 
+                    ui_primitives::apply_opacity(0x333333, opacity * 0.3) 
+                };
+                ui_primitives::draw_rounded_rect(
+                    buffer, win_w, panel_x + (5.0 * scale) as i32, item_y + (2.0 * scale) as i32,
+                    (w as f32 - 10.0 * scale) as u32, (item_h as f32 - 4.0 * scale) as u32,
+                    (4.0 * scale) as u32, bar_color, win_w, win_h
+                );
             }
 
             let mut target_font_size = 11.0 * scale;
-            let mut target_color = text_color; // Default text color
+            let mut target_color = text_color;
 
             if is_current {
                 target_font_size = if is_hovered { 12.0 * scale } else { 11.5 * scale };
-                target_color = ui_primitives::apply_opacity(0xFB7299, opacity); // Pinkish for active
+                target_color = ui_primitives::apply_opacity(0xFB7299, opacity);
             } else if is_hovered {
                 target_font_size = 12.0 * scale;
-                target_color = ui_primitives::apply_opacity(0xFFFFFF, opacity * 1.5); // Brighter white for hover
+                target_color = ui_primitives::apply_opacity(0xFFFFFF, opacity * 1.5);
             }
 
+            let index_text = format!("{}.", i + 1);
+            let index_w = ui_primitives::get_text_width(&index_text, target_font_size, false);
+            let gap = 4.0 * scale;
+            
+            let item_max_w = (w as i32 - (25.0 * scale) as i32).max(10) as u32;
+            let name_max_w = (item_max_w as f32 - index_w - gap).max(10.0) as u32;
+            let item_h = (BASE_LIST_ITEM_HEIGHT as f32 * scale) as i32;
+
+            // Draw Index (Fixed)
             ui_primitives::draw_text_dw_ex_nowrap(
-                buffer,
-                win_w,
-                &item_text,
-                panel_x + (15.0 * scale) as i32,
+                buffer, win_w, &index_text, panel_x + (12.0 * scale) as i32, item_y + (4.0 * scale) as i32,
+                target_font_size, target_color, index_w as u32 + 2, item_h as u32, 0.0, 0.0, 2000
+            );
+
+            // Text Marquee for Song Name
+            let mut item_scroll_x = 0.0;
+            let name_text_w = ui_primitives::get_text_width(display_name, target_font_size, false);
+            if (is_hovered || is_current) && name_text_w > name_max_w as f32 {
+                let now = state.timestamp;
+                let text_overflow = name_text_w - name_max_w as f32;
+                let speed = 35.0; 
+                let pause_duration = 1.5;
+                let move_duration = text_overflow / speed;
+                let total_half_cycle = pause_duration + move_duration;
+                let total_cycle = total_half_cycle * 2.0;
+
+                let local_time = (now / 1000.0) % total_cycle as f64;
+                
+                item_scroll_x = if local_time < pause_duration as f64 {
+                    0.0
+                } else if local_time < total_half_cycle as f64 {
+                    let t = (local_time - pause_duration as f64) as f32;
+                    -(t * speed)
+                } else if local_time < (total_half_cycle + pause_duration) as f64 {
+                    -text_overflow
+                } else {
+                    let t = (local_time - (total_half_cycle + pause_duration) as f64) as f32;
+                    -(text_overflow - t * speed)
+                };
+                item_scroll_x = item_scroll_x.min(0.0).max(-text_overflow);
+            }
+
+            // Draw Song Name (Marquee)
+            ui_primitives::draw_text_dw_ex_nowrap(
+                buffer, win_w, display_name, 
+                panel_x + (12.0 * scale) as i32 + (index_w + gap) as i32, 
                 item_y + (4.0 * scale) as i32,
-                target_font_size,
-                target_color,
-                item_max_w,
-                item_h as u32,
-                0.0,
-                -item_scroll_x,
-                (2000.0 * scale) as u32,
+                target_font_size, target_color, name_max_w, item_h as u32, 0.0, -item_scroll_x, 2000
             );
         }
 
+        let visible_items = 8;
+
         // 6. Scrollbar
-        if songs.len() > max_visible_items {
+        if songs.len() > visible_items {
             let bar_w = (4.0 * scale) as u32;
             let bar_x = panel_x + w as i32 - (6.0 * scale) as i32;
-            
             let list_area_h = (visible_items as f32 * BASE_LIST_ITEM_HEIGHT as f32 * scale) as f32;
             let total_content_h = (songs.len() as f32 * BASE_LIST_ITEM_HEIGHT as f32 * scale) as f32;
-            
-            // 滑块长度比例
             let bar_h = (list_area_h * (list_area_h / total_content_h)).max(15.0 * scale);
-            
-            // 滑块位置：(当前滚动位 / 总溢出量) * (列表区域 - 滑块长度)
-            let max_scroll = (songs.len() - visible_items) as f32 * BASE_LIST_ITEM_HEIGHT as f32;
-            let scroll_ratio = if max_scroll > 0.0 { player.list_scroll_offset / max_scroll } else { 0.0 };
+            let max_scroll = (songs.len() - visible_items) as f32 * BASE_LIST_ITEM_HEIGHT as f32 * scale;
+            let scroll_ratio = if max_scroll > 0.0 { state.list_scroll_offset / max_scroll } else { 0.0 };
             let bar_y = list_y as f32 + scroll_ratio * (list_area_h - bar_h);
 
             ui_primitives::draw_rect(
-                buffer,
-                win_w,
-                bar_x,
-                bar_y as i32,
-                bar_w,
-                bar_h as u32,
-                ui_primitives::apply_opacity(0xFB7299, opacity * 0.7),
-                win_w,
-                win_h,
+                buffer, win_w, bar_x, bar_y as i32, bar_w, bar_h as u32,
+                ui_primitives::apply_opacity(0xFB7299, opacity * 0.7), win_w, win_h
             );
         }
     }
 }
 
+
+// --- ASYNC RENDERER IMPLEMENTATION ---
+use std::sync::mpsc::{channel, Sender, Receiver};
+use std::sync::{Mutex, Arc};
+use std::thread;
+
+pub struct MusicRenderer {
+    tx: Sender<MusicRenderState>,
+    result: Arc<Mutex<Option<MusicRenderResult>>>,
+}
+
+impl MusicRenderer {
+    pub fn new() -> Self {
+        let (tx, rx) = channel::<MusicRenderState>();
+        let result = Arc::new(Mutex::new(None));
+        let result_clone = result.clone();
+
+        thread::spawn(move || {
+            let mut scratchpad = crate::ui_primitives::ScratchpadRenderer::new();
+            let mut last_processed_time = std::time::Instant::now();
+
+            loop {
+                // Determine wait strategy: if playing, we want 60fps (~16ms). If not, we can wait longer.
+                let mut current_state = None;
+                
+                // Drain everything from channel to get the LATEST state
+                while let Ok(s) = rx.try_recv() {
+                    current_state = Some(s);
+                }
+
+                if current_state.is_none() {
+                    // Block with timeout to handle animations (rotating disc) even if no input state changes
+                    if let Ok(s) = rx.recv_timeout(std::time::Duration::from_millis(16)) {
+                        current_state = Some(s);
+                    }
+                }
+
+                if let Some(state) = current_state {
+                    let scale = state.scale;
+                    let w = (BASE_PANEL_WIDTH as f32 * scale) as u32;
+                    let mut h = (BASE_PANEL_HEIGHT as f32 * scale) as u32;
+                    if state.list_visible && !state.songs.is_empty() {
+                        h += (state.songs.len().min(8) as f32 * BASE_LIST_ITEM_HEIGHT as f32 * scale) as u32;
+                    }
+
+                    if w > 0 && h > 0 {
+                        let mut buffer = vec![0u32; (w * h) as usize];
+                        render_music_panel(&state, &mut buffer, w, h, 0, 0);
+                        
+                        let mut res = result_clone.lock().unwrap();
+                        *res = Some(MusicRenderResult {
+                            buffer,
+                            width: w,
+                            height: h,
+                        });
+                    }
+                } else if last_processed_time.elapsed() >= std::time::Duration::from_millis(16) {
+                    // Placeholder for animation-only update if needed
+                }
+                last_processed_time = std::time::Instant::now();
+            }
+        });
+
+        Self { tx, result }
+    }
+
+    pub fn update_state(&self, state: MusicRenderState) {
+        let _ = self.tx.send(state);
+    }
+
+    pub fn get_latest_render(&self) -> Option<MusicRenderResult> {
+        let mut res = self.result.lock().unwrap();
+        res.take() // Consume the frame
+    }
+}
 pub fn check_music_panel_hit(
     player: &MusicPlayer,
     mx: f64,

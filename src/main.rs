@@ -289,9 +289,13 @@ fn main() {
     let mut last_pure_text_response: String = String::new();
     let mut hover_leave_time: Option<Instant> = None;
     let mut last_processed_mouse: (f64, f64) = (0.0, 0.0);
+    let mut last_over_info = (false, false, false, false); // (pet, menu, bubble, music)
+    let mut last_hover_action_id = 0u64; // To track internal component hover changes
     let mut pomodoro_manager = pomodoro::Pomodoro::new();
     let mut menu_manager = menu::QuickMenu::new();
     let mut music_player = music_player::MusicPlayer::new();
+    let music_renderer = music_panel::MusicRenderer::new();
+    let mut last_music_render: Option<music_panel::MusicRenderResult> = None;
 
     // AI Kernel & Channel
     let scheduler = interaction::ActionScheduler::new();
@@ -1437,6 +1441,67 @@ fn main() {
                         }
                     }
 
+                    // --- DETECT MEANINGFUL HOVER CHANGE ---
+                    let mut hover_state_changed = false;
+                    let current_over_info = (over_pet, over_menu, over_bubble, over_music);
+                    if current_over_info != last_over_info {
+                        hover_state_changed = true;
+                        last_over_info = current_over_info;
+                    }
+                    
+                    let mut current_hover_action_id = 0u64;
+                    if over_menu {
+                        let m_local_x = pet.position.0 - pet_off_x + menu_x_f;
+                        let m_local_y = pet.position.1 - pet_off_y + menu_y_f;
+                        if let Some(action) = menu_manager.check_hit(mouse_x, mouse_y, m_local_x as i32, m_local_y as i32) {
+                            current_hover_action_id = (action as u32 as u64) + 1;
+                        }
+                    } else if over_music {
+                        let panel_w = (music_panel::BASE_PANEL_WIDTH as f32 * pet.scale) as f64;
+                        let panel_x = (pet_off_x + cur_pw/2.0 - panel_w/2.0) as i32;
+                        let panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
+                        if let Some(action) = music_panel::check_music_panel_hit(&music_player, mouse_x, mouse_y, panel_x, panel_y, pet.scale) {
+                            let act_id = match action {
+                                music_panel::MusicPanelAction::PlayPause => 1,
+                                music_panel::MusicPanelAction::Prev => 2,
+                                music_panel::MusicPanelAction::Next => 3,
+                                music_panel::MusicPanelAction::Seek(_) => 4,
+                                music_panel::MusicPanelAction::ToggleList => 5,
+                                music_panel::MusicPanelAction::SelectSong(idx) => 10 + idx as u64,
+                                music_panel::MusicPanelAction::ToggleMode => 6,
+                            };
+                            current_hover_action_id = 1000 + act_id; // Offset to avoid collision with menu actions
+                        }
+                    }
+                    
+                    if current_hover_action_id != last_hover_action_id {
+                        hover_state_changed = true;
+                        last_hover_action_id = current_hover_action_id;
+                    }
+
+                    // --- ASYNC MUSIC PANEL UPDATE ---
+                    let (cur_pw, cur_ph) = pet.get_scaled_size();
+                    let panel_w = (music_panel::BASE_PANEL_WIDTH as f32 * pet.scale) as f64;
+                    // Visual adjustment: -2px offset to compensate for asymmetrical pet gif assets
+                    let m_panel_x = (pet_off_x + cur_pw/2.0 - panel_w/2.0 - 2.0 * pet.scale as f64) as i32;
+                    let m_panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
+                    
+                    let win_mouse_x = current_mouse.0 as f64 - (pet.position.0 - pet_off_x);
+                    let win_mouse_y = current_mouse.1 as f64 - (pet.position.1 - pet_off_y);
+                    
+                    let music_state = music_panel::MusicRenderState::new(
+                        &music_player, 
+                        pet.scale, 
+                        menu_manager.opacity, 
+                        win_mouse_x - m_panel_x as f64, 
+                        win_mouse_y - m_panel_y as f64
+                    );
+                    music_renderer.update_state(music_state);
+                    if let Some(res) = music_renderer.get_latest_render() {
+                        last_music_render = Some(res);
+                        needs_pet_redraw = true; // New frame ready
+                    }
+
                     // 6. REDRAW STATUS CHECKS
                     let mut pos_changed = false;
                     #[cfg(target_os = "windows")]
@@ -1461,7 +1526,7 @@ fn main() {
                     let any_bubble_animating = bubbles.iter().any(|b| now >= b.next_frame_at());
 
                     let mouse_moved = (current_mouse.0 - last_processed_mouse.0).abs() > 0.5 || (current_mouse.1 - last_processed_mouse.1).abs() > 0.5;
-                    if mouse_moved && is_hovered {
+                    if mouse_moved && hover_state_changed {
                         needs_pet_redraw = true;
                     }
 
@@ -1685,13 +1750,15 @@ fn main() {
 
                                         ui_primitives::blit_32bit_premultiplied(
                                             comp_u32,
-                                            win_w as u32,
-                                            win_h as u32,
-                                            b_u32,
+                                            win_w,
                                             bx,
                                             by,
                                             bw,
                                             bh,
+                                            b_u32,
+                                            1.0,
+                                            win_w,
+                                            win_h,
                                         );
                                         
                                         // Move the stack bottom up for the next older bubble
@@ -1743,20 +1810,35 @@ fn main() {
 
                             menu_manager.render(composite_data.as_mut_slice(), win_w as i32, win_h as i32, menu_x_f as i32, menu_y_f as i32, mx_buffer, my_buffer);
                             
-                            // 3.5 Music Panel (only when menu is visible/hovering)
-                            if music_player.panel_enabled {
-                                let (cur_pw, _cur_ph) = pet.get_scaled_size();
-                                let panel_w = (music_panel::BASE_PANEL_WIDTH as f32 * pet.scale) as f64;
-                                // Visual adjustment: -2px offset to compensate for asymmetrical pet gif assets
-                                let panel_x = (pet_off_x + cur_pw/2.0 - panel_w/2.0 - 2.0 * pet.scale as f64) as i32;
-                                let mut panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
-                                let comp_u32 = unsafe {
-                                    std::slice::from_raw_parts_mut(
-                                        composite_data.as_mut_ptr() as *mut u32,
-                                        composite_data.len() / 4,
-                                    )
-                                };
-                                music_panel::render_music_panel(&music_player, comp_u32, win_w, win_h, panel_x, panel_y, pet.scale, menu_manager.opacity, mx_buffer, my_buffer);
+                            // 3.5 Music Panel (Asynchronous Blit)
+                            if let Some(ref res) = last_music_render {
+                                if music_player.panel_enabled && menu_manager.opacity > 0.0 {
+                                    let (cur_pw, _cur_ph) = pet.get_scaled_size();
+                                    let panel_w = res.width as f64;
+                                    // Visual adjustment: -2px offset to compensate for asymmetrical pet gif assets
+                                    let panel_x = (pet_off_x + cur_pw/2.0 - panel_w/2.0 - 2.0 * pet.scale as f64) as i32;
+                                    let panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
+                                    
+                                    let comp_u32 = unsafe {
+                                        std::slice::from_raw_parts_mut(
+                                            composite_data.as_mut_ptr() as *mut u32,
+                                            composite_data.len() / 4,
+                                        )
+                                    };
+                                    
+                                    crate::ui_primitives::blit_32bit_premultiplied(
+                                        comp_u32,
+                                        win_w,
+                                        panel_x,
+                                        panel_y,
+                                        res.width,
+                                        res.height,
+                                        &res.buffer,
+                                        menu_manager.opacity,
+                                        win_w,
+                                        win_h,
+                                    );
+                                }
                             }
                         }
 
