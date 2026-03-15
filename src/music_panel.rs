@@ -177,7 +177,7 @@ pub fn render_music_panel(
         title_max_w,
         (25.0 * scale) as u32,
         0.0,
-        scroll_x,
+        -scroll_x,
         (2000.0 * scale) as u32,
     );
 
@@ -365,13 +365,15 @@ pub fn render_music_panel(
     }
 
     // 5.2 Background line (Track)
-    ui_primitives::draw_rect(
+    let bar_radius = bar_h / 2;
+    ui_primitives::draw_rounded_rect(
         buffer,
         win_w,
         prog_x,
         prog_y + bar_y_offset,
         prog_w,
         bar_h,
+        bar_radius,
         ui_primitives::apply_opacity(if prog_hovered { 0x4A4A4A } else { 0x333333 }, opacity), // Slightly lighter track on hover
         win_w,
         win_h,
@@ -379,13 +381,14 @@ pub fn render_music_panel(
 
     // 5.3 Active line (Fill)
     if active_w > 0 {
-        ui_primitives::draw_rect(
+        ui_primitives::draw_rounded_rect(
             buffer,
             win_w,
             prog_x,
             prog_y + bar_y_offset,
             active_w,
             bar_h,
+            bar_radius,
             ui_primitives::apply_opacity(0xFB7299, opacity),
             win_w,
             win_h,
@@ -524,7 +527,7 @@ pub fn render_music_panel(
                 item_max_w,
                 item_h as u32,
                 0.0,
-                item_scroll_x,
+                -item_scroll_x,
                 (2000.0 * scale) as u32,
             );
         }

@@ -2,7 +2,7 @@ use crate::render::{get_d2d_factory, get_dwrite_factory};
 use rayon::prelude::*;
 use rusttype::Font;
 use std::collections::HashMap;
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use windows::Win32::Foundation::{HWND, RECT};
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::Common::{
@@ -167,12 +167,9 @@ pub struct LayoutKey {
     pub is_nowrap: bool,
 }
 
-#[derive(Hash, PartialEq, Eq, Clone, Copy)]
-pub struct RasterKey {
-    pub layout_key: LayoutKey,
-    pub color: u32,
-    pub scroll_x_bits: u32,
-    pub scroll_y_bits: u32,
+#[derive(Hash, Eq, PartialEq, Clone)]
+struct RasterKey {
+    layout_key: LayoutKey,
 }
 
 #[derive(Hash, PartialEq, Eq, Clone)]
@@ -208,7 +205,16 @@ impl<K: std::hash::Hash + Eq + Clone, V> CacheState<K, V> {
 
 static LAYOUT_CACHE: OnceLock<RwLock<CacheState<LayoutKey, IDWriteTextLayout>>> = OnceLock::new();
 static FORMAT_CACHE: OnceLock<RwLock<HashMap<FormatKey, IDWriteTextFormat>>> = OnceLock::new();
-static RASTER_CACHE: OnceLock<RwLock<CacheState<RasterKey, RasterEntry>>> = OnceLock::new();
+static RASTER_CACHE: OnceLock<RwLock<CacheState<RasterKey, Arc<RasterEntry>>>> = OnceLock::new();
+
+#[cfg(target_os = "windows")]
+thread_local! {
+    static LAST_RASTER_RESULT: std::cell::RefCell<Option<(RasterKey, Arc<RasterEntry>)>> = std::cell::RefCell::new(None);
+}
+
+pub fn get_raster_cache() -> &'static RwLock<CacheState<RasterKey, Arc<RasterEntry>>> {
+    RASTER_CACHE.get_or_init(|| RwLock::new(CacheState::new()))
+}
 
 #[derive(Hash, PartialEq, Eq, Clone)]
 struct PrimitiveKey {
@@ -224,10 +230,6 @@ fn get_layout_cache() -> &'static RwLock<CacheState<LayoutKey, IDWriteTextLayout
 
 fn get_format_cache() -> &'static RwLock<HashMap<FormatKey, IDWriteTextFormat>> {
     FORMAT_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
-}
-
-pub fn get_raster_cache() -> &'static RwLock<CacheState<RasterKey, RasterEntry>> {
-    RASTER_CACHE.get_or_init(|| RwLock::new(CacheState::new()))
 }
 
 pub fn harvest_memory() {
@@ -300,20 +302,13 @@ pub fn get_or_create_layout_ex(
     };
 
     {
-        let mut cache = get_layout_cache().write().unwrap();
-        if cache.map.contains_key(&key) {
-            // LRU Promotion
-            if let Some(pos) = cache.order.iter().position(|k| k == &key) {
-                cache.order.remove(pos);
+        let cache_lock = get_layout_cache();
+        // 1. Read lock first for performance
+        {
+            let cache = cache_lock.read().unwrap();
+            if let Some(layout) = cache.map.get(&key) {
+                return layout.clone();
             }
-            cache.order.push(key.clone());
-            return cache.map.get(&key).unwrap().clone();
-        }
-
-        // Evict if over limit (100 layouts is plenty)
-        while cache.order.len() >= 100 {
-            let oldest = cache.order.remove(0);
-            cache.map.remove(&oldest);
         }
     }
 
@@ -352,15 +347,13 @@ pub fn get_or_create_layout_ex(
                 } else {
                     let _ = format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
                 }
-                // ALWAYS use NEAR for paragraph alignment to avoid vertical displacement
-                // in our large hardcoded layout height (10,000px).
                 let _ = format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
                 format
             })
             .clone()
     };
 
-    unsafe {
+    let layout = unsafe {
         let wide_text: Vec<u16> = text.encode_utf16().collect();
         let layout = dwrite_factory
             .CreateTextLayout(&wide_text, &text_format, max_w as f32, 1000000.0)
@@ -370,13 +363,18 @@ pub fn get_or_create_layout_ex(
             use windows::Win32::Graphics::DirectWrite::DWRITE_WORD_WRAPPING_NO_WRAP;
             let _ = layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         }
+        layout
+    };
 
+    {
         let mut cache = get_layout_cache().write().unwrap();
         // Eviction logic
-        if cache.map.len() >= 100 {
+        while cache.map.len() >= 100 {
             if !cache.order.is_empty() {
                 let oldest = cache.order.remove(0);
                 cache.map.remove(&oldest);
+            } else {
+                break;
             }
         }
         cache.order.push(key.clone());
@@ -477,12 +475,16 @@ pub fn draw_rect_alpha(
                         let br = ((bg >> 16) & 0xFF) as f32;
                         let bg_g = ((bg >> 8) & 0xFF) as f32;
                         let bb = (bg & 0xFF) as f32;
+                        let color_sa = (color >> 24) & 0xFF;
+                        let rect_alpha = if color_sa == 0 { alpha } else { (color_sa as f32 / 255.0) * alpha };
+                        let inv_alpha = 1.0 - rect_alpha;
 
-                        let r = br * (1.0 - alpha) + fr * alpha;
-                        let g = bg_g * (1.0 - alpha) + fg * alpha;
-                        let b = bb * (1.0 - alpha) + fb * alpha;
+                        let r = br * inv_alpha + fr * rect_alpha;
+                        let g = bg_g * inv_alpha + fg * rect_alpha;
+                        let b = bb * inv_alpha + fb * rect_alpha;
+                        let out_a = (rect_alpha * 255.0 + (bg >> 24) as f32 * inv_alpha) as u32;
 
-                        row[cx as usize] = ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+                        row[cx as usize] = (out_a << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
                     }
                 });
         } else {
@@ -493,11 +495,16 @@ pub fn draw_rect_alpha(
                     let bg_g = ((bg >> 8) & 0xFF) as f32;
                     let bb = (bg & 0xFF) as f32;
 
-                    let r = br * (1.0 - alpha) + fr * alpha;
-                    let g = bg_g * (1.0 - alpha) + fg * alpha;
-                    let b = bb * (1.0 - alpha) + fb * alpha;
+                    let color_sa = (color >> 24) & 0xFF;
+                    let rect_alpha = if color_sa == 0 { alpha } else { (color_sa as f32 / 255.0) * alpha };
+                    let inv_alpha = 1.0 - rect_alpha;
 
-                    row[cx as usize] = ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+                    let r = br * inv_alpha + fr * rect_alpha;
+                    let g = bg_g * inv_alpha + fg * rect_alpha;
+                    let b = bb * inv_alpha + fb * rect_alpha;
+                    let out_a = (rect_alpha * 255.0 + (bg >> 24) as f32 * inv_alpha) as u32;
+
+                    row[cx as usize] = (out_a << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
                 }
             }
         }
@@ -519,6 +526,9 @@ pub fn draw_rounded_rect(
     if w == 0 || h == 0 {
         return;
     }
+
+    // Limit radius to half of width/height to prevent overlapping corners and overflow
+    let r = r.min(w / 2).min(h / 2);
 
     let key = PrimitiveKey { w, h, r };
     let cache_hit = {
@@ -606,7 +616,7 @@ fn blit_alpha(
             &mut buffer[dest_row_base + start_x_u..dest_row_base + start_x_u + copy_len];
 
         for i in 0..copy_len {
-            let a = src_slice[i] as u32;
+            let edge_alpha = src_slice[i] as u32;
             let d = dest_slice[i];
 
             // Branchless SIMD-friendly blending
@@ -616,10 +626,14 @@ fn blit_alpha(
             let rb_src = color & 0x00FF00FF;
             let g_src = color & 0x0000FF00;
 
-            let inv_a = 255 - a;
-            let rb_res = (rb_src * a + rb_dest * inv_a) >> 8;
-            let g_res = (g_src * a + g_dest * inv_a) >> 8;
-            let a_res = ((color >> 24) * a + (d >> 24) * inv_a) >> 8;
+            let color_a = (color >> 24) & 0xFF;
+            let sa = if color_a == 0 && color != 0 { 255 } else { color_a };
+            let effective_a = (sa * edge_alpha) >> 8;
+            let inv_a = 255 - effective_a;
+            
+            let rb_res = (rb_src * effective_a + rb_dest * inv_a) >> 8;
+            let g_res = (g_src * effective_a + g_dest * inv_a) >> 8;
+            let a_res = effective_a + (((d >> 24) & 0xFF) * inv_a >> 8);
 
             dest_slice[i] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00) | (a_res << 24);
         }
@@ -674,7 +688,7 @@ pub fn draw_rounded_rect_alpha_internal(
             }
             // Right corner
             for cx in right_r_start..end_x {
-                let dx = cx as i32 - (end_x - r - 1) as i32;
+                let dx = cx as i32 - (end_x as i32 - r_i32 - 1);
                 if dx * dx + dy * dy <= r_sq {
                     row[cx as usize] = 255;
                 }
@@ -711,97 +725,6 @@ pub fn draw_text(
 }
 
 #[cfg(target_os = "windows")]
-pub fn draw_text_dw_h(
-    buffer: &mut [u32],
-    surface_w: u32,
-    text: &str,
-    text_hash: u64,
-    x: i32,
-    y: i32,
-    font_size: f32,
-    color: u32,
-    max_w: u32,
-    max_h: u32,
-    scroll_offset: f32,
-    scroll_x: f32,
-    layout_w: u32,
-) {
-    if text.is_empty() {
-        return;
-    }
-
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let font_family_name = "Microsoft YaHei";
-    let mut family_hasher = DefaultHasher::new();
-    font_family_name.hash(&mut family_hasher);
-    let font_family_hash = family_hasher.finish();
-
-    let layout_key = LayoutKey {
-        text_hash,
-        font_size_bits: font_size.to_bits(),
-        max_w: layout_w,
-        font_family_hash,
-        is_bold: false,
-        is_centered: false,
-        is_nowrap: false, // Default to wrap for standard text
-    };
-    let key = RasterKey {
-        layout_key: layout_key.clone(),
-        color,
-        scroll_x_bits: scroll_x.to_bits(),
-        scroll_y_bits: scroll_offset.to_bits(),
-    };
-
-    // Fast path: Raster Cache (Read-only first)
-    let found_and_blit = {
-        let cache = get_raster_cache().read().unwrap();
-        if let Some(entry) = cache.map.get(&key) {
-            blit_alpha_pixels(
-                buffer,
-                surface_w,
-                x,
-                y,
-                entry.tw,
-                entry.th,
-                &entry.alpha,
-                color,
-                max_w,
-                max_h,
-                0,
-                0,
-            );
-            true
-        } else {
-            false
-        }
-    };
-
-    if found_and_blit {
-        // Handle LRU promotion periodically or in a deferred way?
-        // For now, let's at least avoid the write lock if we just need to blit.
-        // To keep LRU perfectly accurate, we DO need a write, but maybe we can skip it 90% of the time.
-        return;
-    }
-
-    draw_text_dw_ex_internal(
-        buffer,
-        surface_w,
-        text,
-        layout_key,
-        x,
-        y,
-        font_size,
-        color,
-        max_w,
-        max_h,
-        scroll_offset,
-        scroll_x,
-        layout_w, // Pass layout_w
-    );
-}
-
 pub fn draw_text_dw_ex_nowrap(
     buffer: &mut [u32],
     surface_w: u32,
@@ -886,11 +809,26 @@ pub fn draw_text_dw_ex(
     text.hash(&mut text_hasher);
     let text_hash = text_hasher.finish();
 
-    draw_text_dw_h(
+    let font_family_name = "Microsoft YaHei";
+    let mut family_hasher = DefaultHasher::new();
+    font_family_name.hash(&mut family_hasher);
+    let font_family_hash = family_hasher.finish();
+
+    let layout_key = LayoutKey {
+        text_hash,
+        font_size_bits: font_size.to_bits(),
+        max_w: layout_w,
+        font_family_hash,
+        is_bold: false,
+        is_centered: false,
+        is_nowrap: false,
+    };
+
+    draw_text_dw_ex_internal(
         buffer,
         surface_w,
         text,
-        text_hash,
+        layout_key,
         x,
         y,
         font_size,
@@ -939,11 +877,66 @@ fn draw_text_dw_ex_internal(
     color: u32,
     max_w: u32,
     max_h: u32,
-    scroll_offset: f32,
+    scroll_offset: f32, // Re-added
     scroll_x: f32,
     layout_w: u32,
 ) {
+    // --- 0. PREPARE KEY ---
+    let raster_key = RasterKey { layout_key };
+
+    // --- 1. L1 THREAD-LOCAL CACHE (ZERO LOCKS) ---
+    if let Some((k, entry)) = LAST_RASTER_RESULT.with(|r| r.borrow().clone()) {
+        if k == raster_key {
+            blit_alpha_pixels(
+                buffer,
+                surface_w,
+                x,
+                y,
+                entry.tw,
+                entry.th,
+                &entry.alpha,
+                color,
+                max_w,
+                max_h,
+                scroll_offset as i32,
+                scroll_x as i32,
+            );
+            return;
+        }
+    }
+
+    // --- 1. QUICK CACHE CHECK (RASTER_CACHE Read Lock) ---
+    {
+        if let Some(cache_lock) = RASTER_CACHE.get() {
+            let cache = cache_lock.read().unwrap();
+            if let Some(entry) = cache.map.get(&raster_key) {
+                let entry_cloned = entry.clone();
+                blit_alpha_pixels(
+                    buffer,
+                    surface_w,
+                    x,
+                    y,
+                    entry_cloned.tw,
+                    entry_cloned.th,
+                    &entry_cloned.alpha,
+                    color,
+                    max_w,
+                    max_h,
+                    scroll_offset as i32,
+                    scroll_x as i32,
+                );
+                
+                // Update L1
+                LAST_RASTER_RESULT.with(|r| {
+                    *r.borrow_mut() = Some((raster_key, entry_cloned));
+                });
+                return;
+            }
+        }
+    }
+
     unsafe {
+        // --- 2. CACHE MISS: Only now we do the heavy work ---
         let layout = get_or_create_layout_ex(
             text,
             font_size,
@@ -959,7 +952,8 @@ fn draw_text_dw_ex_internal(
         let is_huge = metrics.height > 2500.0;
 
         // Target height: if huge, only render the visible window to save massive memory
-        let tw = (metrics.width.ceil() as i32 + 10).min(max_w as i32 + 10);
+        // For marquee/scrolling, tw must be the full width of the text layout
+        let tw = (metrics.width.ceil() as i32 + 10).min(layout_w as i32 + 10);
         let th = if is_huge {
             // Render viewport-sized chunk (e.g. 1024px)
             1024.min(max_h as i32 + 2)
@@ -990,8 +984,8 @@ fn draw_text_dw_ex_internal(
 
             rt.DrawTextLayout(
                 windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F {
-                    x: scroll_x,
-                    y: draw_offset_y,
+                    x: 0.0,
+                    y: 0.0,
                 },
                 &layout,
                 &brush,
@@ -1025,22 +1019,16 @@ fn draw_text_dw_ex_internal(
                 color,
                 max_w,
                 max_h,
-                0,
-                0,
+                scroll_offset as i32,
+                scroll_x as i32,
             );
 
             // ONLY skip cache if it's truly giant to avoid re-rasterizing medium text
             // Also bypass if it's a "huge" scrolled item to avoid stale rendering bug
             if metrics.height < 3000.0 && !is_huge {
-                let raster_key = RasterKey {
-                    layout_key,
-                    color,
-                    scroll_x_bits: scroll_x.to_bits(),
-                    scroll_y_bits: scroll_offset.to_bits(),
-                };
                 let mut cache = get_raster_cache().write().unwrap();
-                // Limit to ~1M pixels (~4MB)
-                while cache.total_pixels + pixel_count > 1_000_000 && !cache.order.is_empty() {
+                // Limit to ~2M pixels (~8MB)
+                while cache.total_pixels + pixel_count > 2_000_000 && !cache.order.is_empty() {
                     let oldest = cache.order.remove(0);
                     if let Some(old_entry) = cache.map.remove(&oldest) {
                         cache.total_pixels -= old_entry.pixel_count;
@@ -1048,15 +1036,19 @@ fn draw_text_dw_ex_internal(
                 }
                 cache.order.push(raster_key.clone());
                 cache.total_pixels += pixel_count;
-                cache.map.insert(
-                    raster_key,
-                    RasterEntry {
-                        alpha: captured_alpha,
-                        tw,
-                        th,
-                        pixel_count,
-                    },
-                );
+                let entry_arc = Arc::new(RasterEntry {
+                    alpha: captured_alpha,
+                    tw,
+                    th,
+                    pixel_count,
+                });
+                
+                cache.map.insert(raster_key.clone(), entry_arc.clone());
+                
+                // Update L1
+                LAST_RASTER_RESULT.with(|r| {
+                    *r.borrow_mut() = Some((raster_key, entry_arc));
+                });
             }
         });
     }
@@ -1073,50 +1065,78 @@ pub fn blit_alpha_pixels(
     color: u32,
     max_w: u32,
     max_h: u32,
-    src_y_off: i32,
+    src_y_off: i32, // These are the SCROLL offsets
     src_x_off: i32,
 ) {
     let surface_h = (buffer.len() as u32) / surface_w.max(1);
 
-    // Physical clipping in destination space
+    // Apply scroll offset and clip to visible region (max_w / max_h)
+    // src_x_off/src_y_off are likely negative as they represent scrolling the layout *left/up*
+    // but the logic here handles them as offsets into the src_alpha mask.
+    
     let start_y = dest_y.max(0);
-    // max_h is relative to dest_y
-    let end_y = (dest_y + (th as i32 - src_y_off))
-        .min(dest_y + max_h as i32)
-        .min(surface_h as i32);
+    let end_y = (dest_y + max_h as i32).min(surface_h as i32);
+    
     if start_y >= end_y {
         return;
     }
 
-    let start_x = dest_x.max(0);
-    // max_w is relative to dest_x
-    let end_x = (dest_x + (tw as i32 - src_x_off))
-        .min(dest_x + max_w as i32)
-        .min(surface_w as i32);
-    if start_x >= end_x {
+    let surface_w = surface_w as usize;
+    let start_x_dest = dest_x.max(0);
+    let end_x_dest = (dest_x + max_w as i32).min(surface_w as i32);
+    
+    if start_x_dest >= end_x_dest {
         return;
     }
 
-    let sr = (color >> 16) & 0xFF;
-    let sg = (color >> 8) & 0xFF;
-    let sb = color & 0xFF;
-    let sa = (color >> 24) & 0xFF;
-
+    let tw_u = tw as usize;
+    
     let surface_w_usize = surface_w as usize;
-    let tw_usize = tw as usize;
+    let tw_u = tw as usize;
+    let start_y_idx = start_y as usize;
+    let end_y_idx = end_y as usize;
 
-    for y in start_y..end_y {
-        let dy = y - dest_y;
-        let src_row = dy + src_y_off;
-        let src_row_off = src_row as usize * tw_usize;
-        let row_idx = y as usize * surface_w_usize;
-        let dx = start_x - dest_x;
-        let src_col = dx + src_x_off;
-        let src_slice = &src_alpha[src_row_off + src_col as usize..];
-        let dest_slice = &mut buffer[row_idx + start_x as usize..row_idx + end_x as usize];
+    // Use par_chunks_mut to safely and efficiently parallelize mutation of different rows
+    buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize]
+        .par_chunks_mut(surface_w_usize)
+        .enumerate()
+        .for_each(|(i, row)| {
+            let y = (start_y_idx + i) as i32;
+            let dy = y - dest_y;
+            let src_y = dy + src_y_off;
+            if src_y >= 0 && src_y < th {
+                let src_row_base = src_y as usize * tw_u;
+                for x in start_x_dest..end_x_dest {
+                    let dx = x - dest_x;
+                    let src_x = dx + src_x_off;
+                    if src_x >= 0 && src_x < tw {
+                        let s_idx = src_row_base + src_x as usize;
+                        let edge_alpha = src_alpha[s_idx] as u32;
+                        if edge_alpha == 0 {
+                            continue;
+                        }
 
-        blend_row_u8(dest_slice, src_slice, sr, sg, sb, sa);
-    }
+                        let d = row[x as usize];
+                        let rb_dest = d & 0x00FF00FF;
+                        let g_dest = d & 0x0000FF00;
+                        let rb_src = color & 0x00FF00FF;
+                        let g_src = color & 0x0000FF00;
+
+                        let color_a = (color >> 24) & 0xFF;
+                        let sa = if color_a == 0 && color != 0 { 255 } else { color_a };
+                        let effective_a = (sa * edge_alpha) >> 8;
+                        let inv_a = 255 - effective_a;
+
+                        let rb_res = (rb_src * effective_a + rb_dest * inv_a) >> 8;
+                        let g_res = (g_src * effective_a + g_dest * inv_a) >> 8;
+                        let a_res = effective_a + (((d >> 24) & 0xFF) * inv_a >> 8);
+
+                        row[x as usize] =
+                            (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00) | (a_res << 24);
+                    }
+                }
+            }
+        });
 }
 
 #[inline(always)]
@@ -1560,9 +1580,10 @@ pub fn draw_triangle(
                 let inv_a = 255 - alpha;
                 let rb_dest = d & 0x00FF00FF;
                 let g_dest = d & 0x0000FF00;
-                let rb_res = rb_src + ((rb_dest * inv_a) >> 8);
-                let g_res = g_src + ((g_dest * inv_a) >> 8);
-                buffer[idx] = (alpha << 24) | (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
+                let rb_res = (rb_src * alpha + rb_dest * inv_a) >> 8;
+                let g_res = (g_src * alpha + g_dest * inv_a) >> 8;
+                let a_res = alpha + (((d >> 24) & 0xFF) * inv_a >> 8);
+                buffer[idx] = (a_res << 24) | (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
             }
         }
     }

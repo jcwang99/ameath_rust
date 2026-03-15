@@ -278,13 +278,72 @@ impl MemoryManager {
             })?;
 
             for row in rows {
-                let msg = row?;
+                let msg: Message = row?;
                 if msg.role == "user" {
                     let text = msg.content_as_str();
                     recent_user_text.push_str(text);
                     recent_user_text.push(' ');
+                    history.push(msg);
+                } else if msg.role == "assistant" {
+                    let content = msg.content_as_str().to_string();
+                    let delimiter = "\n\n--- FC 调用过程记录 ---\n";
+                    if let Some(idx) = content.find(delimiter) {
+                        let original_response = &content[..idx];
+                        let trace_content = &content[idx + delimiter.len()..];
+                        
+                        // Push the clean assistant message
+                        history.push(Message {
+                            role: "assistant".to_string(),
+                            content: Some(Content::Simple(original_response.to_string())),
+                            tool_calls: None,
+                            tool_call_id: None,
+                        });
+
+                        // Create the system context message for the parsed traces
+                        let mut system_trace_text = format!("[历史工具调用背景：该轮对话中模型调用的工具及其结果如下]\n{}", trace_content);
+                        
+                        // Special handling for reminders
+                        if trace_content.contains("Tool: schedule_reminder") {
+                            system_trace_text.push_str("\n*注：此条目仅记录定时任务已成功提交至调度器，不代表定时任务此时已触发生效，请勿在回复中模仿工具调用格式。*");
+                        } else {
+                            system_trace_text.push_str("\n*注：上述信息为历史系统执行记录，作为当前上下文参考，请勿在回复中模仿工具调用格式。*");
+                        }
+
+                        // Push the system trace message *before* the assistant message in the vector
+                        // Since `history` gets reversed later, we want the system trace to appear 
+                        // chronologically *after* the assistant message if we push them here, 
+                        // it means pushing assistant then system. After reverse, system will be before assistant.
+                        // Wait, chronological order in DB is oldest to newest. Oh, the limit query order is DESC.
+                        // So the first row is the *newest*.
+                        // When reading DESC, we read: Msg N, Msg N-1, Msg N-2...
+                        // After `history.reverse()`, it becomes: Msg N-2, Msg N-1, Msg N
+                        // We want the AI to see: Assistant Reply -> System Trace
+                        // So in the `history` vector (which is DESC), we should push: System Trace -> Assistant Reply.
+                        // Let's verify: 
+                        // history = [System Trace, Assistant Reply] -> reverse -> [Assistant Reply, System Trace]. Correct.
+                        
+                        history.pop(); // Remove the assistant message we just pushed
+                        
+                        history.push(Message {
+                            role: "system".to_string(),
+                            content: Some(Content::Simple(system_trace_text)),
+                            tool_calls: None,
+                            tool_call_id: None,
+                        });
+
+                        history.push(Message {
+                            role: "assistant".to_string(),
+                            content: Some(Content::Simple(original_response.to_string())),
+                            tool_calls: None,
+                            tool_call_id: None,
+                        });
+
+                    } else {
+                        history.push(msg);
+                    }
+                } else {
+                    history.push(msg);
                 }
-                history.push(msg);
             }
         } // `stmt` for L1 dialogue is dropped here
         history.reverse();

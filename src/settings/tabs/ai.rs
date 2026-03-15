@@ -944,11 +944,10 @@ pub fn draw(
         let text_start_x = s(fx as u32) as i32 + sc(15.0) as i32;
         let text_start_y = input_y_raw + sc(12.0) as i32;
 
-        draw_text_dw_h(
+        draw_text_dw_ex(
             buffer,
             w,
             &ai_config.system_prompt,
-            state.system_prompt_hash,
             text_start_x,
             text_start_y,
             sc(14.0),
