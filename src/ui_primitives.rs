@@ -398,9 +398,11 @@ pub fn draw_rect(
     max_w: u32,
     max_h: u32,
 ) {
-    let a = (color >> 24) & 0xFF;
+    let color_a = (color >> 24) & 0xFF;
+    let a = if color_a == 0 && (color & 0xFFFFFF) != 0 { 255 } else { color_a };
+
     let fill_color = if a == 255 {
-        color
+        (color & 0xFFFFFF) | (0xFF << 24)
     } else if a == 0 {
         0
     } else {
@@ -585,6 +587,160 @@ pub fn draw_rounded_rect(
     }
 }
 
+pub fn draw_rounded_rect_with_border(
+    buffer: &mut [u32],
+    surface_w: u32,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    r: u32,
+    fill_color: u32,
+    border_color: u32,
+    border_thickness: u32,
+    max_w: u32,
+    max_h: u32,
+) {
+    if w == 0 || h == 0 {
+        return;
+    }
+    // Draw background
+    draw_rounded_rect(buffer, surface_w, x, y, w, h, r, fill_color, max_w, max_h);
+
+    // Draw border
+    if border_thickness > 0 {
+        let r = r.min(w / 2).min(h / 2);
+        let mut alpha = vec![0u8; (w * h) as usize];
+        draw_rounded_rect_border_alpha_internal(&mut alpha, w, w, h, r, border_thickness);
+        blit_alpha(buffer, surface_w, x, y, h, &alpha, border_color, max_w, max_h);
+    }
+}
+
+pub fn draw_rounded_rect_border_alpha_internal(
+    alpha: &mut [u8],
+    surface_w: u32,
+    w: u32,
+    h: u32,
+    r: u32,
+    thickness: u32,
+) {
+    let t = thickness as f32;
+    let r_f = r as f32;
+    let r_sq = r_f * r_f;
+    let r_inner = (r_f - t).max(0.0);
+    let r_inner_sq = r_inner * r_inner;
+
+    for cy in 0..h {
+        let dy = if cy < r {
+            (r - cy) as i32
+        } else if cy > h - r - 1 {
+            (cy - (h - r - 1)) as i32
+        } else {
+            0
+        };
+
+        let row_idx = cy as usize * surface_w as usize;
+        let row = &mut alpha[row_idx..row_idx + w as usize];
+
+        if dy == 0 {
+            // Straight side borders
+            let is_edge_y = cy < thickness || cy >= h - thickness;
+            if is_edge_y {
+                row.fill(255);
+            } else {
+                row[0..thickness as usize].fill(255);
+                row[w as usize - thickness as usize..w as usize].fill(255);
+            }
+        } else {
+            let dy_f = dy as f32;
+            let dy_sq = dy_f * dy_f;
+            
+            for cx in 0..w {
+                let is_left = cx < r;
+                let is_right = cx >= w - r;
+                
+                if is_left || is_right {
+                    let dx = if is_left { (r - cx) as i32 } else { (cx - (w - r - 1)) as i32 };
+                    let dx_f = dx as f32;
+                    let dist_sq = dx_f * dx_f + dy_sq;
+                    let dist = dist_sq.sqrt();
+                    
+                    // AA for outer edge
+                    let outer_coverage = (r_f + 0.5 - dist).clamp(0.0, 1.0);
+                    // AA for inner edge
+                    let inner_coverage = (dist - (r_inner - 0.5)).clamp(0.0, 1.0);
+                    
+                    let coverage = outer_coverage.min(inner_coverage);
+                    row[cx as usize] = (coverage * 255.0) as u8;
+                } else {
+                    // Middle horizontal borders
+                    if cy < thickness || cy >= h - thickness {
+                        row[cx as usize] = 255;
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn draw_circle(
+    buffer: &mut [u32],
+    surface_w: u32,
+    cx: i32,
+    cy: i32,
+    radius: u32,
+    color: u32,
+    max_w: u32,
+    max_h: u32,
+) {
+    let r_f = radius as f32;
+    let diameter = radius * 2;
+    let start_x = (cx - radius as i32).max(0);
+    let start_y = (cy - radius as i32).max(0);
+    let end_x = (cx + radius as i32).min(max_w as i32);
+    let end_y = (cy + radius as i32).min(max_h as i32);
+
+    if start_x >= end_x || start_y >= end_y {
+        return;
+    }
+
+    let alpha_base = (color >> 24) & 0xFF;
+    let a_fixed = if alpha_base == 0 && (color & 0xFFFFFF) != 0 { 255 } else { alpha_base };
+    let rb_src = color & 0x00FF00FF;
+    let g_src = color & 0x0000FF00;
+
+    for y in start_y..end_y {
+        let dy = (y - cy) as f32;
+        let dy_sq = dy * dy;
+        let row_idx = y as usize * surface_w as usize;
+        
+        for x in start_x..end_x {
+            let dx = (x - cx) as f32;
+            let dist = (dx * dx + dy_sq).sqrt();
+            let coverage = (r_f + 0.5 - dist).clamp(0.0, 1.0);
+            let alpha = (a_fixed as f32 * coverage) as u32;
+            
+            if alpha == 0 {
+                continue;
+            }
+
+            let idx = row_idx + x as usize;
+            if alpha == 255 {
+                buffer[idx] = (0xFF << 24) | (color & 0xFFFFFF);
+            } else {
+                let bg = buffer[idx];
+                let inv_a = 255 - alpha;
+                let rb_dest = bg & 0x00FF00FF;
+                let g_dest = bg & 0x0000FF00;
+                let rb_res = (rb_src * alpha + rb_dest * inv_a) >> 8;
+                let g_res = (g_src * alpha + g_dest * inv_a) >> 8;
+                let a_res = alpha + (((bg >> 24) & 0xFF) * inv_a >> 8);
+                buffer[idx] = (a_res << 24) | (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
+            }
+        }
+    }
+}
+
 fn blit_alpha(
     buffer: &mut [u32],
     surface_w: u32,
@@ -689,9 +845,9 @@ pub fn draw_rounded_rect_alpha_internal(
             // Left corner
             for cx in start_x..left_r_end {
                 let dx = (start_x + r) as i32 - cx as i32;
-                if dx * dx + dy * dy <= r_sq {
-                    row[cx as usize] = 255;
-                }
+                let d = ((dx * dx + dy * dy) as f32).sqrt();
+                let coverage = (r as f32 + 0.5 - d).clamp(0.0, 1.0);
+                row[cx as usize] = (coverage * 255.0) as u8;
             }
             // Middle
             if left_r_end < right_r_start {
@@ -700,9 +856,9 @@ pub fn draw_rounded_rect_alpha_internal(
             // Right corner
             for cx in right_r_start..end_x {
                 let dx = cx as i32 - (end_x as i32 - r_i32 - 1);
-                if dx * dx + dy * dy <= r_sq {
-                    row[cx as usize] = 255;
-                }
+                let d = ((dx * dx + dy * dy) as f32).sqrt();
+                let coverage = (r as f32 + 0.5 - d).clamp(0.0, 1.0);
+                row[cx as usize] = (coverage * 255.0) as u8;
             }
         }
     }
@@ -1484,7 +1640,8 @@ pub fn draw_triangle(
         return;
     }
 
-    let alpha = (color >> 24) & 0xFF;
+    let color_a = (color >> 24) & 0xFF;
+    let alpha = if color_a == 0 && (color & 0xFFFFFF) != 0 { 255 } else { color_a };
     if alpha == 0 {
         return;
     }
@@ -1614,8 +1771,11 @@ pub fn blit_32bit_premultiplied(
 /// Converts a straight alpha buffer to premultiplied alpha in-place.
 pub fn premultiply_alpha_buffer(buffer: &mut [u32]) {
     for pixel in buffer.iter_mut() {
-        let a = (*pixel >> 24) & 0xFF;
+        let color_a = (*pixel >> 24) & 0xFF;
+        let a = if color_a == 0 && (*pixel & 0xFFFFFF) != 0 { 255 } else { color_a };
+        
         if a == 255 {
+            *pixel = (*pixel & 0xFFFFFF) | (0xFF << 24);
             continue;
         }
         if a == 0 {

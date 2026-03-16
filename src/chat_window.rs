@@ -9,6 +9,7 @@ use winit::{
     keyboard::{Key, NamedKey},
     window::{Window, WindowBuilder, WindowLevel},
 };
+use crate::ui_primitives::{draw_rounded_rect_with_border, draw_circle};
 use rusttype::PositionedGlyph;
 
 #[derive(Clone)]
@@ -878,49 +879,23 @@ impl ChatWindow {
         let text_color: u32 = 0xFFFFFFFF;
         let cursor_color: u32 = 0xFF00FF00;
 
-        // Optimized Background Fill with Rounded Corners
+        // Optimized Background Fill & Border with Anti-Aliasing
         buffer.fill(0); // Transparent outer
         
-        let r = 12i32;
-        let r_u = 12usize;
-        let r_sq = r * r;
-
-        // Optimized Full Fill with fast paths
-        for y in 0..buf_h {
-            let row_start = y * buf_w;
-            let is_near_top = y < r_u;
-            let is_near_bottom = y >= buf_h - r_u;
-
-            if !is_near_top && !is_near_bottom {
-                // Middle section: fast row fill (except borders)
-                buffer[row_start] = border_color;
-                buffer[row_start + 1..row_start + buf_w - 1].fill(bg_color);
-                buffer[row_start + buf_w - 1] = border_color;
-            } else {
-                // Top or bottom sections: still need corner checks
-                for x in 0..buf_w {
-                    let mut draw_bg = true;
-                    let is_near_left = x < r_u;
-                    let is_near_right = x >= buf_w - r_u;
-                    
-                    if (is_near_left || is_near_right) {
-                        let dx = if is_near_left { r - x as i32 } else { x as i32 - (buf_w as i32 - r - 1) };
-                        let dy = if is_near_top { r - y as i32 } else { y as i32 - (buf_h as i32 - r - 1) };
-                        if dx * dx + dy * dy > r_sq {
-                            draw_bg = false;
-                        }
-                    }
-
-                    if draw_bg {
-                        if x == 0 || x == buf_w - 1 || y == 0 || y == buf_h - 1 {
-                            buffer[row_start + x] = border_color;
-                        } else {
-                            buffer[row_start + x] = bg_color;
-                        }
-                    }
-                }
-            }
-        }
+        draw_rounded_rect_with_border(
+            &mut buffer,
+            buf_w as u32,
+            0,
+            0,
+            buf_w as u32,
+            buf_h as u32,
+            12,
+            bg_color,
+            border_color,
+            1,
+            buf_w as u32,
+            buf_h as u32,
+        );
 
         // Draw Thumbnails
         let mut thumb_x_cursor = 10;
@@ -955,24 +930,32 @@ impl ChatWindow {
             if thumb_x_cursor + 80 > buf_w { break; }
         }
 
-        // Draw Plus Button
+        // Draw Plus Button with AA Circle
         let btn_size = 32;
-        let btn_x = 10;
-        let btn_y = buf_h - 10 - btn_size;
+        let btn_x = 10 + 16; // Center X
+        let btn_y = buf_h as i32 - 10 - 16; // Center Y
         let plus_bg = if self.plus_button_hovered { 0xFF444444 } else { 0xFF3D3D3D };
-        let radius = 16;
-        let r_sq = radius * radius;
+        
+        draw_circle(
+            &mut buffer,
+            buf_w as u32,
+            btn_x,
+            btn_y,
+            16,
+            plus_bg,
+            buf_w as u32,
+            buf_h as u32,
+        );
 
-        for ty in 0..btn_size {
-            for tx in 0..btn_size {
-                let dx = tx as i32 - 16;
-                let dy = ty as i32 - 16;
-                if dx * dx + dy * dy <= r_sq {
-                    let px = (btn_x as i32 + tx as i32) as usize;
-                    let py = (btn_y as i32 + ty as i32) as usize;
+        // Draw the plus symbol (+)
+        for ty in 0..32 {
+            for tx in 0..32 {
+                let is_plus = (tx > 10 && tx < 22 && ty >= 15 && ty <= 16) || (ty > 10 && ty < 22 && tx >= 15 && tx <= 16);
+                if is_plus {
+                    let px = (10 + tx) as usize;
+                    let py = (buf_h - 10 - 32 + ty) as usize;
                     if px < buf_w && py < buf_h {
-                        let is_plus = (tx > 10 && tx < 22 && ty >= 15 && ty <= 16) || (ty > 10 && ty < 22 && tx >= 15 && tx <= 16);
-                        buffer[py * buf_w + px] = if is_plus { 0xFFBBBBBB } else { plus_bg };
+                        buffer[py * buf_w + px] = 0xFFBBBBBB;
                     }
                 }
             }
