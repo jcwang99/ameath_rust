@@ -111,7 +111,7 @@ pub fn draw(
             COLOR_TEXT_MAIN,
             sc(450.0) as u32,
             view_h as u32,
-            scroll * scale,
+            -scroll * scale,
             0.0,
             sc(450.0) as u32,
         );

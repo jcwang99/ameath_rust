@@ -734,15 +734,18 @@ fn main() {
                                         let panel_w = (music_panel::BASE_PANEL_WIDTH as f32 * pet.scale) as f64;
                                         let panel_x = (pet_off_x + cur_pw/2.0 - panel_w/2.0) as i32;
                                         let panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
-                                        let panel_h = music_panel::BASE_PANEL_HEIGHT as f32 * pet.scale;
+                                        
+                                        // 更加精准的判定：面板本身高度 + 播放列表高度 (200.0)
+                                        let panel_h = (music_panel::BASE_PANEL_HEIGHT as f32 * pet.scale) as f64;
+                                        let list_h = if music_player.list_visible { 200.0 * pet.scale as f64 } else { 0.0 };
+                                        let total_h = panel_h + list_h;
 
-                                        // Check if mouse is anywhere within the music panel (including list area below it)
                                         let is_in_panel_x = pos.x >= panel_x as f64 && pos.x < panel_x as f64 + panel_w;
-                                        let is_in_panel_y = pos.y >= panel_y as f64; 
+                                        let is_in_panel_y = pos.y >= panel_y as f64 && pos.y < panel_y as f64 + total_h; 
 
                                         if is_in_panel_x && is_in_panel_y {
                                             let dy = match delta {
-                                                winit::event::MouseScrollDelta::LineDelta(_, y) => y * 25.0, // Adjusted speed
+                                                winit::event::MouseScrollDelta::LineDelta(_, y) => y * 25.0,
                                                 winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32,
                                             };
                                             
