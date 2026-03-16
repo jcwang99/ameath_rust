@@ -626,9 +626,9 @@ pub fn draw_rounded_rect_border_alpha_internal(
 ) {
     let t = thickness as f32;
     let r_f = r as f32;
-    let r_sq = r_f * r_f;
+    let _r_sq = r_f * r_f;
     let r_inner = (r_f - t).max(0.0);
-    let r_inner_sq = r_inner * r_inner;
+    let _r_inner_sq = r_inner * r_inner;
 
     for cy in 0..h {
         let dy = if cy < r {
@@ -694,7 +694,7 @@ pub fn draw_circle(
     max_h: u32,
 ) {
     let r_f = radius as f32;
-    let diameter = radius * 2;
+    let _diameter = radius * 2;
     let start_x = (cx - radius as i32).max(0);
     let start_y = (cy - radius as i32).max(0);
     let end_x = (cx + radius as i32).min(max_w as i32);
@@ -822,7 +822,7 @@ pub fn draw_rounded_rect_alpha_internal(
     let end_y = y_off + h;
 
     let r_i32 = r as i32;
-    let r_sq = r_i32 * r_i32;
+    let _r_sq = r_i32 * r_i32;
 
     for cy in start_y..end_y {
         let dy = if (cy - y_off) < r {
@@ -1259,7 +1259,7 @@ pub fn blit_alpha_pixels(
         return;
     }
 
-    let tw_u = tw as usize;
+    let _tw_u = tw as usize;
     
     let surface_w_usize = surface_w as usize;
     let tw_u = tw as usize;

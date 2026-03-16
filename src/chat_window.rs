@@ -4,7 +4,7 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 use winit::{
     dpi::{LogicalPosition, PhysicalSize},
-    event::{ElementState, KeyEvent, WindowEvent, MouseButton},
+    event::{ElementState, KeyEvent, WindowEvent},
     event_loop::EventLoopWindowTarget,
     keyboard::{Key, NamedKey},
     window::{Window, WindowBuilder, WindowLevel},
@@ -931,7 +931,7 @@ impl ChatWindow {
         }
 
         // Draw Plus Button with AA Circle
-        let btn_size = 32;
+        let _btn_size = 32;
         let btn_x = 10 + 16; // Center X
         let btn_y = buf_h as i32 - 10 - 16; // Center Y
         let plus_bg = if self.plus_button_hovered { 0xFF444444 } else { 0xFF3D3D3D };

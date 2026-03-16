@@ -311,14 +311,14 @@ pub fn render_music_panel(
         ctrl_start_x + (2.0 * scale) as i32, ctrl_y + (5.0 * scale) as i32,
         prev_w / 2, prev_h,
         prev_color, false,
-        win_w, (buffer.len() as u32 / win_w),
+        win_w, buffer.len() as u32 / win_w ,
     );
     ui_primitives::draw_triangle(
         buffer, win_w,
         ctrl_start_x + (10.0 * scale) as i32, ctrl_y + (5.0 * scale) as i32,
         prev_w / 2, prev_h,
         prev_color, false,
-        win_w, (buffer.len() as u32 / win_w),
+        win_w, buffer.len() as u32 / win_w ,
     );
     
     // Play/Pause
@@ -333,13 +333,13 @@ pub fn render_music_panel(
             buffer, win_w,
             ctrl_start_x + btn_gap + (2.0 * scale) as i32, ctrl_y + (4.0 * scale) as i32,
             pp_w / 3, pp_h, 
-            0, pp_color, win_w, (buffer.len() as u32 / win_w)
+            0, pp_color, win_w, buffer.len() as u32 / win_w 
         );
         ui_primitives::draw_rounded_rect(
             buffer, win_w,
             ctrl_start_x + btn_gap + (10.0 * scale) as i32, ctrl_y + (4.0 * scale) as i32,
             pp_w / 3, pp_h, 
-            0, pp_color, win_w, (buffer.len() as u32 / win_w)
+            0, pp_color, win_w, buffer.len() as u32 / win_w 
         );
     } else {
         // draw one right-pointing triangle
@@ -348,7 +348,7 @@ pub fn render_music_panel(
             ctrl_start_x + btn_gap + (4.0 * scale) as i32, ctrl_y + (4.0 * scale) as i32,
             pp_w, pp_h,
             pp_color, true,
-            win_w, (buffer.len() as u32 / win_w),
+            win_w, buffer.len() as u32 / win_w ,
         );
     }
     
@@ -364,14 +364,14 @@ pub fn render_music_panel(
         ctrl_start_x + btn_gap * 2 + (5.0 * scale) as i32, ctrl_y + (5.0 * scale) as i32,
         next_w / 2, next_h,
         next_color, true,
-        win_w, (buffer.len() as u32 / win_w),
+        win_w, buffer.len() as u32 / win_w ,
     );
     ui_primitives::draw_triangle(
         buffer, win_w,
         ctrl_start_x + btn_gap * 2 + (13.0 * scale) as i32, ctrl_y + (5.0 * scale) as i32,
         next_w / 2, next_h,
         next_color, true,
-        win_w, (buffer.len() as u32 / win_w),
+        win_w, buffer.len() as u32 / win_w ,
     );
 
     // 5. Progress Bar
@@ -541,9 +541,9 @@ pub fn render_music_panel(
                 song_name
             };
             
-            let item_text = format!("{}. {}", i + 1, display_name);
+            let _item_text = format!("{}. {}", i + 1, display_name);
             
-            let item_max_w = (w as i32 - (20.0 * scale) as i32).max(10) as u32;
+            let _item_max_w = (w as i32 - (20.0 * scale) as i32).max(10) as u32;
             let item_h = (BASE_LIST_ITEM_HEIGHT as f32 * scale) as i32;
 
             // Highlight bar
@@ -645,7 +645,7 @@ pub fn render_music_panel(
 
 
 // --- ASYNC RENDERER IMPLEMENTATION ---
-use std::sync::mpsc::{channel, Sender, Receiver};
+use std::sync::mpsc::{channel, Sender};
 use std::sync::{Mutex, Arc};
 use std::thread;
 
@@ -661,7 +661,7 @@ impl MusicRenderer {
         let result_clone = result.clone();
 
         thread::spawn(move || {
-            let mut scratchpad = crate::ui_primitives::ScratchpadRenderer::new();
+            let _scratchpad = crate::ui_primitives::ScratchpadRenderer::new();
             let mut last_processed_time = std::time::Instant::now();
 
             loop {

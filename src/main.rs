@@ -45,7 +45,7 @@ use winit::{
     dpi::PhysicalPosition,
     event::{ElementState, Event, MouseButton, WindowEvent},
     event_loop::EventLoop,
-    window::{Window, WindowBuilder, WindowLevel},
+    window::{WindowBuilder, WindowLevel},
 };
 
 #[cfg(target_os = "windows")]
@@ -557,7 +557,7 @@ fn main() {
                                                         let (cur_pw, cur_ph) = pet.get_scaled_size();
                                                         let panel_w = (music_panel::BASE_PANEL_WIDTH as f32 * pet.scale) as f64;
                                                         let panel_x = (pet_off_x + cur_pw/2.0 - panel_w/2.0) as i32;
-                                                         let mut panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
+                                                         let panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
                                                         
                                                         if let Some(action) = music_panel::check_music_panel_hit(&music_player, pos.x, pos.y, panel_x, panel_y, pet.scale) {
                                                             handled = true;
