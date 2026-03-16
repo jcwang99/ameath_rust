@@ -398,6 +398,18 @@ pub fn draw_rect(
     max_w: u32,
     max_h: u32,
 ) {
+    let a = (color >> 24) & 0xFF;
+    let fill_color = if a == 255 {
+        color
+    } else if a == 0 {
+        0
+    } else {
+        let r = ((color >> 16) & 0xFF) * a / 255;
+        let g = ((color >> 8) & 0xFF) * a / 255;
+        let b = (color & 0xFF) * a / 255;
+        (a << 24) | (r << 16) | (g << 8) | b
+    };
+
     let start_x = x.max(0);
     let start_y = y.max(0);
     let max_x = (x + width as i32).min(max_w as i32);
@@ -413,17 +425,16 @@ pub fn draw_rect(
     let rect_w = (max_x - start_x) as usize;
 
     // OPTIMIZATION: Parallelization threshold tuned. 
-    // Small rects (most pet renders) are faster on single thread due to context switch overhead.
     if (end_y_idx - start_y_idx) * rect_w > 65536 {
         buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize]
             .par_chunks_mut(surface_w_usize)
             .for_each(|row| {
-                row[start_x as usize..max_x as usize].fill(color);
+                row[start_x as usize..max_x as usize].fill(fill_color);
             });
     } else {
         for dy in start_y_idx..end_y_idx {
             let row_start = dy * surface_w_usize + start_x as usize;
-            buffer[row_start..row_start + rect_w].fill(color);
+            buffer[row_start..row_start + rect_w].fill(fill_color);
         }
     }
 }
@@ -1597,5 +1608,23 @@ pub fn blit_32bit_premultiplied(
 
             dst[dst_row_base + dx as usize] = (a << 24) | (r << 16) | (g << 8) | b;
         }
+    }
+}
+
+/// Converts a straight alpha buffer to premultiplied alpha in-place.
+pub fn premultiply_alpha_buffer(buffer: &mut [u32]) {
+    for pixel in buffer.iter_mut() {
+        let a = (*pixel >> 24) & 0xFF;
+        if a == 255 {
+            continue;
+        }
+        if a == 0 {
+            *pixel = 0;
+            continue;
+        }
+        let r = ((*pixel >> 16) & 0xFF) * a / 255;
+        let g = ((*pixel >> 8) & 0xFF) * a / 255;
+        let b = (*pixel & 0xFF) * a / 255;
+        *pixel = (a << 24) | (r << 16) | (g << 8) | b;
     }
 }

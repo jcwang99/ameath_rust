@@ -398,27 +398,27 @@ pub fn render_music_panel(
     let bar_h = if prog_hovered { (4.0 * scale).max(1.0) as u32 } else { (2.0 * scale).max(1.0) as u32 };
     let bar_y_offset = if prog_hovered { (2.0 * scale) as i32 } else { (3.0 * scale) as i32 };
     let active_w = (prog_w as f32 * progress) as u32;
+    let bar_radius = bar_h / 2;
 
     // 5.1 Glow Layer (rendered only when hovered for the neon effect)
+    // 5.1 Subtle Rounded Bloom (only when hovered)
     if prog_hovered && active_w > 0 {
-        let glow_h = (12.0 * scale) as u32;
-        let glow_y_offset = bar_y_offset - ((glow_h as i32 - bar_h as i32) / 2);
-        ui_primitives::draw_rect_alpha(
+        let bloom_margin = (2.0 * scale) as i32;
+        ui_primitives::draw_rounded_rect(
             buffer,
             win_w,
-            prog_x,
-            prog_y + glow_y_offset,
-            active_w,
-            glow_h,
-            0xFB7299, // Pink neon source
-            0.15 * opacity, // Soft bloom opacity mapping
+            prog_x - bloom_margin,
+            prog_y + bar_y_offset - bloom_margin,
+            active_w + (bloom_margin * 2) as u32,
+            bar_h + (bloom_margin * 2) as u32,
+            bar_radius + bloom_margin as u32,
+            ui_primitives::apply_opacity(0xFB7299, 0.1 * opacity),
             win_w,
             win_h,
         );
     }
 
     // 5.2 Background line (Track)
-    let bar_radius = bar_h / 2;
     ui_primitives::draw_rounded_rect(
         buffer,
         win_w,
