@@ -901,7 +901,7 @@ pub fn draw(
             let cursor_x =
                 (text_start_x as f32 + px + (if i == 13 { 0.0 } else { scroll_px })) as i32;
             let cursor_y =
-                (text_start_y as f32 + py + (if i == 13 { -scroll_px } else { 0.0 })) as i32;
+                (text_start_y as f32 + py + (if i == 13 { scroll_px } else { 0.0 })) as i32;
 
             // Clipping for single-line fields
             let is_inside = if i == 13 {

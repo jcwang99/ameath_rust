@@ -949,16 +949,16 @@ fn draw_text_dw_ex_internal(
         let mut metrics = std::mem::zeroed();
         layout.GetMetrics(&mut metrics).unwrap();
 
-        let is_huge = metrics.height > 2500.0;
+        let is_huge = metrics.height > 1500.0;
 
         // Target height: if huge, only render the visible window to save massive memory
         // For marquee/scrolling, tw must be the full width of the text layout
         let tw = (metrics.width.ceil() as i32 + 10).min(layout_w as i32 + 10);
         let th = if is_huge {
-            // Render viewport-sized chunk (e.g. 1024px)
-            1024.min(max_h as i32 + 2)
+            // Render viewport-sized chunk (e.g. 1024px or max_h)
+            (max_h as i32 + 10).min(2048)
         } else {
-            (metrics.height.ceil() as i32 + 2).min(2048)
+            (metrics.height.ceil() as i32 + 2).min(1500)
         };
 
         SCRATCHPAD.with(|sp| {
@@ -980,12 +980,12 @@ fn draw_text_dw_ex_internal(
                 .CreateSolidColorBrush(&D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }, None) // Always white for Mask
                 .unwrap();
 
-            let draw_offset_y = scroll_offset;
+            let draw_offset_y = if is_huge { -scroll_offset } else { 0.0 };
 
             rt.DrawTextLayout(
                 windows::Win32::Graphics::Direct2D::Common::D2D_POINT_2F {
                     x: 0.0,
-                    y: 0.0,
+                    y: draw_offset_y,
                 },
                 &layout,
                 &brush,
@@ -1007,7 +1007,10 @@ fn draw_text_dw_ex_internal(
             }
 
             // Blit to screen
-            // Both scrolls are baked into the layout, so blit at src offsets 0
+            // If huge, we baked the scroll into DrawTextLayout at y=0 of scratchpad
+            // otherwise, it's a static full-rast and we use blit offset
+            let final_src_y = if is_huge { 0 } else { scroll_offset as i32 };
+
             blit_alpha_pixels(
                 buffer,
                 surface_w,
@@ -1019,7 +1022,7 @@ fn draw_text_dw_ex_internal(
                 color,
                 max_w,
                 max_h,
-                scroll_offset as i32,
+                final_src_y,
                 scroll_x as i32,
             );
 
