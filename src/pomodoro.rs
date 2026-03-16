@@ -207,113 +207,80 @@ impl Pomodoro {
             // Clear buffer
             std::ptr::write_bytes(pixel_ptr, 0, w_usize * h_usize * 4);
 
-            // Styling (Bilibili-ish / Pet matching)
-            let bg_color = [0xFF, 0xFF, 0xFF, 220]; // Semi-transparent white
-            let border_color = match self.phase {
-                PomodoroPhase::Work => [0xFB, 0x72, 0x99, 255], // Bili Pink
-                PomodoroPhase::Rest => [0x7B, 0xEA, 0xF7, 255], // Soft Blue
+            let bg_color_val = 0xDCFFFFFF; // Semi-transparent white
+            let border_color_val = match self.phase {
+                PomodoroPhase::Work => 0xFFFB7299, // Bili Pink
+                PomodoroPhase::Rest => 0xFF7BEAF7, // Soft Blue
             };
-            let progress_color = match self.phase {
-                PomodoroPhase::Work => [0xFB, 0x72, 0x99, 80], // Lighter Pink
-                PomodoroPhase::Rest => [0x7B, 0xEA, 0xF7, 80], // Lighter Blue
+            let progress_color_val = match self.phase {
+                PomodoroPhase::Work => 0x50FB7299, // Lighter Pink
+                PomodoroPhase::Rest => 0x507BEAF7, // Soft Blue
             };
 
             let progress = 1.0 - (self.remaining.as_secs_f32() / self.total_duration.as_secs_f32());
-            let fill_width = (width as f32 * progress) as i32;
+            let fill_width = (width as f32 * progress) as u32;
+            let radius = (8.0 * scale) as u32;
 
-            let radius = (8.0 * scale) as i32;
+            let buffer_u32 = std::slice::from_raw_parts_mut(pixel_ptr as *mut u32, w_usize * h_usize);
+            
+            // 1. Generate high-quality AA mask for the whole rounded rect
+            let mut mask = vec![0u8; (width * height) as usize];
+            crate::ui_primitives::draw_rounded_rect_alpha_internal(
+                &mut mask, 
+                width as u32,
+                0, 0, width as u32, height as u32,
+                radius,
+            );
 
+            // 2. Multi-color Fill with AA
             for y in 0..height {
                 for x in 0..width {
-                    let idx = (y * width + x) as usize * 4;
+                    let idx = (y * width + x) as usize;
+                    let edge_alpha = mask[idx] as u32;
+                    if edge_alpha == 0 { continue; }
 
-                    // Rounded corner logic
-                    let mut is_inside = true;
-                    if x < radius && y < radius {
-                        let dx = radius - x;
-                        let dy = radius - y;
-                        if dx * dx + dy * dy > radius * radius {
-                            is_inside = false;
-                        }
-                    } else if x >= width - radius && y < radius {
-                        let dx = x - (width - radius - 1);
-                        let dy = radius - y;
-                        if dx * dx + dy * dy > radius * radius {
-                            is_inside = false;
-                        }
-                    } else if x < radius && y >= height - radius {
-                        let dx = radius - x;
-                        let dy = y - (height - radius - 1);
-                        if dx * dx + dy * dy > radius * radius {
-                            is_inside = false;
-                        }
-                    } else if x >= width - radius && y >= height - radius {
-                        let dx = x - (width - radius - 1);
-                        let dy = y - (height - radius - 1);
-                        if dx * dx + dy * dy > radius * radius {
-                            is_inside = false;
-                        }
-                    }
+                    let is_fill = x < fill_width as i32;
+                    let color_val = if is_fill { progress_color_val } else { bg_color_val };
 
-                    if !is_inside {
-                        continue;
-                    }
-
-                    // Simplified: fill first, then draw border line if needed.
-                    let is_fill = x < fill_width;
-                    let color = if is_fill { progress_color } else { bg_color };
-
-                    *pixel_ptr.add(idx) = color[2];
-                    *pixel_ptr.add(idx + 1) = color[1];
-                    *pixel_ptr.add(idx + 2) = color[0];
-                    *pixel_ptr.add(idx + 3) = color[3];
+                    let sa = (color_val >> 24) & 0xFF;
+                    let sa = if sa == 0 && (color_val & 0xFFFFFF) != 0 { 255 } else { sa };
+                    let effective_a = (sa * edge_alpha) / 255;
+                    
+                    let r = ((color_val >> 16) & 0xFF) * effective_a / 255;
+                    let g = ((color_val >> 8) & 0xFF) * effective_a / 255;
+                    let b = (color_val & 0xFF) * effective_a / 255;
+                    
+                    // Premultiplied BGR for GDI compatibility (bits are [B, G, R, A] in LE)
+                    buffer_u32[idx] = (effective_a << 24) | (r << 16) | (g << 8) | b;
                 }
             }
 
-            // Draw a proper thin border for the rounded shape
-            for y in 0..height {
-                for x in 0..width {
-                    let idx = (y * width + x) as usize * 4;
-                    // Check if it's an edge pixel of the rounded shape
-                    let mut is_edge = false;
-                    let r_sq = (radius * radius) as f32;
-                    let r_sq_inner = ((radius - 1) * (radius - 1)) as f32;
+            // 3. Draw Border Line (AA)
+            // Use border_alpha_internal directly to avoid redundant fills
+            let mut border_alpha = vec![0u8; (width * height) as usize];
+            crate::ui_primitives::draw_rounded_rect_border_alpha_internal(
+                &mut border_alpha, width as u32, width as u32, height as u32, radius, 1
+            );
+            
+            let b_rb = border_color_val & 0x00FF00FF;
+            let b_g = border_color_val & 0x0000FF00;
+            let b_a = 255u32;
 
-                    let dist_sq = if x < radius && y < radius {
-                        let dx = radius - x;
-                        let dy = radius - y;
-                        (dx * dx + dy * dy) as f32
-                    } else if x >= width - radius && y < radius {
-                        let dx = x - (width - radius - 1);
-                        let dy = radius - y;
-                        (dx * dx + dy * dy) as f32
-                    } else if x < radius && y >= height - radius {
-                        let dx = radius - x;
-                        let dy = y - (height - radius - 1);
-                        (dx * dx + dy * dy) as f32
-                    } else if x >= width - radius && y >= height - radius {
-                        let dx = x - (width - radius - 1);
-                        let dy = y - (height - radius - 1);
-                        (dx * dx + dy * dy) as f32
-                    } else {
-                        -1.0
-                    };
-
-                    if dist_sq >= 0.0 {
-                        if dist_sq <= r_sq && dist_sq > r_sq_inner {
-                            is_edge = true;
-                        }
-                    } else if x == 0 || x == width - 1 || y == 0 || y == height - 1 {
-                        is_edge = true;
-                    }
-
-                    if is_edge {
-                        *pixel_ptr.add(idx) = border_color[2];
-                        *pixel_ptr.add(idx + 1) = border_color[1];
-                        *pixel_ptr.add(idx + 2) = border_color[0];
-                        *pixel_ptr.add(idx + 3) = border_color[3];
-                    }
-                }
+            for i in 0..(w_usize * h_usize) {
+                let edge_a = border_alpha[i] as u32;
+                if edge_a == 0 { continue; }
+                
+                let sa = (b_a * edge_a) >> 8;
+                let inv_a = 255 - sa;
+                let d = buffer_u32[i];
+                let d_rb = d & 0x00FF00FF;
+                let d_g = d & 0x0000FF00;
+                
+                let res_rb = (b_rb * sa + d_rb * inv_a) >> 8;
+                let res_g = (b_g * sa + d_g * inv_a) >> 8;
+                let res_a = sa + (((d >> 24) & 0xFF) * inv_a >> 8);
+                
+                buffer_u32[i] = (res_a << 24) | (res_rb & 0x00FF00FF) | (res_g & 0x0000FF00);
             }
 
             // --- Text Rendering ---
@@ -373,19 +340,8 @@ impl Pomodoro {
 
             GdiFlush();
 
-            // --- Final Alpha Correctness ---
-            for i in 0..(w_usize * h_usize) {
-                let base = i * 4;
-                let b = *pixel_ptr.add(base);
-                let g = *pixel_ptr.add(base + 1);
-                let r = *pixel_ptr.add(base + 2);
-                let a = *pixel_ptr.add(base + 3);
-
-                // Anti-alias/GDI cleanup
-                if (r < 120 && g < 120 && b < 120) && a < 200 {
-                    *pixel_ptr.add(base + 3) = 255;
-                }
-            }
+            // Convert any GDI straight alpha / zero-alpha fields to premultiplied
+            crate::ui_primitives::premultiply_alpha_buffer(buffer_u32);
 
             // Cache the rendered pixels
             let mut cached = Vec::with_capacity(w_usize * h_usize * 4);
