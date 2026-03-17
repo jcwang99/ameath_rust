@@ -450,8 +450,8 @@ impl SettingsWindow {
             available_monitors,
             current_monitor_name: None,
             is_dragging_pet_scale: false,
-            last_size: (800, 750),
-            last_render_scale: 1.0,
+            last_size: (0, 0),
+            last_render_scale: 0.0,
             is_dirty: true,
             last_state_hash: 0,
             last_config_hash: 0,
@@ -585,6 +585,7 @@ impl SettingsWindow {
             {
                 if let Err(e) = self.surface.resize(nz_w, nz_h) {
                     tracing::error!("Failed to resize Softbuffer surface: {:?}", e);
+                    return;
                 } else {
                     self.last_size = (w, h);
                     self.last_render_scale = current_scale;
@@ -600,6 +601,10 @@ impl SettingsWindow {
                     h
                 );
             }
+        }
+
+        if self.last_size == (0, 0) {
+            return;
         }
 
         use std::collections::hash_map::DefaultHasher;
