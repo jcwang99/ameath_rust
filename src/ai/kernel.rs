@@ -378,6 +378,10 @@ impl ChatKernel {
                 // 4. Send to UI (Original content only)
                 let _ = tx.send(AiResponseEvent::Response(original_content));
 
+                // Clear traces AFTER the turn is fully complete and saved to Layer 1,
+                // but BEFORE spawning the async summarization. This prevents 400 error.
+                self.memory.clear_traces().ok();
+
                 // 5. Orchestrate summarization (L1 -> L2)
                 let kernel_clone = Arc::new(Self {
                     config: self.config.clone(),

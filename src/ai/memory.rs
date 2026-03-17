@@ -43,6 +43,9 @@ impl MemoryManager {
             [],
         )
         .expect("Failed to create tool_traces table");
+        
+        // Migration: ensure tool_calls column exists
+        let _ = conn.execute("ALTER TABLE tool_traces ADD COLUMN tool_calls TEXT", []);
 
         // Layer 3: Long-term Summaries (Condensed Knowledge)
         conn.execute(
@@ -138,14 +141,17 @@ impl MemoryManager {
     pub fn add_trace(&self, msg: &Message) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let content = if let Some(tc) = &msg.tool_calls {
-            serde_json::to_string(tc).unwrap_or_default()
+            // Keep original content if present, or use empty
+            msg.content_as_str().to_string()
         } else {
             msg.content_as_str().to_string()
         };
+        
+        let tool_calls_json = msg.tool_calls.as_ref().map(|tc| serde_json::to_string(tc).unwrap_or_default());
 
         conn.execute(
-            "INSERT INTO tool_traces (role, content, tool_call_id) VALUES (?1, ?2, ?3)",
-            params![msg.role, content, msg.tool_call_id],
+            "INSERT INTO tool_traces (role, content, tool_call_id, tool_calls) VALUES (?1, ?2, ?3, ?4)",
+            params![msg.role, content, msg.tool_call_id, tool_calls_json],
         )?;
         Ok(())
     }
@@ -232,13 +238,20 @@ impl MemoryManager {
         let mut traces = Vec::new();
         {
             let mut stmt = conn
-                .prepare("SELECT role, content, tool_call_id FROM tool_traces ORDER BY id ASC")?;
+                .prepare("SELECT role, content, tool_call_id, tool_calls FROM tool_traces ORDER BY id ASC")?;
             let trace_rows = stmt.query_map([], |row| {
+                let role: String = row.get(0)?;
+                let content_str: String = row.get(1)?;
+                let tool_call_id: Option<String> = row.get(2)?;
+                let tool_calls_json: Option<String> = row.get(3)?;
+                
+                let tool_calls = tool_calls_json.and_then(|s| serde_json::from_str(&s).ok());
+
                 Ok(Message {
-                    role: row.get(0)?,
-                    content: Some(Content::Simple(row.get(1)?)),
-                    tool_calls: None, // Simplified for now
-                    tool_call_id: row.get(2)?,
+                    role,
+                    content: if content_str.is_empty() && tool_calls.is_some() { None } else { Some(Content::Simple(content_str)) },
+                    tool_calls,
+                    tool_call_id,
                 })
             })?;
             for row in trace_rows {
