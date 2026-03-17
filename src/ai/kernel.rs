@@ -76,6 +76,27 @@ impl ChatKernel {
                 }
             }
         }
+        // --- #todo FAST-TRACK ---
+        if input.trim_start().starts_with("#todo ") {
+            let todo_content = input.trim_start()["#todo ".len()..].trim();
+            if !todo_content.is_empty() {
+                match crate::ai::skills::todo_skill::TodoSkill::add_todo_local(todo_content) {
+                    Ok(_) => {
+                        let confirmation = "收到！已经加入待办清单啦~ [IMG]assets/stickers/OK.gif";
+                        
+                        self.memory.add_conversation_item("user", &input, 1).ok();
+                        self.memory.add_conversation_item("assistant", confirmation, 1).ok();
+                        
+                        let _ = tx.send(AiResponseEvent::Response(confirmation.to_string()));
+                        return;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AiResponseEvent::Response(format!("待办添加失败: {}", e)));
+                        return;
+                    }
+                }
+            }
+        }
         // -----------------------
 
         // 1. Initial User Message
@@ -148,6 +169,35 @@ impl ChatKernel {
                     tool_call_id: None,
                 });
             }
+
+            // --- Inject Dynamic Todo Context ---
+            let pending_todos: Vec<_> = crate::ai::skills::todo_skill::TodoSkill::list_todos_local()
+                .into_iter()
+                .filter(|t| t.status == crate::ai::skills::todo_skill::TodoStatus::Pending)
+                .collect();
+            
+            if !pending_todos.is_empty() {
+                let mut todo_list_str = String::from("[Current Pending Todos]\n");
+                for (i, t) in pending_todos.iter().enumerate() {
+                    todo_list_str.push_str(&format!("{}. ({}) {}\n", i + 1, &t.id[..4], t.content));
+                }
+                
+                let todo_instruction = "\n[Instruction]\n\
+                    These are the user's current pending tasks. You should be aware of them to maintain context, \
+                    but DO NOT mention or remind the user about them unless:\n\
+                    1. The user explicitly asks about their tasks or \"what's next\".\n\
+                    2. The current conversation is highly relevant to a specific task.\n\
+                    3. The user seems to have forgotten their plan or asks for suggestions.\n\
+                    Maintain a helpful but non-intrusive assistant persona.";
+                
+                messages.push(Message {
+                    role: "system".to_string(),
+                    content: Some(Content::Simple(format!("{}{}", todo_list_str, todo_instruction))),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            }
+            // -----------------------------------
 
             // INJECT CURRENT USER MESSAGE (Deferred Persistence Fix)
             messages.push(user_msg.clone());

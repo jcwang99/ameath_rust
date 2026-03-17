@@ -8,6 +8,7 @@ pub mod memory_skill;
 pub mod notification_skill;
 pub mod reminder_skill;
 pub mod system;
+pub mod todo_skill;
 pub mod work_log;
 
 #[async_trait]
@@ -51,6 +52,7 @@ impl SkillManager {
             scheduler,
         )));
         manager.register(Arc::new(notification_skill::NotificationSkill::new()));
+        manager.register(Arc::new(todo_skill::TodoSkill::new(memory.clone())));
         manager.register(Arc::new(work_log::WorkLogSkill::new(memory)));
 
         manager
