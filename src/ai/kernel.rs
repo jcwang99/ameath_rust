@@ -54,6 +54,16 @@ impl ChatKernel {
             }
         };
 
+        // 1. Initial User Message
+        // --- Global Input Logging (All inputs recorded to WorkLog) ---
+        {
+            let mut log_text = input.trim().to_string();
+            if !images.is_empty() {
+                log_text.push_str(&format!(" (其中包含 {} 张图片)", images.len()));
+            }
+            let _ = crate::ai::skills::work_log::WorkLogSkill::record_log_local(&log_text);
+        }
+
         // --- #log FAST-TRACK ---
         if input.trim_start().starts_with("#log ") {
             let log_content = input.trim_start()["#log ".len()..].trim();
@@ -76,6 +86,7 @@ impl ChatKernel {
                 }
             }
         }
+
         // --- #todo FAST-TRACK ---
         if input.trim_start().starts_with("#todo ") {
             let todo_content = input.trim_start()["#todo ".len()..].trim();
