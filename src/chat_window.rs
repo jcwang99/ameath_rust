@@ -1070,7 +1070,6 @@ impl ChatWindow {
                                   (last_glyph.position().y - v_metrics.ascent) as i32);
                 }
             }
-            found_cursor = true;
         }
 
         // Cursor Blink

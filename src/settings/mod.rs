@@ -253,6 +253,7 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
 #[allow(dead_code)]
 pub enum SettingsAction {
     None,
+    DragWindow,
     SetScale(f32),
     SetMode(BehaviorMode),
     SetLayer(WindowLayer),
@@ -985,6 +986,10 @@ impl SettingsWindow {
         self.is_dirty = true;
         let dlx = lx;
         let dly = ly - self.scroll_offset as f64;
+
+        if !self.show_delete_dialog && ly < 120.0 && lx > 180.0 {
+            return SettingsAction::DragWindow;
+        }
 
         // Sidebar
         if lx >= 0.0 && lx <= 180.0 {

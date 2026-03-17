@@ -425,31 +425,43 @@ fn main() {
                     }
 
                     if chat_window.id() == window_id {
-                         match chat_window.handle_event(&event, modifier_state) {
-                             ChatAction::Send(msg) => {
-                                 println!("User sent: {:?}", msg);
-                                 if let Some(tts) = &tts_controller {
-                                     tts.stop();
-                                 }
-                                  thinking_state = ThinkingState::Standard;
-                                  thinking_start = Some(Instant::now());
-                                  
-                                  // Update kernel with current config if changed
-                                  let kernel = chat_kernel.clone();
-                                  let tx = ai_tx.clone();
-                                  let input = msg;
-                                  
-                                  tokio::spawn(async move {
-                                      kernel.handle(input, tx).await;
-                                  });
+                        match event {
+                            WindowEvent::ScaleFactorChanged { scale_factor, mut inner_size_writer, .. } => {
+                                let logical_size = winit::dpi::LogicalSize::new(600.0, 60.0);
+                                let new_physical_size = winit::dpi::PhysicalSize::new(
+                                    (logical_size.width * scale_factor) as u32,
+                                    (logical_size.height * scale_factor) as u32,
+                                );
+                                let _ = inner_size_writer.request_inner_size(new_physical_size);
+                            }
+                            other_event => {
+                                match chat_window.handle_event(&other_event, modifier_state) {
+                                    ChatAction::Send(msg) => {
+                                        println!("User sent: {:?}", msg);
+                                        if let Some(tts) = &tts_controller {
+                                            tts.stop();
+                                        }
+                                        thinking_state = ThinkingState::Standard;
+                                        thinking_start = Some(Instant::now());
+                                        
+                                        // Update kernel with current config if changed
+                                        let kernel = chat_kernel.clone();
+                                        let tx = ai_tx.clone();
+                                        let input = msg;
+                                        
+                                        tokio::spawn(async move {
+                                            kernel.handle(input, tx).await;
+                                        });
 
-                                 window.request_redraw();
-                             }
-                             ChatAction::Close => {
-                                 window.request_redraw();
-                             }
-                             ChatAction::None => {}
-                         }
+                                        window.request_redraw();
+                                    }
+                                    ChatAction::Close => {
+                                        window.request_redraw();
+                                    }
+                                    ChatAction::None => {}
+                                }
+                            }
+                        }
                     } else if window_id == window.id() {
                         match event {
                             WindowEvent::CloseRequested => elwt.exit(),
@@ -765,8 +777,13 @@ fn main() {
                                     settings_win = None;
                                     ui_primitives::harvest_memory();
                                 }
-                                WindowEvent::ScaleFactorChanged { .. } => {
-                                    // Doing nothing maintains the current physical size, eliminating winit's WM_DPICHANGED ping-pong bug during cross-monitor drags
+                                WindowEvent::ScaleFactorChanged { scale_factor, mut inner_size_writer, .. } => {
+                                    let logical_size = winit::dpi::LogicalSize::new(800.0, 750.0);
+                                    let new_physical_size = winit::dpi::PhysicalSize::new(
+                                        (logical_size.width * scale_factor) as u32,
+                                        (logical_size.height * scale_factor) as u32,
+                                    );
+                                    let _ = inner_size_writer.request_inner_size(new_physical_size);
                                 }
                                 WindowEvent::Focused(true) => {
                                     ui_primitives::harvest_memory();
@@ -777,6 +794,9 @@ fn main() {
                                             let is_right_click = btn == MouseButton::Right;
                                             let action = sw.handle_click(pos.x, pos.y, is_right_click, &ai_config);
                                             match action {
+                                                settings::SettingsAction::DragWindow => {
+                                                    let _ = sw.window().drag_window();
+                                                }
                                                 settings::SettingsAction::SetScale(s) => {
                                                     pet.scale = s;
                                                     sw.request_redraw();
