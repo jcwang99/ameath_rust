@@ -44,6 +44,16 @@ impl ChatKernel {
     pub async fn handle(&self, input_data: crate::types::ChatInput, tx: Sender<AiResponseEvent>) {
         let input = input_data.text;
         let images = input_data.images;
+
+        let mut log_msg = if input.chars().count() > 50 {
+            format!("[INPUT_TRACE] Received: {}...", input.chars().take(47).collect::<String>().replace("\n", " "))
+        } else {
+            format!("[INPUT_TRACE] Received: {}", input.trim().replace("\n", " "))
+        };
+        if !images.is_empty() {
+            log_msg.push_str(&format!(" (Images: {})", images.len()));
+        }
+        tracing::info!("{}", log_msg);
         let client = match &self.client {
             Some(c) => c,
             None => {
@@ -55,15 +65,6 @@ impl ChatKernel {
         };
 
         // 1. Initial User Message
-        // --- Global Input Logging (All inputs recorded to WorkLog) ---
-        {
-            let mut log_text = input.trim().to_string();
-            if !images.is_empty() {
-                log_text.push_str(&format!(" (其中包含 {} 张图片)", images.len()));
-            }
-            let _ = crate::ai::skills::work_log::WorkLogSkill::record_log_local(&log_text);
-        }
-
         // --- #log FAST-TRACK ---
         if input.trim_start().starts_with("#log ") {
             let log_content = input.trim_start()["#log ".len()..].trim();
