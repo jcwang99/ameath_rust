@@ -480,7 +480,7 @@ impl InteractionManager {
                     match crate::screen_capture::capture_all_monitors() {
                         Ok(imgs) => {
                             for img in imgs {
-                                let resized = crate::screen_capture::resize_screenshot(img, 1000);
+                                let resized = img;
                                 let mut buffer = Vec::new();
                                 let mut cursor = std::io::Cursor::new(&mut buffer);
                                 if resized
