@@ -573,7 +573,7 @@ impl ChatKernel {
                     "{}Consolidate the following intermediate summaries into a single, high-level long-term memory. \
                      Incorporate these new details into the existing memory while maintaining key historical facts. \
                      Focus on enduring facts, user patterns, and major project milestones. \
-                     IMPORTANT: Your response MUST be under 1500 characters (approx. 1500 Chinese text characters).\n\n\
+                     IMPORTANT: Your response MUST be under 3000 characters (approx. 3000 Chinese text characters).\n\n\
                      [New Intermediate Summaries]:\n{}",
                     l3_context,
                     combined_text
@@ -590,7 +590,7 @@ impl ChatKernel {
 
                     if let Ok(summary) = client.chat(prompt, None).await {
                         let summary_text = summary.content_as_str();
-                        if summary_text.chars().count() <= 1500 {
+                        if summary_text.chars().count() <= 3000 {
                             // Success! Save to Layer 3
                             self.memory.add_summary(summary_text, 3).ok();
 
@@ -602,7 +602,7 @@ impl ChatKernel {
                             // Too long, retry with stricter instruction
                             prompt_content = format!(
                                 "The previous summary was too long ({} chars). \
-                                 Please condense it strictly to under 1500 characters while retaining key facts.\n\n\
+                                 Please condense it strictly to under 3000 characters while retaining key facts.\n\n\
                                  [Reference Content]:\n{}",
                                 summary_text.chars().count(),
                                 summary_text

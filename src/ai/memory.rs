@@ -622,6 +622,13 @@ impl MemoryManager {
             params![keep_count],
         )?;
 
+        // Prune Layer 3 (Long-term Summaries) -> Keep latest N versions
+        conn.execute(
+            "DELETE FROM summaries 
+             WHERE id NOT IN (SELECT id FROM summaries ORDER BY id DESC LIMIT ?1)",
+            params![20], // Keep last 20 versions of L3
+        )?;
+
         Ok(())
     }
 }
