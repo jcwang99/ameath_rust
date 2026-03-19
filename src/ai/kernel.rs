@@ -234,8 +234,8 @@ impl ChatKernel {
                 max_turns
             );
 
-            let mut final_response = None;
             let mut fc_traces = Vec::new();
+            let mut content_accumulator = Vec::new();
 
             while turns < max_turns {
                 turns += 1;
@@ -268,9 +268,14 @@ impl ChatKernel {
                         messages.push(response_msg.clone());
 
                         if let Some(tool_calls) = &response_msg.tool_calls {
+                            // 1. Emit intermediate response immediately if content exists
+                            if !content_str.is_empty() {
+                                content_accumulator.push(content_str.to_string());
+                                let _ = tx.send(AiResponseEvent::Response(content_str.to_string()));
+                            }
+
                             if tool_calls.is_empty() {
                                 tracing::info!("Tool calls field is present but empty. Breaking loop as final response.");
-                                final_response = Some(response_msg.clone());
                                 break; // Break inner loop
                             }
 
@@ -336,7 +341,10 @@ impl ChatKernel {
                                 "No tool calls. Final response received. ({} turns)",
                                 turns
                             );
-                            final_response = Some(response_msg.clone());
+                            if !content_str.is_empty() {
+                                content_accumulator.push(content_str.to_string());
+                                let _ = tx.send(AiResponseEvent::Response(content_str.to_string()));
+                            }
                             break; // Break inner loop
                         }
                     }
@@ -348,8 +356,8 @@ impl ChatKernel {
                 }
             }
 
-            if let Some(mut response_msg) = final_response {
-                let original_content = response_msg.content_as_str().to_string();
+            if !content_accumulator.is_empty() || !fc_traces.is_empty() {
+                let combined_original_content = content_accumulator.join("\n\n");
                 
                 // 1. Process FC Traces
                 let fc_summary = if !fc_traces.is_empty() {
@@ -377,21 +385,29 @@ impl ChatKernel {
 
                 // 2. Prepare content for DB (with FC traces)
                 let db_content = if let Some(traces) = fc_summary {
-                    format!("{}\n\n--- FC 调用过程记录 ---\n{}", original_content, traces)
+                    if combined_original_content.is_empty() {
+                        format!("--- FC 调用过程记录 ---\n{}", traces)
+                    } else {
+                        format!("{}\n\n--- FC 调用过程记录 ---\n{}", combined_original_content, traces)
+                    }
                 } else {
-                    original_content.clone()
+                    combined_original_content.clone()
                 };
 
                 // 3. Save to Memory (L1)
                 self.memory.add_message(&user_msg).ok();
-                response_msg.content = Some(Content::Simple(db_content));
+                
+                let response_msg = Message {
+                    role: "assistant".to_string(),
+                    content: Some(Content::Simple(db_content)),
+                    tool_calls: None,
+                    tool_call_id: None,
+                };
                 self.memory.add_message(&response_msg).ok();
 
-                // 4. Send to UI (Original content only)
-                let _ = tx.send(AiResponseEvent::Response(original_content));
+                // 4. Send to UI (Already done incrementally)
 
-                // Clear traces AFTER the turn is fully complete and saved to Layer 1,
-                // but BEFORE spawning the async summarization. This prevents 400 error.
+                // Clear traces AFTER the turn is fully complete and saved to Layer 1
                 self.memory.clear_traces().ok();
 
                 // 5. Orchestrate summarization (L1 -> L2)
@@ -449,10 +465,17 @@ impl ChatKernel {
             messages.push(summary_prompt);
 
             if let Ok(last_summary) = client.chat(messages, None).await {
+                let summary_text = last_summary.content_as_str().to_string();
+                
+                // Construct UI intermediate for handover
+                let ui_handover_msg = format!("(思考中) 刚才我：\n{}\n\n正在继续处理...", summary_text);
+                content_accumulator.push(ui_handover_msg.clone());
+                let _ = tx.send(AiResponseEvent::Response(ui_handover_msg));
+
                 // Construct Handover Context (In-Memory Only)
                 handover_context = Some(format!(
                     "--- COGNITIVE HANDOVER (Step Limit Reached) ---\n\n[Previous Progress Summary]:\n{}\n\n[Recent Tool Execution Log (Raw Context)]:\n{}\n\n--- END OF HANDOVER ---",
-                    last_summary.content_as_str(),
+                    summary_text,
                     recent_history_str
                 ));
 
