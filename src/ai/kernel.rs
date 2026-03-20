@@ -351,6 +351,7 @@ impl ChatKernel {
                     Err(e) => {
                         tracing::error!("AI Client Error: {}", e);
                         let _ = tx.send(AiResponseEvent::Response(format!("AI Error: {}", e)));
+                        let _ = tx.send(AiResponseEvent::Status(ThinkingState::None));
                         return;
                     }
                 }
@@ -420,6 +421,7 @@ impl ChatKernel {
                 tokio::spawn(async move {
                     kernel_clone.orchestrate_summarization().await.ok();
                 });
+                let _ = tx.send(AiResponseEvent::Status(ThinkingState::None));
                 return;
             }
 
@@ -428,6 +430,7 @@ impl ChatKernel {
             total_handovers += 1;
             if total_handovers >= MAX_HANDOVERS {
                 let _ = tx.send(AiResponseEvent::Response("Cognitive Limit Reached (Max Handovers). Terminating to prevent infinite loop.".to_string()));
+                let _ = tx.send(AiResponseEvent::Status(ThinkingState::None));
                 return;
             }
 
