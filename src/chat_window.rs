@@ -470,15 +470,10 @@ impl ChatWindow {
                         image.height as u32,
                         rgba_data,
                     ) {
-                        let mut buffer = Vec::new();
-                        let mut cursor = std::io::Cursor::new(&mut buffer);
-                        if img_buf
-                            .write_to(&mut cursor, image::ImageFormat::Png)
-                            .is_ok()
-                        {
+                        if let Ok(data) = crate::screen_capture::compress_to_jpeg(&img_buf.into(), 80) {
                             let img_data = crate::types::ImageData {
-                                data: buffer,
-                                mime_type: "image/png".to_string(),
+                                data,
+                                mime_type: "image/jpeg".to_string(),
                             };
                             Self::process_raw_image(
                                 img_data,
@@ -527,12 +522,10 @@ impl ChatWindow {
                                 status: ImageStatus::Processing,
                             });
 
-                            let mut buffer = Vec::new();
-                            let mut cursor = std::io::Cursor::new(&mut buffer);
-                            if rgba.write_to(&mut cursor, image::ImageFormat::Png).is_ok() {
+                            if let Ok(data) = crate::screen_capture::compress_to_jpeg(&img, 80) {
                                 let img_data = crate::types::ImageData {
-                                    data: buffer,
-                                    mime_type: "image/png".to_string(),
+                                    data,
+                                    mime_type: "image/jpeg".to_string(),
                                 };
                                 Self::process_raw_image(
                                     img_data,
@@ -772,7 +765,13 @@ impl ChatWindow {
                     height: thumb_rgba.height(),
                 };
 
-                let _ = tx.send(ImageAsyncMsg::Finished(slot_id, img_data, thumb_obj));
+                let mut processed_img_data = img_data;
+                if let Ok(compressed_data) = crate::screen_capture::compress_to_jpeg(&img, 80) {
+                    processed_img_data.data = compressed_data;
+                    processed_img_data.mime_type = "image/jpeg".to_string();
+                }
+
+                let _ = tx.send(ImageAsyncMsg::Finished(slot_id, processed_img_data, thumb_obj));
                 let _ = proxy.send_event(());
             } else {
                 let _ = tx.send(ImageAsyncMsg::Failed(slot_id));

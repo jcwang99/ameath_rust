@@ -480,18 +480,12 @@ impl InteractionManager {
                     match crate::screen_capture::capture_all_monitors() {
                         Ok(imgs) => {
                             for img in imgs {
-                                let resized = img;
-                                let mut buffer = Vec::new();
-                                let mut cursor = std::io::Cursor::new(&mut buffer);
-                                if resized
-                                    .write_to(&mut cursor, image::ImageFormat::Png)
-                                    .is_ok()
-                                {
-                                    images.push(crate::types::ImageData {
-                                        data: buffer,
-                                        mime_type: "image/png".to_string(),
-                                    });
-                                }
+                                 if let Ok(data) = crate::screen_capture::compress_to_jpeg(&img, 80) {
+                                     images.push(crate::types::ImageData {
+                                         data,
+                                         mime_type: "image/jpeg".to_string(),
+                                     });
+                                 }
                             }
                         }
                         Err(e) => {

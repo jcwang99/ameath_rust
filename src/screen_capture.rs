@@ -239,14 +239,13 @@ pub fn capture_all_monitors() -> Result<Vec<DynamicImage>, String> {
     }
 }
 
-pub fn resize_screenshot(img: DynamicImage, max_dim: u32) -> DynamicImage {
-    let w = img.width();
-    let h = img.height();
 
-    if w <= max_dim && h <= max_dim {
-        return img;
-    }
-
-    // Resize whilst preserving aspect ratio
-    img.resize(max_dim, max_dim, image::imageops::FilterType::Lanczos3)
+pub fn compress_to_jpeg(img: &DynamicImage, quality: u8) -> Result<Vec<u8>, String> {
+    let mut buffer = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut buffer);
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, quality);
+    encoder
+        .encode_image(img)
+        .map_err(|e| format!("JPEG encoding failed: {}", e))?;
+    Ok(buffer)
 }
