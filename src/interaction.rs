@@ -424,6 +424,7 @@ pub struct InteractionManager {
     config: AiConfig,
     base_interval: Duration,
     scheduler: ActionScheduler,
+    first_run: bool,
 }
 
 impl InteractionManager {
@@ -436,6 +437,7 @@ impl InteractionManager {
             config,
             base_interval,
             scheduler,
+            first_run: true,
         }
     }
 
@@ -446,7 +448,7 @@ impl InteractionManager {
     }
 
     pub fn check_for_trigger(&mut self) -> Option<crate::types::ChatInput> {
-        if !self.config.active_interaction_enabled {
+        if !self.config.active_interaction_enabled || self.config.interaction_frequency == 0 {
             return None;
         }
 
@@ -465,14 +467,22 @@ impl InteractionManager {
         let elapsed = now.duration_since(self.last_interaction);
 
         // 1. Basic Timer Check with Randomness
-        if elapsed > self.base_interval {
+        let mut is_triggered = self.first_run;
+
+        if !is_triggered && elapsed > self.base_interval {
             // Add some randomness +/- 20%
             let mut rng = rand::thread_rng();
             let random_factor: f32 = rng.gen_range(0.8..1.2);
             let threshold = self.base_interval.mul_f32(random_factor);
 
             if elapsed > threshold {
-                self.last_interaction = now;
+                is_triggered = true;
+            }
+        }
+
+        if is_triggered {
+            self.first_run = false;
+            self.last_interaction = now;
                 let context = self.senses.get_context_snapshot();
 
                 let mut images = Vec::new();
@@ -498,7 +508,6 @@ impl InteractionManager {
                     text: format!("[SYSTEM_EVENT] Routine Check. Context: {}. Observe current activities and decide if you need to use tools or send a system notification for important findings.", context),
                     images,
                 });
-            }
         }
 
         None
