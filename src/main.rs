@@ -1937,8 +1937,9 @@ fn main() {
 fn apply_window_styles(hwnd: HWND, top_most: bool) {
     unsafe {
         use windows::Win32::UI::WindowsAndMessaging::{
-            GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, GWL_STYLE, WS_CAPTION, WS_EX_LAYERED,
+            GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE, WS_CAPTION, WS_EX_LAYERED,
             WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_THICKFRAME, WS_VISIBLE,
+            HWND_TOPMOST, HWND_NOTOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE,
         };
         // STYLE: Remove Caption/ThickFrame, Force Popup + Visible
         let style = GetWindowLongW(hwnd, GWL_STYLE);
@@ -1947,18 +1948,27 @@ fn apply_window_styles(hwnd: HWND, top_most: bool) {
             | WS_VISIBLE.0 as i32;
         SetWindowLongW(hwnd, GWL_STYLE, new_style);
 
-        // EX_STYLE: Layered + ToolWindow + (Optional) TopMost
+        // EX_STYLE: Layered + ToolWindow
         let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
         let mut new_ex_style = ex_style | WS_EX_LAYERED.0 as i32 | WS_EX_TOOLWINDOW.0 as i32;
 
         if top_most {
             new_ex_style |= WS_EX_TOPMOST.0 as i32;
         } else {
-            // If strictly needed to remove topmost, verify if winit handles it.
-            // winit's set_window_level might toggle this bit.
-            // We enforce it just in case.
             new_ex_style &= !(WS_EX_TOPMOST.0 as i32);
         }
         SetWindowLongW(hwnd, GWL_EXSTYLE, new_ex_style);
+
+        // Properly enforce Z-Order with SetWindowPos
+        let insert_after = if top_most { HWND_TOPMOST } else { HWND_NOTOPMOST };
+        let _ = SetWindowPos(
+            hwnd,
+            insert_after,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
     }
 }
