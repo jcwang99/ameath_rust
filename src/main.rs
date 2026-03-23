@@ -1108,7 +1108,6 @@ fn main() {
                                     bubbles.push(new_bubble);
                                 }
                                 
-                                thinking_start = None;
                                 needs_pet_redraw = true;
                             }
                         }
