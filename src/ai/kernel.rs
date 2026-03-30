@@ -119,6 +119,7 @@ impl ChatKernel {
         // Clear volatile tool traces from previous sessions/requests
         self.memory.clear_traces().ok();
 
+        let is_system_event = input.find("\n\n[SYSTEM INSTRUCTION]").is_some();
         let (db_content, llm_content) = if let Some(idx) = input.find("\n\n[SYSTEM INSTRUCTION]") {
             (input[..idx].to_string(), input.clone())
         } else {
@@ -165,11 +166,17 @@ impl ChatKernel {
 
             // Inject Base System Prompt (Configurable Persona)
             if !self.config.system_prompt.is_empty() {
+                let prompt_to_use = if is_system_event {
+                    self.config.system_prompt.clone()
+                } else {
+                    let current_time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                    format!("{}\n\n[Current System Time]: {}", self.config.system_prompt, current_time)
+                };
                 messages.insert(
                     0,
                     Message {
                         role: "system".to_string(),
-                        content: Some(Content::Simple(self.config.system_prompt.clone())),
+                        content: Some(Content::Simple(prompt_to_use)),
                         tool_calls: None,
                         tool_call_id: None,
                     },
