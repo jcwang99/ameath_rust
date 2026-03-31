@@ -69,8 +69,9 @@ impl Skill for WorkLogSkill {
 
     fn description(&self) -> &str {
         "A specialized skill for automating work logging and professional weekly reporting. \
-         IMPORTANT: Before calling 'record_log', 'save_weekly_report', or 'merge_reports', you MUST first display the exact content you intend to save to the user and ask for their confirmation. Only proceed with the save action after the user explicitly approves. \
+         IMPORTANT: Before calling 'record_log', 'update_today_log', 'save_weekly_report', or 'merge_reports', you MUST first display the exact content you intend to save to the user and ask for their confirmation. Only proceed with the save action after the user explicitly approves. \
          - record_log: Call this to append a new work fragment to the daily log. Use it whenever the user asks to 'record' or 'log' something (Note: '#log' shortcut is handled by the system). \
+         - update_today_log: Overwrites today's entire log with new content. Call this to modify or correct existing logs. You MUST use 'get_today_logs' to read the logs first before modifying, and then provide the fully updated markdown content. \
          - get_today_logs: Retrieves all log entries recorded today. Use this when the user wants to review what has been logged today. \
          - get_weekly_logs: Retrieves all log entries recorded from Monday to Sunday of the current week. This data serves as the foundation for synthesizing a weekly report. \
          - save_weekly_report: Persists a generated weekly report into the local 'reports' directory with an ISO-8601 name. \
@@ -87,6 +88,19 @@ impl Skill for WorkLogSkill {
             "record_log" => {
                 let content = args["content"].as_str().ok_or("Missing 'content'")?;
                 Self::record_log_local(content)
+            }
+            "update_today_log" => {
+                let content = args["content"].as_str().ok_or("Missing 'content'")?;
+                let now = Local::now();
+                let date_str = now.format("%Y-%m-%d").to_string();
+                let log_dir = Self::get_log_dir();
+                
+                fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
+                let log_file = log_dir.join(format!("{}.md", date_str));
+                
+                fs::write(&log_file, content).map_err(|e| format!("Failed to update log: {}", e))?;
+                
+                Ok(format!("Log updated in {}.md", date_str))
             }
             "get_weekly_logs" => {
                 let now = Local::now().date_naive();
@@ -285,8 +299,8 @@ impl Skill for WorkLogSkill {
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["record_log", "get_today_logs", "get_weekly_logs", "save_weekly_report", "merge_reports", "get_auto_suggest_context"],
-                            "description": "Specific operation to perform: 'record_log' for single entries, 'get_today_logs' for viewing today's records, 'get_weekly_logs' for aggregation, 'save_weekly_report' for storing results, 'merge_reports' for consolidating weekly reports by month or year, or 'get_auto_suggest_context' for smart recommendations."
+                            "enum": ["record_log", "update_today_log", "get_today_logs", "get_weekly_logs", "save_weekly_report", "merge_reports", "get_auto_suggest_context"],
+                            "description": "Specific operation to perform: 'record_log' for single entries, 'update_today_log' for fully overwriting today's log, 'get_today_logs' for viewing today's records, 'get_weekly_logs' for aggregation, 'save_weekly_report' for storing results, 'merge_reports' for consolidating weekly reports by month or year, or 'get_auto_suggest_context' for smart recommendations."
                         },
                         "content": {
                             "type": "string",
