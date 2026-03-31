@@ -1,5 +1,5 @@
 use arboard::Clipboard;
-use chrono::Local;
+use chrono::{Local, Datelike, NaiveDate};
 use rand::Rng;
 use std::time::{Duration, Instant};
 use sysinfo::{Components, Disks, Networks, System};
@@ -418,6 +418,26 @@ impl Senses {
     }
 }
 
+fn get_last_cleanup_date() -> Option<NaiveDate> {
+    let mut path = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    path.push("data");
+    path.push("last_factboard_cleanup.txt");
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(date) = NaiveDate::parse_from_str(content.trim(), "%Y-%m-%d") {
+            return Some(date);
+        }
+    }
+    None
+}
+
+fn set_last_cleanup_date(date: NaiveDate) {
+    let mut path = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    path.push("data");
+    let _ = std::fs::create_dir_all(&path);
+    path.push("last_factboard_cleanup.txt");
+    let _ = std::fs::write(&path, date.format("%Y-%m-%d").to_string());
+}
+
 pub struct InteractionManager {
     senses: Senses,
     last_interaction: Instant,
@@ -425,6 +445,7 @@ pub struct InteractionManager {
     base_interval: Duration,
     scheduler: ActionScheduler,
     first_run: bool,
+    last_factboard_cleanup: Option<NaiveDate>,
 }
 
 impl InteractionManager {
@@ -438,6 +459,7 @@ impl InteractionManager {
             base_interval,
             scheduler,
             first_run: true,
+            last_factboard_cleanup: get_last_cleanup_date(),
         }
     }
 
@@ -460,6 +482,17 @@ impl InteractionManager {
             self.last_interaction = now; // Reset routine timer too
             return Some(crate::types::ChatInput {
                 text: format!("[SYSTEM_EVENT] Scheduled Reminder triggered: '{}'. If you deem this reminder critical or the user won't notice your speech bubble, use 'send_notification' to alert them.", memo),
+                images: vec![],
+            });
+        }
+
+        let current_date = Local::now().date_naive();
+        if current_date.weekday() == chrono::Weekday::Sun && self.last_factboard_cleanup != Some(current_date) {
+            self.last_factboard_cleanup = Some(current_date);
+            set_last_cleanup_date(current_date);
+            self.last_interaction = now; // Reset routine timer
+            return Some(crate::types::ChatInput {
+                text: "[SYSTEM_EVENT] Weekly Routine: Today is Sunday. Please review and clean up the Fact Board using the 'memory_skill' tools (get_facts, delete_fact, update_fact_board, etc). Remove obsolete or temporary facts and consolidate related information. Once done, use 'send_notification' to inform the user of what was cleaned up.".to_string(),
                 images: vec![],
             });
         }
