@@ -254,7 +254,16 @@ impl ChatKernel {
                 let _ = tx.send(AiResponseEvent::Status(ThinkingState::Network));
                 
                 tracing::debug!("Requesting LLM with {} messages", messages.len());
-                let response_result = client.chat(messages.clone(), tools_opt.clone()).await;
+                let mut retries = 0;
+                let max_retries = 3;
+                let mut response_result = client.chat(messages.clone(), tools_opt.clone()).await;
+                
+                while response_result.is_err() && retries < max_retries {
+                    retries += 1;
+                    tracing::warn!("AI request failed, retrying {}/{}...", retries, max_retries);
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    response_result = client.chat(messages.clone(), tools_opt.clone()).await;
+                }
                 let _ = tx.send(AiResponseEvent::Status(ThinkingState::Standard));
 
                 match response_result {
@@ -361,7 +370,11 @@ impl ChatKernel {
                     }
                     Err(e) => {
                         tracing::error!("AI Client Error: {}", e);
-                        let _ = tx.send(AiResponseEvent::Response(format!("AI Error: {}", e)));
+                        if is_system_event {
+                            let _ = tx.send(AiResponseEvent::Response(format!("后台系统任务失败 (已重试3次): {}", e)));
+                        } else {
+                            let _ = tx.send(AiResponseEvent::Response(format!("AI Error: {}", e)));
+                        }
                         let _ = tx.send(AiResponseEvent::Status(ThinkingState::None));
                         return;
                     }
