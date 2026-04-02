@@ -1,4 +1,3 @@
-use rusttype::{point, Font, Scale};
 use softbuffer::{Context, Surface};
 use std::num::NonZeroU32;
 use std::rc::Rc;
@@ -10,7 +9,6 @@ use winit::{
     window::{Window, WindowBuilder, WindowLevel},
 };
 use crate::ui_primitives::{draw_rounded_rect_with_border, draw_circle};
-use rusttype::PositionedGlyph;
 
 #[derive(Clone)]
 pub struct Thumbnail {
@@ -43,7 +41,6 @@ pub struct ChatWindow {
     #[allow(dead_code)]
     context: Context<Rc<Window>>,
     surface: Surface<Rc<Window>, Rc<Window>>,
-    font: Font<'static>,
     input_text: String,
     is_visible: bool,
     cursor_blink_start: std::time::Instant,
@@ -58,13 +55,7 @@ pub struct ChatWindow {
     proxy: winit::event_loop::EventLoopProxy<()>,
     cursor_byte_idx: usize,
     pub selection_start: Option<usize>,
-    // Optimization: Cache layout
-    cached_layout: Vec<Vec<PositionedGlyph<'static>>>,
-    cached_line_heights: Vec<f32>,
     layout_valid: bool,
-    text_buffer: Vec<u32>,
-    text_buffer_w: u32,
-    text_buffer_h: u32,
     ignore_next_char: bool,
     is_selecting: bool,
 }
@@ -99,18 +90,12 @@ impl ChatWindow {
         let context = Context::new(window.clone()).unwrap();
         let surface = Surface::new(&context, window.clone()).unwrap();
 
-        // Load Font (Microsoft YaHei) like settings
-        let font_data =
-            std::fs::read("C:\\Windows\\Fonts\\msyh.ttc").expect("Failed to load msyh.ttc");
-        let font = Font::try_from_vec(font_data).expect("Error constructing Font");
-
         let (image_tx, image_rx) = std::sync::mpsc::channel();
 
         Self {
             window,
             context,
             surface,
-            font,
             input_text: String::new(),
             is_visible: false,
             cursor_blink_start: std::time::Instant::now(),
@@ -124,12 +109,7 @@ impl ChatWindow {
             proxy,
             cursor_byte_idx: 0,
             selection_start: None,
-            cached_layout: Vec::new(),
-            cached_line_heights: Vec::new(),
             layout_valid: false,
-            text_buffer: Vec::new(),
-            text_buffer_w: 0,
-            text_buffer_h: 0,
             ignore_next_char: false,
             is_selecting: false,
         }
@@ -514,7 +494,6 @@ impl ChatWindow {
                         if let Ok(img) =
                             image::load_from_memory_with_format(&bmp_file, image::ImageFormat::Bmp)
                         {
-                            let rgba = img.to_rgba8();
                             let slot_id = self.next_slot_id;
                             self.next_slot_id += 1;
                             self.slots.push(ImageSlot {
@@ -611,16 +590,13 @@ impl ChatWindow {
 
     fn set_cursor_at_mouse(&mut self) {
         let (mx, my) = self.mouse_pos;
-        let scale = Scale::uniform(24.0);
         let padding = 10.0;
-        let v_metrics = self.font.v_metrics(scale);
-        let line_height = v_metrics.ascent - v_metrics.descent + v_metrics.line_gap;
         let text_y_offset = if self.slots.is_empty() { 0.0 } else { 100.0 };
         let max_width = 600.0 - (padding * 2.0);
 
         // Relative to text area
-        let rx = mx as f32 - padding;
-        let ry = my as f32 - padding - text_y_offset;
+        let rx = mx as f32 - padding as f32;
+        let ry = my as f32 - padding as f32 - text_y_offset as f32;
 
         if ry < 0.0 {
             self.cursor_byte_idx = 0;
@@ -628,50 +604,19 @@ impl ChatWindow {
             return;
         }
 
-        let mut lines = Vec::new();
-        let mut current_line_start = 0;
-        let mut current_width = 0.0f32;
-        for (i, c) in self.input_text.char_indices() {
-            let glyph = self.font.glyph(c).scaled(scale);
-            let advance = glyph.h_metrics().advance_width;
-            if current_width + advance > max_width {
-                lines.push(current_line_start..i);
-                current_line_start = i;
-                current_width = 0.0;
-            }
-            current_width += advance;
+        let char_idx = crate::ui_primitives::get_cursor_index_from_xy(
+            &self.input_text, 24.0, max_width as u32, rx, ry
+        );
+        let mut byte_idx = 0;
+        for (i, c) in self.input_text.char_indices().take(char_idx) {
+            byte_idx = i + c.len_utf8();
         }
-        lines.push(current_line_start..self.input_text.len());
-
-        let line_height_f32 = line_height as f32;
-        let line_idx = (ry / line_height_f32).floor() as usize;
-        let target_line_idx = if line_idx < lines.len() {
-            line_idx
-        } else {
-            lines.len() - 1
-        };
-        let target_line_range = &lines[target_line_idx];
-
-        // Find character in line
-        let mut best_idx = target_line_range.start;
-        let mut current_x = 0.0f32;
-        let mut min_dist = rx.abs(); // Distance to start of line
-
-        for (i, c) in self.input_text[target_line_range.clone()].char_indices() {
-            let glyph = self.font.glyph(c).scaled(scale);
-            let advance = glyph.h_metrics().advance_width;
-            
-            // Current character's right edge
-            let next_x = current_x + advance;
-            let dist = (rx - next_x).abs();
-            if dist < min_dist {
-                min_dist = dist;
-                best_idx = target_line_range.start + i + c.len_utf8();
-            }
-            current_x = next_x;
+        // Fallback for edge cases
+        if char_idx > self.input_text.chars().count() {
+            byte_idx = self.input_text.len();
         }
-        
-        self.cursor_byte_idx = best_idx;
+
+        self.cursor_byte_idx = byte_idx;
         self.cursor_blink_start = std::time::Instant::now();
         self.request_redraw();
     }
@@ -781,72 +726,19 @@ impl ChatWindow {
     }
 
     fn redraw(&mut self) {
-        let scale = Scale::uniform(24.0);
-        let v_metrics = self.font.v_metrics(scale);
+        let font_size = 24.0;
         let padding = 10.0;
-        let line_height = v_metrics.ascent - v_metrics.descent + v_metrics.line_gap;
         let max_width = 600.0 - (padding * 2.0);
 
-        // 1. Calculate layout & Render to text_buffer if invalid
+        // 1. Calculate target size based on DirectWrite text measurement
         if !self.layout_valid {
-            self.cached_layout.clear();
-            self.cached_line_heights.clear();
-
-            let text_y_offset = if self.slots.is_empty() { 0.0 } else { 100.0 };
-            let mut current_line_glyphs = Vec::new();
-            let mut current_width = 0.0f32;
-            let mut line_y = padding + v_metrics.ascent + text_y_offset;
-
-            // Simple wrapping & layout
-            for c in self.input_text.chars() {
-                let glyph = self.font.glyph(c).scaled(scale);
-                let advance = glyph.h_metrics().advance_width;
-
-                if current_width + advance > max_width && !current_line_glyphs.is_empty() {
-                    self.cached_layout.push(current_line_glyphs);
-                    current_line_glyphs = Vec::new();
-                    current_width = 0.0;
-                    line_y += line_height;
-                }
-
-                let offset = point(padding + current_width, line_y);
-                current_line_glyphs.push(glyph.positioned(offset));
-                current_width += advance;
-            }
-            self.cached_layout.push(current_line_glyphs);
-
-            let text_h = (self.cached_layout.len() as f32 * line_height).max(line_height) as u32;
+            let (_, th) = crate::ui_primitives::get_metrics_dw(&self.input_text, font_size, max_width as u32);
+            let text_h = (th as u32).max(font_size as u32 + 8);
+            
             let thumbnail_h = if self.slots.is_empty() { 0 } else { 100 };
             let button_row_h = 40;
             let total_padding = (padding * 2.0) as u32;
             let target_height = total_padding + thumbnail_h + text_h + button_row_h;
-
-            // Prepare text_buffer for this layout
-            self.text_buffer_w = 600;
-            self.text_buffer_h = target_height;
-            self.text_buffer.clear();
-            self.text_buffer.resize((600 * target_height) as usize, 0);
-
-            // Rasterize all glyphs into the buffer ONCE
-            for line in &self.cached_layout {
-                for glyph in line {
-                    if let Some(bb) = glyph.pixel_bounding_box() {
-                        glyph.draw(|x, y, v| {
-                            let px = x as i32 + bb.min.x;
-                            let py = y as i32 + bb.min.y;
-                            if v > 0.0 && px >= 0 && px < 600 && py >= 0 && py < target_height as i32 {
-                                let alpha = (v * 255.0) as u32;
-                                if alpha > 0 {
-                                    // Simple pre-multiplied-style or solid white with alpha in buffer
-                                    // Here we store white (0xFFFFFF) and we can blend or just store alpha
-                                    // Since background is solid, we'll store the final text color with alpha
-                                    self.text_buffer[py as usize * 600 + px as usize] = (alpha << 24) | 0xFFFFFF;
-                                }
-                            }
-                        });
-                    }
-                }
-            }
 
             let current_size = self.window.inner_size();
             if current_size.height != target_height {
@@ -961,134 +853,90 @@ impl ChatWindow {
         }
 
         // Draw Selection Highlight
+        let text_y_base = if self.slots.is_empty() { 0.0 } else { 100.0 };
+        
         if let Some(sel_start) = self.selection_start {
             if sel_start != self.cursor_byte_idx {
                 let sel_min = sel_start.min(self.cursor_byte_idx);
                 let sel_max = sel_start.max(self.cursor_byte_idx);
                 
-                let _text_y_base = if self.slots.is_empty() { 0.0 } else { 100.0 };
-                let mut byte_offset = 0;
-                let mut char_iter = self.input_text.chars();
-
-                for line in &self.cached_layout {
-                    let mut line_min_x = f32::MAX;
-                    let mut line_max_x = f32::MIN;
-                    let mut has_intersection = false;
-                    let mut line_baseline_y = 0.0;
-
-                    for glyph in line {
-                        let char_len = if let Some(c) = char_iter.next() { c.len_utf8() } else { 0 };
-                        let glyph_start = byte_offset;
-                        let glyph_end = byte_offset + char_len;
-                        byte_offset += char_len;
-
-                        if glyph_start < sel_max && glyph_end > sel_min {
-                            let pos = glyph.position();
-                            let width = glyph.unpositioned().h_metrics().advance_width;
-                            line_min_x = line_min_x.min(pos.x);
-                            line_max_x = line_max_x.max(pos.x + width);
-                            line_baseline_y = pos.y;
-                            has_intersection = true;
-                        }
-                    }
-
-                    if has_intersection {
-                        let rx = line_min_x as i32;
-                        let ry = (line_baseline_y - v_metrics.ascent) as i32;
-                        let rw = (line_max_x - line_min_x) as u32;
-                        let rh = (v_metrics.ascent - v_metrics.descent) as u32;
-
-                        for sy in ry..(ry + rh as i32) {
-                            for sx in rx..(rx + rw as i32) {
-                                if sx >= 0 && sx < buf_w as i32 && sy >= 0 && sy < buf_h as i32 {
-                                    let idx = sy as usize * buf_w + sx as usize;
-                                    let bg = buffer[idx];
-                                    let sel_color = 0x00AADDFF; // Selection blue
-                                    let alpha = 120; // Semi-transparent
-                                    
-                                    let r = (((sel_color >> 16) & 0xFF) * alpha + ((bg >> 16) & 0xFF) * (255 - alpha)) / 255;
-                                    let g = (((sel_color >> 8) & 0xFF) * alpha + ((bg >> 8) & 0xFF) * (255 - alpha)) / 255;
-                                    let b = ((sel_color & 0xFF) * alpha + (bg & 0xFF) * (255 - alpha)) / 255;
-                                    buffer[idx] = (0xFF << 24) | (r << 16) | (g << 8) | b;
-                                }
-                            }
-                        }
-                    }
+                let char_sel_start = self.input_text[..sel_min].chars().count();
+                let char_sel_end = self.input_text[..sel_max].chars().count();
+                
+                let rects = crate::ui_primitives::get_selection_rects(
+                    &self.input_text,
+                    font_size,
+                    max_width as u32,
+                    char_sel_start,
+                    char_sel_end,
+                );
+                
+                for (rx, ry, _rw, _rh) in rects {
+                    crate::ui_primitives::draw_rect(
+                        &mut buffer,
+                        buf_w as u32,
+                        (padding as f32 + rx) as i32,
+                        (padding as f32 + text_y_base as f32 + ry) as i32,
+                        _rw as u32,
+                        _rh as u32,
+                        0x7700AADD, // Semi-transparent blue for selection
+                        buf_w as u32,
+                        buf_h as u32,
+                    );
                 }
             }
         }
 
-        // Draw Text from Pre-rendered Buffer (Alpha Blending) - Region Optimized
-        let text_y_start = (padding + (if self.slots.is_empty() { 0.0 } else { 100.0 })) as usize;
-        let text_y_end = (text_y_start + self.text_buffer_h as usize).min(buf_h);
+        // Draw Text from DirectWrite
+        crate::ui_primitives::draw_text_dw_ex(
+            &mut buffer,
+            buf_w as u32,
+            &self.input_text,
+            padding as i32,
+            (padding as f32 + text_y_base as f32) as i32,
+            font_size,
+            text_color,
+            max_width as u32,
+            buf_h as u32,
+            0.0,
+            0.0,
+            max_width as u32,
+        );
 
-        for py in text_y_start..text_y_end {
-            let row_start = py * buf_w;
-            let src_row_start = py * 600;
-            for px in 0..buf_w {
-                let color_with_alpha = self.text_buffer[src_row_start + px];
-                let alpha = (color_with_alpha >> 24) & 0xFF;
-                if alpha > 0 {
-                    if alpha == 255 {
-                        buffer[row_start + px] = text_color;
-                    } else {
-                        // Blend with background
-                        let bg = buffer[row_start + px];
-                        let r = ((0xFF * alpha + ((bg >> 16) & 0xFF) * (255 - alpha)) / 255) as u32;
-                        let g = ((0xFF * alpha + ((bg >> 8) & 0xFF) * (255 - alpha)) / 255) as u32;
-                        let b = ((0xFF * alpha + (bg & 0xFF) * (255 - alpha)) / 255) as u32;
-                        buffer[row_start + px] = (0xFF << 24) | (r << 16) | (g << 8) | b;
-                    }
-                }
-            }
-        }
-
-        // Track cursor position from Cache
-        let text_y_base = if self.slots.is_empty() { 0.0 } else { 100.0 };
-        let mut cursor_pos = (padding as i32, (padding + text_y_base) as i32);
-        let mut found_cursor = false;
-        let mut byte_counter = 0;
-        let mut char_iter = self.input_text.chars();
-
-        for line in &self.cached_layout {
-            for glyph in line {
-                if byte_counter == self.cursor_byte_idx {
-                    cursor_pos = (glyph.position().x as i32, (glyph.position().y - v_metrics.ascent) as i32);
-                    found_cursor = true;
-                }
-                if let Some(c) = char_iter.next() {
-                    byte_counter += c.len_utf8();
-                }
-            }
-        }
+        // Track cursor position
+        let char_cursor = self.input_text[..self.cursor_byte_idx].chars().count();
+        let (cx, cy, ch) = crate::ui_primitives::get_xy_from_cursor_index(
+            &self.input_text,
+            font_size,
+            max_width as u32,
+            char_cursor,
+        );
         
-        if !found_cursor && byte_counter == self.cursor_byte_idx {
-            if let Some(last_line) = self.cached_layout.last() {
-                if let Some(last_glyph) = last_line.last() {
-                    cursor_pos = ((last_glyph.position().x + last_glyph.unpositioned().h_metrics().advance_width) as i32, 
-                                  (last_glyph.position().y - v_metrics.ascent) as i32);
-                }
-            }
-        }
+        let cursor_x = (padding as f32 + cx) as i32;
+        let cursor_y = (padding as f32 + text_y_base as f32 + cy) as i32;
+        let cursor_pos = (cursor_x, cursor_y);
 
         // Cursor Blink
         let elapsed = self.cursor_blink_start.elapsed().as_millis();
         if (elapsed % 1000) < 500 {
-            let cx = cursor_pos.0 + 1;
-            let cy = cursor_pos.1;
-            for y in cy..(cy + 24) {
-                for x in cx..(cx + 2) {
-                    if x >= 0 && x < buf_w as i32 && y >= 0 && y < buf_h as i32 {
-                        buffer[y as usize * buf_w + x as usize] = cursor_color;
-                    }
-                }
-            }
+            let ch_actual = if ch > 0.0 { ch } else { font_size + 4.0 };
+            crate::ui_primitives::draw_rect(
+                &mut buffer,
+                buf_w as u32,
+                cursor_pos.0,
+                cursor_pos.1,
+                2,
+                ch_actual as u32,
+                cursor_color,
+                buf_w as u32,
+                buf_h as u32,
+            );
         }
 
         // Use winit's IME positioning
         self.window.set_ime_cursor_area(
             winit::dpi::PhysicalPosition::new(cursor_pos.0 as f64, cursor_pos.1 as f64),
-            winit::dpi::PhysicalSize::new(2.0, 24.0),
+            winit::dpi::PhysicalSize::new(2.0, font_size as f64),
         );
 
         buffer.present().unwrap();
