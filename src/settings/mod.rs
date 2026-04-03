@@ -274,6 +274,7 @@ pub enum SettingsAction {
     RequestGc,
     ToggleAutoStart,
     SaveWindowConfig,
+    OpenWorkingDirectory,
 }
 
 pub struct SettingsWindow {
@@ -1025,6 +1026,14 @@ impl SettingsWindow {
         }
 
         match self.current_tab {
+            0 => {
+                // Tab 0: Home
+                // Check "Open Working Directory" button hit
+                // Coordinates from home.rs: s(230), sy_val(415), w: 200, h: 45
+                if lx >= 230.0 && lx <= 230.0 + 200.0 && ly >= 415.0 && ly <= 415.0 + 45.0 {
+                    return SettingsAction::OpenWorkingDirectory;
+                }
+            }
             1 => {
                 // Tab 1: General
                 let card_w = 560.0;

@@ -952,6 +952,11 @@ fn main() {
                                                     window_config.save();
                                                     sw.request_redraw();
                                                 }
+                                                settings::SettingsAction::OpenWorkingDirectory => {
+                                                    let _ = std::process::Command::new("explorer")
+                                                        .arg(".")
+                                                        .spawn();
+                                                }
                                                 _ => {}
                                             }
                                         }

@@ -50,8 +50,70 @@ pub fn draw(
         COLOR_TEXT_SEC,
     );
 
+    // Quick Access Card
+    draw_rounded_rect(
+        buffer,
+        w,
+        s(210) as i32,
+        sy_val(340) as i32,
+        (560.0 * scale) as u32,
+        (160.0 * scale) as u32,
+        12,
+        COLOR_BG_CARD,
+        w,
+        h,
+    );
+
+    draw_text(
+        buffer,
+        w,
+        &[],
+        "Quick Access",
+        s(230) as i32,
+        sy_val(370) as i32,
+        sc(20.0),
+        COLOR_TEXT_MAIN,
+    );
+
+    // Open Working Directory Button
+    let btn_x = s(230) as i32;
+    let btn_y = sy_val(415) as i32;
+    let btn_w = (200.0 * scale) as u32;
+    let btn_h = (45.0 * scale) as u32;
+
+    draw_rounded_rect_with_border(
+        buffer,
+        w,
+        btn_x,
+        btn_y,
+        btn_w,
+        btn_h,
+        8,
+        COLOR_BG_APP,    // Button background
+        COLOR_PRIMARY,   // Border color
+        2,               // Border thickness
+        w,
+        h,
+    );
+
+    let btn_text = "Open Directory";
+    let font_size = sc(14.0);
+    // 获取文本度量信息以进行精确居中
+    let (tw_text, th_text) = get_metrics_dw(btn_text, font_size, btn_w);
+    
+    draw_text(
+        buffer,
+        w,
+        &[],
+        btn_text,
+        btn_x + (btn_w as i32 - tw_text as i32) / 2,
+        btn_y + (btn_h as i32 - th_text as i32) / 2,
+        font_size,
+        COLOR_PRIMARY,
+    );
+
     let viewport_height = 600.0;
-    let content_height = 320.0;
+    let content_height = 520.0;
 
     (viewport_height, content_height, None)
 }
