@@ -8,6 +8,7 @@ pub mod memory_skill;
 pub mod notification_skill;
 pub mod reminder_skill;
 pub mod system;
+pub mod memo_skill;
 pub mod todo_skill;
 pub mod work_log;
 
@@ -53,6 +54,7 @@ impl SkillManager {
         )));
         manager.register(Arc::new(notification_skill::NotificationSkill::new()));
         manager.register(Arc::new(todo_skill::TodoSkill::new(memory.clone())));
+        manager.register(Arc::new(memo_skill::MemoSkill::new(memory.clone())));
         manager.register(Arc::new(work_log::WorkLogSkill::new(memory)));
 
         manager

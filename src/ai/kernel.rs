@@ -113,6 +113,29 @@ impl ChatKernel {
                 }
             }
         }
+        // --- #memo FAST-TRACK ---
+        if input.trim_start().starts_with("#memo ") {
+            let memo_content = input.trim_start()["#memo ".len()..].trim();
+            if !memo_content.is_empty() {
+                match crate::ai::skills::memo_skill::MemoSkill::add_memo_local(memo_content) {
+                    Ok(_) => {
+                        let confirmation = "记下来啦！我会帮你盯着的~ [IMG]assets/stickers/好的.gif";
+                        
+                        self.memory.add_conversation_item("user", &input, 1).ok();
+                        self.memory.add_conversation_item("assistant", confirmation, 1).ok();
+                        
+                        let _ = tx.send(AiResponseEvent::Response(confirmation.to_string()));
+                        let _ = tx.send(AiResponseEvent::Status(ThinkingState::None));
+                        return;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AiResponseEvent::Response(format!("备忘添加失败: {}", e)));
+                        let _ = tx.send(AiResponseEvent::Status(ThinkingState::None));
+                        return;
+                    }
+                }
+            }
+        }
         // -----------------------
 
         // 1. Initial User Message
@@ -194,10 +217,7 @@ impl ChatKernel {
             }
 
             // --- Inject Dynamic Todo Context ---
-            let pending_todos: Vec<_> = crate::ai::skills::todo_skill::TodoSkill::list_todos_local()
-                .into_iter()
-                .filter(|t| t.status == crate::ai::skills::todo_skill::TodoStatus::Pending)
-                .collect();
+            let pending_todos: Vec<_> = crate::ai::skills::todo_skill::TodoSkill::list_todos_local(true);
             
             if !pending_todos.is_empty() {
                 let mut todo_list_str = String::from("[Current Pending Todos]\n");
@@ -206,16 +226,36 @@ impl ChatKernel {
                 }
                 
                 let todo_instruction = "\n[Instruction]\n\
-                    These are the user's current pending tasks. You should be aware of them to maintain context, \
-                    but DO NOT mention or remind the user about them unless:\n\
-                    1. The user explicitly asks about their tasks or \"what's next\".\n\
-                    2. The current conversation is highly relevant to a specific task.\n\
-                    3. The user seems to have forgotten their plan or asks for suggestions.\n\
-                    Maintain a helpful but non-intrusive assistant persona.";
+                    These are the user's current pending tasks. Please act as a proactive assistant: \
+                    be aware of these tasks, and naturally remind or suggest follow-up actions to the user \
+                    during the conversation whenever relevant, helping them stay productive.";
                 
                 messages.push(Message {
                     role: "system".to_string(),
                     content: Some(Content::Simple(format!("{}{}", todo_list_str, todo_instruction))),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+            }
+            // -----------------------------------
+
+            // --- Inject Dynamic Memo Context ---
+            let memos = crate::ai::skills::memo_skill::MemoSkill::list_memos_local();
+            if !memos.is_empty() {
+                let mut memo_str = String::from("[User Memos (Things to remember)]\n");
+                for (i, m) in memos.iter().enumerate() {
+                    memo_str.push_str(&format!("{}. {}\n", i + 1, m.content));
+                }
+                
+                let memo_instruction = "\n[Instruction]\n\
+                    These are things the user wants to remember. If the user seems to have forgotten something \
+                    mentioned here, or if the context is highly relevant, please proactively remind them in a natural way. \
+                    IMPORTANT: Once the user confirms a memo event is completed or no longer needed, you SHOULD proactively \
+                    call 'delete_memo' to keep the list clean and focused.";
+                
+                messages.push(Message {
+                    role: "system".to_string(),
+                    content: Some(Content::Simple(format!("{}{}", memo_str, memo_instruction))),
                     tool_calls: None,
                     tool_call_id: None,
                 });

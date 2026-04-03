@@ -9,11 +9,16 @@ use std::path::PathBuf;
 use chrono::{Local, DateTime};
 use uuid::Uuid;
 
+fn default_time() -> DateTime<Local> {
+    Local::now()
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Todo {
     pub id: String,
     pub content: String,
     pub status: TodoStatus,
+    #[serde(default = "default_time")]
     pub created_at: DateTime<Local>,
     pub completed_at: Option<DateTime<Local>>,
 }
@@ -72,8 +77,13 @@ impl TodoSkill {
         Ok(format!("Todo added: {}", content))
     }
 
-    pub fn list_todos_local() -> Vec<Todo> {
-        Self::load_todos()
+    pub fn list_todos_local(only_pending: bool) -> Vec<Todo> {
+        let todos = Self::load_todos();
+        if only_pending {
+            todos.into_iter().filter(|t| t.status == TodoStatus::Pending).collect()
+        } else {
+            todos
+        }
     }
 
     pub fn complete_todo_local(id_prefix: &str) -> Result<String, String> {
@@ -112,7 +122,8 @@ impl Skill for TodoSkill {
     fn description(&self) -> &str {
         "Manages a todo list. \
          - add_todo: Adds a new task. \
-         - list_todos: Lists all current todos. \
+         - list_todos: Lists current pending tasks (will NOT show completed ones). \
+         - list_completed_todos: Lists recently finished tasks. \
          - complete_todo: Marks a todo as finished by its ID prefix. \
          - delete_todo: Removes a todo. \
          Shortcut: Use '#todo <task>' in chat for quick adding without LLM."
@@ -126,14 +137,35 @@ impl Skill for TodoSkill {
                 Self::add_todo_local(content)
             }
             "list_todos" => {
-                let todos = Self::list_todos_local();
+                let todos = Self::list_todos_local(true);
                 if todos.is_empty() {
-                    Ok("No todos found.".to_string())
+                    Ok("No pending todos found.".to_string())
                 } else {
-                    let mut list = String::from("Current Todos:\n");
+                    let mut list = String::from("Current Pending Todos:\n");
                     for todo in todos {
-                        let status_char = if todo.status == TodoStatus::Done { "x" } else { " " };
-                        list.push_str(&format!("- [{}] ({}) {}\n", status_char, &todo.id[..4], todo.content));
+                        list.push_str(&format!("- [ ] ({}) {} (Added: {})\n", 
+                            &todo.id[..4], 
+                            todo.content,
+                            todo.created_at.format("%Y-%m-%d %H:%M")
+                        ));
+                    }
+                    Ok(list)
+                }
+            }
+            "list_completed_todos" => {
+                let todos = Self::load_todos();
+                let completed: Vec<_> = todos.into_iter().filter(|t| t.status == TodoStatus::Done).collect();
+                if completed.is_empty() {
+                    Ok("No completed todos found.".to_string())
+                } else {
+                    let mut list = String::from("Recently Completed Todos:\n");
+                    for todo in completed {
+                        let comp_time = todo.completed_at.map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|| "N/A".to_string());
+                        list.push_str(&format!("- [x] ({}) {} (Done at: {})\n", 
+                            &todo.id[..4], 
+                            todo.content,
+                            comp_time
+                        ));
                     }
                     Ok(list)
                 }
@@ -169,7 +201,7 @@ impl Skill for TodoSkill {
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["add_todo", "list_todos", "complete_todo", "delete_todo"]
+                            "enum": ["add_todo", "list_todos", "list_completed_todos", "complete_todo", "delete_todo"]
                         },
                         "content": {
                             "type": "string",
