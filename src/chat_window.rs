@@ -58,6 +58,7 @@ pub struct ChatWindow {
     layout_valid: bool,
     ignore_next_char: bool,
     is_selecting: bool,
+
 }
 
 pub enum ChatAction {
@@ -65,6 +66,9 @@ pub enum ChatAction {
     Send(crate::types::ChatInput),
     Close,
 }
+
+
+
 
 impl ChatWindow {
     pub fn new<T>(
@@ -112,8 +116,11 @@ impl ChatWindow {
             layout_valid: false,
             ignore_next_char: false,
             is_selecting: false,
+
         }
     }
+
+
 
     pub fn id(&self) -> winit::window::WindowId {
         self.window.id()
@@ -148,6 +155,7 @@ impl ChatWindow {
     }
 
     pub fn hide(&mut self) {
+
         self.window.set_visible(false);
         self.is_visible = false;
     }
@@ -224,6 +232,7 @@ impl ChatWindow {
                     self.is_selecting = true;
                     if self.plus_button_hovered {
                         self.trigger_upload();
+
                     } else if let Some(idx) = self.get_thumbnail_at_mouse() {
                         self.remove_image(idx);
                     } else {
@@ -425,6 +434,8 @@ impl ChatWindow {
         self.plus_button_hovered =
             mx >= btn_x && mx <= btn_x + btn_size && my >= btn_y && my <= btn_y + btn_size;
 
+
+
         self.hovered_thumb = self.get_thumbnail_at_mouse();
 
         self.request_redraw();
@@ -605,7 +616,7 @@ impl ChatWindow {
         }
 
         let char_idx = crate::ui_primitives::get_cursor_index_from_xy(
-            &self.input_text, 24.0, max_width as u32, rx, ry
+            &self.input_text, 18.0, max_width as u32, rx, ry
         );
         let mut byte_idx = 0;
         for (i, c) in self.input_text.char_indices().take(char_idx) {
@@ -726,7 +737,7 @@ impl ChatWindow {
     }
 
     fn redraw(&mut self) {
-        let font_size = 24.0;
+        let font_size = 18.0;
         let padding = 10.0;
         let max_width = 600.0 - (padding * 2.0);
 
@@ -852,6 +863,9 @@ impl ChatWindow {
             }
         }
 
+
+
+
         // Draw Selection Highlight
         let text_y_base = if self.slots.is_empty() { 0.0 } else { 100.0 };
         
@@ -919,14 +933,13 @@ impl ChatWindow {
         // Cursor Blink
         let elapsed = self.cursor_blink_start.elapsed().as_millis();
         if (elapsed % 1000) < 500 {
-            let ch_actual = if ch > 0.0 { ch } else { font_size + 4.0 };
             crate::ui_primitives::draw_rect(
                 &mut buffer,
                 buf_w as u32,
                 cursor_pos.0,
                 cursor_pos.1,
                 2,
-                ch_actual as u32,
+                ch as u32,
                 cursor_color,
                 buf_w as u32,
                 buf_h as u32,

@@ -15,6 +15,7 @@ mod pomodoro;
 mod render;
 mod screen_capture;
 mod settings;
+
 mod stickers;
 mod theme;
 mod tts;
@@ -83,10 +84,11 @@ fn main() {
 
     // Global Hotkey Setup
     let hotkey_manager = GlobalHotKeyManager::new().unwrap();
-    let hotkey = HotKey::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyM);
-    if let Err(e) = hotkey_manager.register(hotkey) {
+    let hotkey_m = HotKey::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyM);
+    if let Err(e) = hotkey_manager.register(hotkey_m) {
         tracing::warn!("Failed to register global hotkey (Alt+Shift+M): {:?}. Another process might be using it.", e);
     }
+
     let hotkey_channel = GlobalHotKeyEvent::receiver();
 
     // Load assets (Right-facing by default)
@@ -410,6 +412,8 @@ fn main() {
                     let center_x = m_x_logical + (m_w_logical / 2.0) - (chat_w / 2.0);
                     let center_y = m_y_logical + (m_h_logical / 2.0) - (chat_h / 2.0);
                     chat_window.show(winit::dpi::LogicalPosition::new(center_x, center_y));
+                    
+
                 }
             }
 

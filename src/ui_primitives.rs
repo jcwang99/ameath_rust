@@ -1500,7 +1500,7 @@ pub fn get_xy_from_cursor_index(
     index: usize,
 ) -> (f32, f32, f32) {
     if text.is_empty() {
-        return (0.0, 0.0, font_size);
+        return (0.0, 0.0, font_size * 1.35);
     }
     unsafe {
         let layout = get_or_create_layout(text, font_size, max_width);
