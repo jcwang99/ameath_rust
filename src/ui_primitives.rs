@@ -577,7 +577,7 @@ pub fn draw_rounded_rect(
         let cache_lock = PRIMITIVE_CACHE.get_or_init(|| RwLock::new(CacheState::new()));
         let mut cache = cache_lock.write().unwrap();
 
-        while cache.order.len() >= 50 {
+        while cache.order.len() >= 20 {
             let oldest = cache.order.remove(0);
             cache.map.remove(&oldest);
         }
@@ -643,14 +643,9 @@ pub fn draw_rounded_rect_border_alpha_internal(
         let row = &mut alpha[row_idx..row_idx + w as usize];
 
         if dy == 0 {
-            // Straight side borders
-            let is_edge_y = cy < thickness || cy >= h - thickness;
-            if is_edge_y {
-                row.fill(255);
-            } else {
-                row[0..thickness as usize].fill(255);
-                row[w as usize - thickness as usize..w as usize].fill(255);
-            }
+            // Vertical middle: draw side borders
+            row[0..thickness as usize].fill(255);
+            row[w as usize - thickness as usize..w as usize].fill(255);
         } else {
             let dy_f = dy as f32;
             let dy_sq = dy_f * dy_f;
@@ -662,18 +657,15 @@ pub fn draw_rounded_rect_border_alpha_internal(
                 if is_left || is_right {
                     let dx = if is_left { (r - cx) as i32 } else { (cx - (w - r - 1)) as i32 };
                     let dx_f = dx as f32;
-                    let dist_sq = dx_f * dx_f + dy_sq;
-                    let dist = dist_sq.sqrt();
+                    let dist = (dx_f * dx_f + dy_sq).sqrt();
                     
-                    // AA for outer edge
+                    // Improved AA for smooth corners
                     let outer_coverage = (r_f + 0.5 - dist).clamp(0.0, 1.0);
-                    // AA for inner edge
-                    let inner_coverage = (dist - (r_inner - 0.5)).clamp(0.0, 1.0);
-                    
-                    let coverage = outer_coverage.min(inner_coverage);
+                    let inner_coverage = (r_inner + 0.5 - dist).clamp(0.0, 1.0);
+                    let coverage = (outer_coverage - inner_coverage).clamp(0.0, 1.0);
                     row[cx as usize] = (coverage * 255.0) as u8;
                 } else {
-                    // Middle horizontal borders
+                    // Middle horizontal part in top/bottom rounding zones
                     if cy < thickness || cy >= h - thickness {
                         row[cx as usize] = 255;
                     }
@@ -1197,8 +1189,8 @@ fn draw_text_dw_ex_internal(
             // Also bypass if it's a "huge" scrolled item to avoid stale rendering bug
             if metrics.height < 3000.0 && !is_huge {
                 let mut cache = get_raster_cache().write().unwrap();
-                // Limit to ~2M pixels (~8MB)
-                while cache.total_pixels + pixel_count > 2_000_000 && !cache.order.is_empty() {
+                // Limit to ~1M pixels (~4MB)
+                while cache.total_pixels + pixel_count > 1_000_000 && !cache.order.is_empty() {
                     let oldest = cache.order.remove(0);
                     if let Some(old_entry) = cache.map.remove(&oldest) {
                         cache.total_pixels -= old_entry.pixel_count;
