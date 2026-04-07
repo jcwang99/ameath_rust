@@ -6,6 +6,9 @@ pub struct HistoryTabState<'a> {
     pub history_scroll_states: &'a mut Vec<f32>,
     pub history_item_rects: &'a mut Vec<(f64, f64, f64, f64)>,
     pub scroll_offset: f32,
+    pub selection_idx: Option<usize>,
+    pub selection_start: Option<usize>,
+    pub cursor_pos: usize,
 }
 
 pub fn draw(
@@ -100,20 +103,77 @@ pub fn draw(
             card_w,
         );
 
+        let content_x = s(230) as i32 + sc(10.0) as i32;
+        let content_y = y_pos_i + sc(35.0) as i32;
+        let content_w = sc(450.0) as u32;
+
+        // Draw selection highlight if any
+        if state.selection_idx == Some(i) {
+            if let Some(sel_start) = state.selection_start {
+                let min_idx = sel_start.min(state.cursor_pos);
+                let max_idx = sel_start.max(state.cursor_pos);
+                if min_idx != max_idx {
+                    let rects = get_selection_rects(
+                        content,
+                        sc(16.0),
+                        content_w,
+                        min_idx,
+                        max_idx,
+                    );
+                    for (rx, ry, rw, rh) in rects {
+                        let draw_y_f = content_y as f32 + ry + (scroll * scale);
+                        let box_bottom = y_pos_i as f32 + card_h as f32;
+                        // Clip to view bounds (approximated)
+                        if draw_y_f >= content_y as f32 && draw_y_f + rh <= box_bottom {
+                            draw_rect_alpha(
+                                buffer,
+                                w,
+                                content_x + rx as i32,
+                                draw_y_f as i32,
+                                rw as u32,
+                                rh as u32,
+                                0x00AADDFF,
+                                0.4,
+                                w,
+                                h,
+                            );
+                        } else if draw_y_f < box_bottom && draw_y_f + rh > content_y as f32 {
+                            // Partial clip handling (simple)
+                            let clip_y = draw_y_f.max(content_y as f32);
+                            let clip_bottom = (draw_y_f + rh).min(box_bottom);
+                            let clip_h = (clip_bottom - clip_y).max(0.0);
+                            draw_rect_alpha(
+                                buffer,
+                                w,
+                                content_x + rx as i32,
+                                clip_y as i32,
+                                rw as u32,
+                                clip_h as u32,
+                                0x00AADDFF,
+                                0.4,
+                                w,
+                                h,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         // 3. Content
         draw_text_dw_ex(
             buffer,
             w,
             content,
-            s(230) as i32 + sc(10.0) as i32,
-            y_pos_i + sc(35.0) as i32,
+            content_x,
+            content_y,
             sc(16.0),
             COLOR_TEXT_MAIN,
-            sc(450.0) as u32,
+            content_w,
             view_h as u32,
             -scroll * scale,
             0.0,
-            sc(450.0) as u32,
+            content_w,
         );
 
         // 4. Sub-scrollbar (if content overflows)

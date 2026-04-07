@@ -26,6 +26,9 @@ pub struct SettingsRenderInput {
     pub system_prompt_scroll_offset: f32,
     pub history: std::sync::Arc<Vec<(String, String)>>,
     pub history_scroll_states: Vec<f32>,
+    pub history_selection_idx: Option<usize>,
+    pub history_selection_start: Option<usize>,
+    pub history_cursor_pos: usize,
     pub system_prompt_hash: u64,
     pub system_prompt_metrics_cache: f32,
     pub current_scale: f32,
@@ -218,6 +221,9 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
                 history_scroll_states: &mut scroll_states,
                 history_item_rects: &mut local_rects,
                 scroll_offset: input.scroll_offset * scale,
+                selection_idx: input.history_selection_idx,
+                selection_start: input.history_selection_start,
+                cursor_pos: input.history_cursor_pos,
             };
             let (v, c, _) =
                 tabs::history::draw(buffer, w, h, scale, off_x, off_y, &mut history_state);
@@ -302,6 +308,9 @@ pub struct SettingsWindow {
     pub history: std::sync::Arc<Vec<(String, String)>>,
     pub history_scroll_states: Vec<f32>,
     pub history_item_rects: Vec<(f64, f64, f64, f64)>,
+    pub history_selection_idx: Option<usize>,
+    pub history_selection_start: Option<usize>,
+    pub history_cursor_pos: usize,
     pub history_hashes: Vec<u64>,
     pub history_metrics_cache: Vec<f32>, // Cached heights
     pub dragging_history_idx: Option<usize>,
@@ -443,6 +452,9 @@ impl SettingsWindow {
             history: std::sync::Arc::new(Vec::new()),
             history_scroll_states: Vec::new(),
             history_item_rects: Vec::new(),
+            history_selection_idx: None,
+            history_selection_start: None,
+            history_cursor_pos: 0,
             history_hashes: Vec::new(),
             history_metrics_cache: Vec::new(),
             system_prompt_hash: 0,
@@ -547,6 +559,9 @@ impl SettingsWindow {
             system_prompt_scroll_offset: self.system_prompt_scroll_offset,
             history: self.history.clone(),
             history_scroll_states: self.history_scroll_states.clone(),
+            history_selection_idx: self.history_selection_idx,
+            history_selection_start: self.history_selection_start,
+            history_cursor_pos: self.history_cursor_pos,
             system_prompt_hash: self.system_prompt_hash,
             system_prompt_metrics_cache: self.system_prompt_metrics_cache,
             current_scale,
@@ -1000,6 +1015,8 @@ impl SettingsWindow {
                     self.current_tab = i;
                     self.scroll_offset = 0.0;
                     self.focused_field = None;
+                    self.history_selection_idx = None;
+                    self.history_selection_start = None;
                     if i == 3 {
                         return SettingsAction::RequestHistory;
                     }
@@ -1342,6 +1359,7 @@ impl SettingsWindow {
             }
             3 => {
                 // Tab 3: History
+                let mut hit_scrollbar = false;
                 if dlx >= 230.0 + 480.0 && dlx <= 230.0 + 480.0 + 8.0 {
                     for (i, (rx_start, ry_start, rx_end, ry_end)) in
                         self.history_item_rects.iter().enumerate()
@@ -1353,6 +1371,7 @@ impl SettingsWindow {
                             let track_y_start = *ry_start + 35.0;
                             let track_h = 140.0;
                             if dly >= track_y_start && dly <= track_y_start + track_h {
+                                hit_scrollbar = true;
                                 self.dragging_history_idx = Some(i);
                                 let progress = ((dly - track_y_start) / track_h).clamp(0.0, 1.0);
                                 let content_h_logical = if self.history_metrics_cache.len() > i {
@@ -1366,6 +1385,42 @@ impl SettingsWindow {
                                 return SettingsAction::None;
                             }
                         }
+                    }
+                }
+                
+                if !hit_scrollbar {
+                    let mut found_selection = false;
+                    for (i, (rx_start, ry_start, rx_end, ry_end)) in self.history_item_rects.iter().enumerate() {
+                        if dly >= *ry_start && dly <= *ry_end {
+                            // Hit this item. Is it inside the text area?
+                            let content_y_base = ry_start + 35.0;
+                            let content_x_base = 240.0;
+                            
+                            // Let's do a simple bounds check
+                            if lx >= content_x_base && lx <= content_x_base + 450.0 && dly >= content_y_base {
+                                if let Some((_, content_text)) = self.history.get(i) {
+                                    self.history_selection_idx = Some(i);
+                                    let scale_f32 = scale as f32;
+                                    let content_scroll = self.history_scroll_states.get(i).copied().unwrap_or(0.0);
+                                    let layout_x = ((lx - content_x_base) as f32 * scale);
+                                    // Y within the text block
+                                    let layout_y = ((dly - content_y_base) as f32 * scale) - (content_scroll * scale_f32);
+                                    self.history_cursor_pos = get_cursor_index_from_xy(content_text, 16.0 * scale_f32, (450.0 * scale_f32) as u32, layout_x, layout_y);
+                                    if !_is_right_click {
+                                        self.history_selection_start = Some(self.history_cursor_pos);
+                                        self.is_dragging_text = true;
+                                    }
+                                    found_selection = true;
+                                    self.window.request_redraw();
+                                    return SettingsAction::None;
+                                }
+                            }
+                        }
+                    }
+                    if !found_selection {
+                        self.history_selection_idx = None;
+                        self.history_selection_start = None;
+                        self.window.request_redraw();
                     }
                 }
             }
@@ -1617,7 +1672,42 @@ impl SettingsWindow {
         let size = self.window.inner_size();
         let scale = ((size.width as f32 / 800.0).min(size.height as f32 / 750.0)) as f32;
         self.last_cursor_action = std::time::Instant::now();
-        if self.current_tab != 2 {
+        if self.current_tab != 2 && self.current_tab != 3 {
+            return false;
+        }
+
+        if self.current_tab == 3 {
+            // History tab specific handling (Ctrl+C for copy)
+            use winit::keyboard::{Key, NamedKey};
+            let is_pressed = event.state == winit::event::ElementState::Pressed;
+            if !is_pressed {
+                return false;
+            }
+            let has_ctrl = modifiers.control_key() || modifiers.super_key();
+            if let Key::Character(c) = &event.logical_key {
+                if has_ctrl && c == "c" {
+                    if let Some(idx) = self.history_selection_idx {
+                        if let Some(item) = self.history.get(idx) {
+                            if let Some(start) = self.history_selection_start {
+                                let min = start.min(self.history_cursor_pos);
+                                let max = start.max(self.history_cursor_pos);
+                                if min != max {
+                                    let chars: Vec<char> = item.1.chars().collect();
+                                    if min < chars.len() && max <= chars.len() {
+                                        let selected: String = chars[min..max].iter().collect();
+                                        use arboard::Clipboard;
+                                        if let Ok(mut cb) = Clipboard::new() {
+                                            let _ = cb.set_text(selected);
+                                            tracing::info!("Copied text from history selection.");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return true;
+                }
+            }
             return false;
         }
 
@@ -2161,6 +2251,29 @@ impl SettingsWindow {
         let field_idx = match self.focused_field {
             Some(i) => i,
             None => {
+                // If dragging in history tab
+                if self.current_tab == 3 {
+                    if let Some(idx) = self.history_selection_idx {
+                        if let Some((_, text)) = self.history.get(idx) {
+                            let content_x_base = 240.0;
+                            // Find logical Y from rect cache
+                            let ry_start = if idx < self.history_item_rects.len() {
+                                self.history_item_rects[idx].1
+                            } else {
+                                140.0 + idx as f64 * 190.0
+                            };
+                            let content_y_base = ry_start + 35.0;
+                            
+                            let scale_f32 = scale as f32;
+                            let scroll_y = self.history_scroll_states.get(idx).copied().unwrap_or(0.0);
+                            let layout_x = (lx as f32 - content_x_base as f32) * scale_f32;
+                            let layout_y = (dly - content_y_base as f32) * scale_f32 - (scroll_y * scale_f32);
+                            self.history_cursor_pos = get_cursor_index_from_xy(text, 16.0 * scale_f32, (450.0 * scale_f32) as u32, layout_x, layout_y);
+                            self.window.request_redraw();
+                        }
+                        return None;
+                    }
+                }
                 self.is_dragging_text = false;
                 return None;
             }
@@ -2223,9 +2336,17 @@ impl SettingsWindow {
 
     pub fn handle_mouse_up(&mut self) -> Option<SettingsAction> {
         if self.is_dragging_text {
-            if let Some(start) = self.selection_start {
-                if start == self.cursor_pos {
-                    self.selection_start = None;
+            if self.current_tab == 2 {
+                if let Some(start) = self.selection_start {
+                    if start == self.cursor_pos {
+                        self.selection_start = None;
+                    }
+                }
+            } else if self.current_tab == 3 {
+                if let Some(start) = self.history_selection_start {
+                    if start == self.history_cursor_pos {
+                        self.history_selection_start = None;
+                    }
                 }
             }
             self.is_dragging_text = false;
