@@ -110,7 +110,8 @@ impl ChatWindow {
         let tx_skin = image_tx.clone();
         let proxy_skin = proxy.clone();
         std::thread::spawn(move || {
-            if let Ok(img) = image::open("assets/恋风_20260407_194213.jpg") {
+            let img_data = include_bytes!("../assets/skin/skin1.jpg");
+            if let Ok(img) = image::load_from_memory(img_data) {
                 // OPTIMIZATION: Downscale skin to a reasonable size to save memory (max 900px)
                 let img = img.thumbnail(900, 900);
                 let rgba = img.to_rgba8();
@@ -947,14 +948,20 @@ impl ChatWindow {
                             if tx < img_w && ty < img_h {
                                 let skin_px = skin.pixels[ty * img_w + tx];
                                 if ex_a == 255 {
-                                    *pixel = (0xFF << 24) | (skin_px & 0x00FFFFFF);
+                                    // Opaque background: Darken skin to 60% for readability
+                                    let r = ((skin_px >> 16) & 0xFF) * 160 / 255;
+                                    let g = ((skin_px >> 8) & 0xFF) * 160 / 255;
+                                    let b = (skin_px & 0xFF) * 160 / 255;
+                                    *pixel = (0xFF << 24) | (r << 16) | (g << 8) | b;
                                 } else {
                                     let sr = (skin_px >> 16) & 0xFF;
                                     let sg = (skin_px >> 8) & 0xFF;
                                     let sb = skin_px & 0xFF;
-                                    let dr = (sr * ex_a) / 255;
-                                    let dg = (sg * ex_a) / 255;
-                                    let db = (sb * ex_a) / 255;
+                                    
+                                    // Combine AA alpha with 60% brightness darkening
+                                    let dr = (sr * ex_a * 160) / (255 * 255);
+                                    let dg = (sg * ex_a * 160) / (255 * 255);
+                                    let db = (sb * ex_a * 160) / (255 * 255);
                                     *pixel = (ex_a << 24) | (dr << 16) | (dg << 8) | db;
                                 }
                             }
