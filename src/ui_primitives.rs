@@ -817,12 +817,22 @@ pub fn draw_rounded_rect_alpha_internal(
     let _r_sq = r_i32 * r_i32;
 
     for cy in start_y..end_y {
-        let dy = if (cy - y_off) < r {
-            (r - (cy - y_off)) as i32
-        } else if (cy - y_off) > h - r - 1 {
-            ((cy - y_off) - (h - r - 1)) as i32
+        let cy_local = cy - y_off;
+        let dy = if h < 2 * r {
+            // For very short windows, transition at midpoint
+            if cy_local < h / 2 {
+                (r - cy_local) as i32
+            } else {
+                (cy_local - (h - r - 1)) as i32
+            }
         } else {
-            0
+            if cy_local < r {
+                (r - cy_local) as i32
+            } else if cy_local > h - r - 1 {
+                (cy_local - (h - r - 1)) as i32
+            } else {
+                0
+            }
         };
 
         let row_idx = cy as usize * surface_w as usize;

@@ -908,6 +908,7 @@ impl ChatWindow {
         // OPTIMIZATION: Reuse or rebuild Base UI Cache (BG, Skin, Border)
         if !self.base_ui_valid || self.base_ui_buffer.len() != buf_w * buf_h {
             self.base_ui_buffer.resize(buf_w * buf_h, 0);
+            self.base_ui_buffer.fill(0);
             
             let mut base_buffer = &mut self.base_ui_buffer[..];
             let bg_color: u32 = 0xFF2D2D2D;
@@ -919,7 +920,7 @@ impl ChatWindow {
                 0,
                 buf_w as u32,
                 buf_h as u32,
-                12,
+                12.min(buf_h as u32 / 2).max(1),
                 bg_color,
                 buf_w as u32,
                 buf_h as u32,
