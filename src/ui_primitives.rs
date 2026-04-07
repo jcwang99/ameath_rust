@@ -741,7 +741,7 @@ pub fn draw_circle(
     }
 }
 
-fn blit_alpha(
+pub fn blit_alpha(
     buffer: &mut [u32],
     surface_w: u32,
     dest_x: i32,
