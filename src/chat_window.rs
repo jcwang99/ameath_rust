@@ -440,6 +440,39 @@ impl ChatWindow {
                             self.request_redraw();
                         }
                     }
+                    Key::Named(NamedKey::Delete) => {
+                        if self.selection_start.is_some() && self.selection_start != Some(self.cursor_byte_idx) {
+                            self.delete_selection();
+                            self.selection_start = None;
+                            self.cursor_blink_start = std::time::Instant::now();
+                            self.layout_valid = false;
+                            self.request_redraw();
+                        } else if self.cursor_byte_idx < self.input_text.len() {
+                            if let Some((idx, c)) = self.input_text[self.cursor_byte_idx..]
+                                .char_indices()
+                                .next()
+                            {
+                                self.input_text.remove(self.cursor_byte_idx);
+                                self.cursor_blink_start = std::time::Instant::now();
+                                self.layout_valid = false;
+                                self.request_redraw();
+                            }
+                        }
+                    }
+                    Key::Named(NamedKey::Home) => {
+                        self.cursor_byte_idx = 0;
+                        self.selection_start = None;
+                        self.cursor_blink_start = std::time::Instant::now();
+                        self.ensure_cursor_visible();
+                        self.request_redraw();
+                    }
+                    Key::Named(NamedKey::End) => {
+                        self.cursor_byte_idx = self.input_text.len();
+                        self.selection_start = None;
+                        self.cursor_blink_start = std::time::Instant::now();
+                        self.ensure_cursor_visible();
+                        self.request_redraw();
+                    }
                     Key::Character(c) => {
                         let c_lower = c.to_lowercase();
                         
@@ -537,10 +570,10 @@ impl ChatWindow {
                 if let Ok(image) = clipboard.get_image() {
                     let slot_id = self.next_slot_id;
                     self.next_slot_id += 1;
-        self.slots.push(ImageSlot {
-            id: slot_id,
-            status: ImageStatus::Processing,
-        });
+                    self.slots.push(ImageSlot {
+                        id: slot_id,
+                        status: ImageStatus::Processing,
+                    });
 
                     let rgba_data = image.bytes.to_vec();
                     if let Some(img_buf) = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(
@@ -560,12 +593,13 @@ impl ChatWindow {
                                 self.proxy.clone(),
                             );
                         } else {
-                            self.slots.pop(); // Revert if failed to encode PNG
+                            self.slots.pop();
                         }
                     } else {
                         self.slots.pop();
                     }
                     self.layout_valid = false;
+                    self.ensure_cursor_visible();
                     self.request_redraw();
                     return;
                 }
@@ -614,6 +648,7 @@ impl ChatWindow {
                                 self.slots.pop();
                             }
                             self.layout_valid = false;
+                            self.ensure_cursor_visible();
                             self.request_redraw();
                             return;
                         }
@@ -637,6 +672,7 @@ impl ChatWindow {
                         }
                     }
                     let normalized = trimmed.replace("\r\n", "\n");
+                    self.input_text.insert_str(self.cursor_byte_idx, &normalized);
                     self.cursor_byte_idx += normalized.len();
                     self.layout_valid = false;
                     self.ensure_cursor_visible();
@@ -683,6 +719,7 @@ impl ChatWindow {
         if index < self.slots.len() {
             self.slots.remove(index);
             self.layout_valid = false;
+            self.ensure_cursor_visible();
             self.request_redraw();
         }
     }
@@ -747,6 +784,7 @@ impl ChatWindow {
         });
         Self::process_image_async(path, slot_id, self.image_tx.clone(), self.proxy.clone());
         self.layout_valid = false;
+        self.ensure_cursor_visible();
         self.request_redraw();
     }
 
@@ -1179,6 +1217,9 @@ impl ChatWindow {
         let font_size = 18.0;
         let padding = 10.0;
         let max_width = 600.0 - (padding * 2.0);
+
+        // Safety: ensure index is within bounds to prevent panics during slicing
+        self.cursor_byte_idx = self.cursor_byte_idx.min(self.input_text.len());
 
         let char_cursor = self.input_text[..self.cursor_byte_idx].chars().count();
         let (_cx, cy, ch) = crate::ui_primitives::get_xy_from_cursor_index(
