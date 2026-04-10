@@ -564,108 +564,71 @@ impl ChatWindow {
     fn handle_paste(&mut self) {
         #[cfg(target_os = "windows")]
         {
-            use arboard::Clipboard;
-            if let Ok(mut clipboard) = Clipboard::new() {
-                // 1. Try Image directly
-                if let Ok(image) = clipboard.get_image() {
-                    let slot_id = self.next_slot_id;
-                    self.next_slot_id += 1;
-                    self.slots.push(ImageSlot {
-                        id: slot_id,
-                        status: ImageStatus::Processing,
-                    });
-
-                    let rgba_data = image.bytes.to_vec();
-                    if let Some(img_buf) = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(
-                        image.width as u32,
-                        image.height as u32,
-                        rgba_data,
-                    ) {
-                        if let Ok(data) = crate::screen_capture::compress_to_jpeg(&img_buf.into(), 80) {
-                            let img_data = crate::types::ImageData {
-                                data,
-                                mime_type: "image/jpeg".to_string(),
-                            };
-                            Self::process_raw_image(
-                                img_data,
-                                slot_id,
-                                self.image_tx.clone(),
-                                self.proxy.clone(),
-                            );
-                        } else {
-                            self.slots.pop();
-                        }
-                    } else {
-                        self.slots.pop();
-                    }
-                    self.layout_valid = false;
-                    self.ensure_cursor_visible();
-                    self.request_redraw();
-                    return;
-                }
-
-                // 2. Try DIB
-                {
-                    use clipboard_win::{formats, get_clipboard};
-                    if let Ok(dib_data) =
-                        get_clipboard::<Vec<u8>, _>(formats::RawData(formats::CF_DIB))
-                    {
+            // 1. Try DIB (More reliable on Windows for many apps)
+            {
+                use clipboard_win::{formats, get_clipboard};
+                if let Ok(dib_data) = get_clipboard::<Vec<u8>, _>(formats::RawData(formats::CF_DIB)) {
+                    if dib_data.len() >= 40 {
                         let mut bmp_file = Vec::with_capacity(14 + dib_data.len());
                         bmp_file.extend_from_slice(b"BM");
                         bmp_file.extend_from_slice(&((14 + dib_data.len()) as u32).to_le_bytes());
                         bmp_file.extend_from_slice(&0u16.to_le_bytes());
                         bmp_file.extend_from_slice(&0u16.to_le_bytes());
-                        let header_size = if dib_data.len() >= 4 {
-                            u32::from_le_bytes([dib_data[0], dib_data[1], dib_data[2], dib_data[3]])
-                        } else {
-                            40
-                        };
+                        let header_size = u32::from_le_bytes([dib_data[0], dib_data[1], dib_data[2], dib_data[3]]);
                         bmp_file.extend_from_slice(&(14 + header_size).to_le_bytes());
                         bmp_file.extend_from_slice(&dib_data);
 
-                        if let Ok(img) =
-                            image::load_from_memory_with_format(&bmp_file, image::ImageFormat::Bmp)
-                        {
+                        if let Ok(img) = image::load_from_memory_with_format(&bmp_file, image::ImageFormat::Bmp) {
                             let slot_id = self.next_slot_id;
                             self.next_slot_id += 1;
-                            self.slots.push(ImageSlot {
-                                id: slot_id,
-                                status: ImageStatus::Processing,
-                            });
-
+                            self.slots.push(ImageSlot { id: slot_id, status: ImageStatus::Processing });
                             if let Ok(data) = crate::screen_capture::compress_to_jpeg(&img, 80) {
-                                let img_data = crate::types::ImageData {
-                                    data,
-                                    mime_type: "image/jpeg".to_string(),
-                                };
-                                Self::process_raw_image(
-                                    img_data,
-                                    slot_id,
-                                    self.image_tx.clone(),
-                                    self.proxy.clone(),
-                                );
+                                let img_data = crate::types::ImageData { data, mime_type: "image/jpeg".to_string() };
+                                Self::process_raw_image(img_data, slot_id, self.image_tx.clone(), self.proxy.clone());
+                                self.layout_valid = false;
+                                self.ensure_cursor_visible();
+                                self.request_redraw();
+                                return;
                             } else {
                                 self.slots.pop();
                             }
-                            self.layout_valid = false;
-                            self.ensure_cursor_visible();
-                            self.request_redraw();
-                            return;
+                        }
+                    }
+                }
+            }
+
+            // 2. Try Arboard (Standard images)
+            use arboard::Clipboard;
+            if let Ok(mut clipboard) = Clipboard::new() {
+                if let Ok(image) = clipboard.get_image() {
+                    if image.width > 0 && image.height > 0 {
+                        let rgba_data = image.bytes.to_vec();
+                        if let Some(img_buf) = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(
+                            image.width as u32, image.height as u32, rgba_data
+                        ) {
+                            let dynamic_img = image::DynamicImage::ImageRgba8(img_buf);
+                            if let Ok(data) = crate::screen_capture::compress_to_jpeg(&dynamic_img, 80) {
+                                let slot_id = self.next_slot_id;
+                                self.next_slot_id += 1;
+                                self.slots.push(ImageSlot { id: slot_id, status: ImageStatus::Processing });
+                                let img_data = crate::types::ImageData { data, mime_type: "image/jpeg".to_string() };
+                                Self::process_raw_image(img_data, slot_id, self.image_tx.clone(), self.proxy.clone());
+                                self.layout_valid = false;
+                                self.ensure_cursor_visible();
+                                self.request_redraw();
+                                return;
+                            }
                         }
                     }
                 }
 
-                // 3. Try Text
+                // 3. Try Text/Path
                 if let Ok(text) = clipboard.get_text() {
                     let trimmed = text.trim();
                     let path = std::path::Path::new(trimmed);
                     if path.exists() && path.is_file() {
                         let ok_exts = ["png", "jpg", "jpeg", "webp", "gif"];
-                        let ext = path
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .unwrap_or("")
-                            .to_lowercase();
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
                         if ok_exts.contains(&ext.as_str()) {
                             self.add_image_from_path(path.to_path_buf());
                             return;
@@ -855,7 +818,8 @@ impl ChatWindow {
 
                 let _ = tx.send(ImageAsyncMsg::Finished(slot_id, processed_img_data, thumb_obj));
                 let _ = proxy.send_event(());
-                    let _ = tx.send(ImageAsyncMsg::Failed(slot_id));
+            } else {
+                let _ = tx.send(ImageAsyncMsg::Failed(slot_id));
                 let _ = proxy.send_event(());
             }
         });
