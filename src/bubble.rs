@@ -41,6 +41,7 @@ pub enum BubbleContent {
 struct BubbleRenderRequest {
     content: BubbleContent,
     scale: f32,
+    hide_tail: bool,
 }
 
 impl Clone for BubbleContent {
@@ -57,6 +58,7 @@ impl Clone for BubbleRenderRequest {
         Self {
             content: self.content.clone(),
             scale: self.scale,
+            hide_tail: self.hide_tail,
         }
     }
 }
@@ -92,6 +94,7 @@ pub struct SpeechBubble {
     pub frames: Vec<(Vec<u8>, Duration)>,
     pub current_frame_idx: usize,
     pub last_frame_time: Instant,
+    pub hide_tail: bool,
 }
 
 impl SpeechBubble {
@@ -122,6 +125,7 @@ impl SpeechBubble {
             frames: Vec::new(),
             current_frame_idx: 0,
             last_frame_time: Instant::now(),
+            hide_tail: false,
         }
     }
 
@@ -155,6 +159,7 @@ impl SpeechBubble {
             BubbleContent::Text(t) => { hasher.write_u8(0); t.hash(&mut hasher); }
             BubbleContent::Image(p) => { hasher.write_u8(1); p.hash(&mut hasher); }
         }
+        self.hide_tail.hash(&mut hasher);
         let hash = hasher.finish();
 
         if hash == self.last_rendered_hash && (scale - self.current_scale).abs() < 0.001 {
@@ -164,6 +169,7 @@ impl SpeechBubble {
         let req = BubbleRenderRequest {
             content: self.content.clone(),
             scale,
+            hide_tail: self.hide_tail,
         };
 
         let _ = self.tx.send(req);
@@ -338,7 +344,7 @@ fn render_bubble_internal(
         let max_w_allowed =
             ((screen_w / 2) - padding * 2).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
 
-        let tail_h = (20.0 * scale) as i32;
+        let tail_h = if req.hide_tail { 0 } else { (20.0 * scale) as i32 };
         let mut calc_w = 0;
         let mut calc_h = 0;
 
@@ -495,17 +501,19 @@ fn render_bubble_internal(
                     let inner = D2D1_ROUNDED_RECT { rect: D2D_RECT_F { left: 2.0, top: 2.0, right: (width-2) as f32, bottom: (main_h-2) as f32 }, radiusX: radius-2.0, radiusY: radius-2.0 };
                     rt.FillRoundedRectangle(&inner, &bg_brush);
 
-                    let tail_w = (20.0 * scale) as f32;
-                    let tail_x = (width as f32 - tail_w) / 2.0;
-                    let geometry = d2d_factory.CreatePathGeometry().unwrap();
-                    let sink = geometry.Open().unwrap();
-                    sink.BeginFigure(D2D_POINT_2F { x: tail_x, y: main_h as f32 - 2.0 }, windows::Win32::Graphics::Direct2D::Common::D2D1_FIGURE_BEGIN_FILLED);
-                    sink.AddLine(D2D_POINT_2F { x: tail_x + tail_w, y: main_h as f32 - 2.0 });
-                    sink.AddLine(D2D_POINT_2F { x: width as f32 / 2.0, y: height as f32 });
-                    sink.EndFigure(windows::Win32::Graphics::Direct2D::Common::D2D1_FIGURE_END_CLOSED);
-                    sink.Close().unwrap();
-                    rt.FillGeometry(&geometry, &bg_brush, None);
-                    rt.DrawGeometry(&geometry, &border_brush, 2.0 * scale, None);
+                    if !req.hide_tail {
+                        let tail_w = (20.0 * scale) as f32;
+                        let tail_x = (width as f32 - tail_w) / 2.0;
+                        let geometry = d2d_factory.CreatePathGeometry().unwrap();
+                        let sink = geometry.Open().unwrap();
+                        sink.BeginFigure(D2D_POINT_2F { x: tail_x, y: main_h as f32 - 2.0 }, windows::Win32::Graphics::Direct2D::Common::D2D1_FIGURE_BEGIN_FILLED);
+                        sink.AddLine(D2D_POINT_2F { x: tail_x + tail_w, y: main_h as f32 - 2.0 });
+                        sink.AddLine(D2D_POINT_2F { x: width as f32 / 2.0, y: height as f32 });
+                        sink.EndFigure(windows::Win32::Graphics::Direct2D::Common::D2D1_FIGURE_END_CLOSED);
+                        sink.Close().unwrap();
+                        rt.FillGeometry(&geometry, &bg_brush, None);
+                        rt.DrawGeometry(&geometry, &border_brush, 2.0 * scale, None);
+                    }
 
                     if !frames_data.is_empty() {
                         let (fw, fh, raw_pixels, _) = &frames_data[i];

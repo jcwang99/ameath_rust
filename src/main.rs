@@ -1308,17 +1308,20 @@ fn main() {
                         loading_h_f = 32.0 * draw_scale as f64;
                     }
 
+                    let total_bubbles_h: f64 = if !bubbles.is_empty() {
+                        bubbles.iter().map(|b| b.current_height as f64).sum::<f64>()
+                            + (gap_between * (bubbles.len() as f64))
+                    } else {
+                        0.0
+                    };
+
                     let current_bubble_w_f = if !bubbles.is_empty() { 
                         let max_w: u32 = bubbles.iter().map(|b| b.current_width as u32).max().unwrap_or(0);
                         (max_w as f64).max(100.0 * pet.scale as f64) 
                     } else { 
                         0.0 
                     };
-                    let current_bubble_h_f = if let Some(last_b) = bubbles.last() { 
-                        last_b.current_height as f64 
-                    } else { 
-                        0.0 
-                    };
+
                     let current_pomodoro_w_f = if pomodoro_manager.visible { (pomodoro::BASE_POMODORO_WIDTH as f32 * pet.scale) as f64 } else { 0.0 };
                     let current_pomodoro_h_f = if pomodoro_manager.visible { (pomodoro::BASE_POMODORO_HEIGHT as f32 * pet.scale) as f64 } else { 0.0 };
 
@@ -1350,9 +1353,7 @@ fn main() {
                     let padding_top_v = 40.0;
                     let mut extras_h = 0.0;
                     if !bubbles.is_empty() { 
-                        // compute total height roughly:
-                        let total_bh: f64 = bubbles.iter().filter_map(|b| b.get_rect().map(|(_,_,_,h)| h as f64)).sum();
-                        extras_h += total_bh + gap_between * bubbles.len() as f64; 
+                        extras_h += total_bubbles_h; 
                     }
                     if pomodoro_manager.visible { extras_h += current_pomodoro_h_f + gap_between; }
                     if is_thinking { extras_h += loading_h_f + gap_between; }
@@ -1360,12 +1361,26 @@ fn main() {
                     pet_off_y = padding_top_v + extras_h;
 
                     let loading_y_f = if is_thinking { pet_off_y - gap_between - loading_h_f } else { pet_off_y };
-                    let bubble_y_f = if is_thinking { loading_y_f - gap_between - current_bubble_h_f } 
-                                   else if !bubbles.is_empty() { pet_off_y - gap_between - current_bubble_h_f } 
-                                   else { pet_off_y };
-                    let pomodoro_y_f = if !bubbles.is_empty() { bubble_y_f - gap_between - current_pomodoro_h_f }
-                                     else if is_thinking { loading_y_f - gap_between - current_pomodoro_h_f }
-                                     else { pet_off_y - gap_between - current_pomodoro_h_f };
+                    let bubble_stack_bottom_y = if is_thinking { loading_y_f - gap_between } else { pet_off_y - gap_between };
+                    let bubble_y_f = if !bubbles.is_empty() { 
+                        // bubble_y_f is the Y coordinate of the newest (bottom-most) bubble
+                        bubble_stack_bottom_y - bubbles.last().map(|b| b.current_height as f64).unwrap_or(0.0)
+                    } else { 
+                        bubble_stack_bottom_y 
+                    };
+                    
+                    let pomodoro_y_f = if pomodoro_manager.visible {
+                        if !bubbles.is_empty() {
+                            bubble_stack_bottom_y - total_bubbles_h - current_pomodoro_h_f
+                        } else if is_thinking {
+                            loading_y_f - gap_between - current_pomodoro_h_f
+                        } else {
+                            pet_off_y - gap_between - current_pomodoro_h_f
+                        }
+                    } else {
+                        pet_off_y // fallback
+                    };
+
                     
                     let music_y_f = if music_player.panel_enabled && (menu_manager.visible || menu_manager.opacity > 0.0) {
                                        pet_off_y + cur_ph + 10.0 * pet.scale as f64
@@ -1743,7 +1758,8 @@ fn main() {
 
                         if !bubbles.is_empty() {
                             // Render from newest (bottom) to oldest (top)
-                            for b in bubbles.iter_mut().rev() {
+                            for (idx, b) in bubbles.iter_mut().rev().enumerate() {
+                                b.hide_tail = idx > 0;
                                 b.render_to_buffer(std::ptr::null_mut(), pet.scale);
                                 
                                 if let Some(b_pixels) = b.pixel_data() {
