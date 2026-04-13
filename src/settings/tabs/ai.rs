@@ -24,7 +24,7 @@ pub struct AiTabState<'a> {
     pub pressed_btn: Option<usize>,
     pub show_delete_dialog: bool,
     pub notification: Option<(String, std::time::Instant)>,
-    pub field_scroll_offsets: [f32; 18],
+    pub field_scroll_offsets: [f32; 19],
 }
 
 pub fn draw(
@@ -47,7 +47,7 @@ pub fn draw(
     let card_w = (560.0 * scale) as u32;
     let card_h = (1950.0 * scale) as u32;
     let card_y_raw = (sy_val(120) as f32 + scroll_y * scale) as i32;
-    let fields_count = 18;
+    let fields_count = 19;
 
     // Viewport boundaries (for visibility check)
     let min_y_vis = sy_val(120) as i32;
@@ -109,11 +109,12 @@ pub fn draw(
             15 => ("TTS Enabled (CosyVoice 3)", 230.0, 1330.0, 20.0, false),
             16 => ("TTS Ref Audio Path", 230.0, 1430.0, 500.0, false),
             17 => ("TTS Prompt Text", 230.0, 1530.0, 500.0, false),
+            18 => ("Responses API", 650.0, 30.0, 45.0, false),
             _ => ("", 0.0, 0.0, 0.0, false),
         };
 
-        if i == 1 {
-            // Multimodal toggle is handled specially below
+        if i == 1 || i == 18 {
+            // Multimodal and Responses API toggles are handled specially below
             continue;
         }
 
@@ -638,7 +639,7 @@ pub fn draw(
             draw_text_dw_ex(
                 buffer,
                 w,
-                "Multimodal (Vision)",
+                "Multimodal",
                 fx_abs,
                 fy_abs,
                 sc(14.0),
@@ -681,6 +682,85 @@ pub fn draw(
             }
             // Checkmark
             if is_multimodal {
+                draw_text_dw_ex(
+                    buffer,
+                    w,
+                    "✓",
+                    fx_abs + sc(12.0) as i32,
+                    toggle_y + sc(10.0) as i32,
+                    sc(20.0),
+                    0x00FFFFFF,
+                    toggle_dim,
+                    toggle_dim,
+                    0.0,
+                    0.0,
+                    toggle_dim,
+                );
+            }
+        }
+    }
+
+    // Responses API Toggle (CheckBox style at 650)
+    {
+        let fx = 650.0;
+        let fy = 30.0;
+        let fx_abs = s(fx as u32) as i32;
+        let fy_abs = card_y_raw + sc(fy) as i32;
+        let toggle_y = fy_abs + sc(25.0) as i32;
+        let toggle_dim = sc(45.0) as u32;
+
+        let is_hover = state.content_mouse_pos.0 >= fx
+            && state.content_mouse_pos.0 <= fx + 45.0
+            && state.content_mouse_pos.1 >= fy + 25.0
+            && state.content_mouse_pos.1 <= fy + 70.0;
+
+        if fy_abs > min_y_vis && fy_abs < max_y_vis {
+            draw_text_dw_ex(
+                buffer,
+                w,
+                "Responses API",
+                fx_abs,
+                fy_abs,
+                sc(14.0),
+                COLOR_TEXT_SEC,
+                sc(45.0) as u32 + 500,
+                sc(20.0) as u32,
+                0.0,
+                0.0,
+                sc(45.0) as u32 + 500,
+            );
+            let is_enabled = active_profile.use_responses_api;
+            let toggle_bg = if is_enabled {
+                COLOR_PRIMARY
+            } else if state.pressed_btn == Some(104) {
+                COLOR_PRIMARY
+            } else if is_hover {
+                0x00444444
+            } else {
+                COLOR_TEXT_SEC
+            };
+
+            // Draw border
+            draw_rounded_rect(
+                buffer, w, fx_abs, toggle_y, toggle_dim, toggle_dim, 8, toggle_bg, w, h,
+            );
+            // Draw inner box for border effect
+            if !is_enabled && state.pressed_btn != Some(104) && !is_hover {
+                draw_rounded_rect(
+                    buffer,
+                    w,
+                    fx_abs + 1,
+                    toggle_y + 1,
+                    toggle_dim - 2,
+                    toggle_dim - 2,
+                    7,
+                    COLOR_BG_CARD,
+                    w,
+                    h,
+                );
+            }
+            // Checkmark
+            if is_enabled {
                 draw_text_dw_ex(
                     buffer,
                     w,
@@ -749,7 +829,7 @@ pub fn draw(
             _ => ("", 0.0, 0.0, 0.0, false),
         };
 
-        if i != 1 {
+        if i != 1 && i != 18 {
             let fy_scaled_raw = card_y_raw + sc(fy) as i32;
             let input_y_raw = fy_scaled_raw + sc(25.0) as i32;
             let input_h = if is_multiline {

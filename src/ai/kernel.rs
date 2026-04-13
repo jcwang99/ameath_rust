@@ -22,6 +22,7 @@ impl ChatKernel {
                 profile.api_key.clone(),
                 profile.base_url.clone(),
                 profile.model.clone(),
+                profile.use_responses_api,
             ))
         };
 

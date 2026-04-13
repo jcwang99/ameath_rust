@@ -41,7 +41,7 @@ pub struct SettingsRenderInput {
     pub pressed_btn: Option<usize>, // 0-4 for profile buttons, 100+ for fields
     pub show_delete_dialog: bool,
     pub notification: Option<(String, std::time::Instant)>,
-    pub field_scroll_offsets: [f32; 18],
+    pub field_scroll_offsets: [f32; 19],
     pub available_monitors: Vec<(String, String)>,
     pub current_monitor_name: Option<String>,
 }
@@ -334,7 +334,7 @@ pub struct SettingsWindow {
     pub pressed_btn: Option<usize>,
     pub show_delete_dialog: bool,
     pub notification: Option<(String, std::time::Instant)>,
-    pub field_scroll_offsets: [f32; 18],
+    pub field_scroll_offsets: [f32; 19],
 
     // Layered Rendering Caches (Removed for memory savings)
     pub cursor_cache: Option<(i32, i32, u32, u32)>,
@@ -479,7 +479,7 @@ impl SettingsWindow {
             last_sent_hash: 0,
             dragging_history_idx: None,
             dragging_sys_prompt: false,
-            field_scroll_offsets: [0.0; 18],
+            field_scroll_offsets: [0.0; 19],
             render_back_buffer,
             render_in_progress,
             idle_buffers,
@@ -643,6 +643,7 @@ impl SettingsWindow {
                 profile.base_url.hash(&mut config_hasher);
                 profile.model.hash(&mut config_hasher);
                 profile.is_multimodal.hash(&mut config_hasher);
+                profile.use_responses_api.hash(&mut config_hasher);
             }
 
             if self.system_prompt_hash == 0 {
@@ -1185,6 +1186,7 @@ impl SettingsWindow {
                     (230.0, 1330.0, 45.0),  // 15: TTS Toggle
                     (230.0, 1430.0, 500.0), // 16: TTS Ref Path
                     (230.0, 1530.0, 500.0), // 17: TTS Prompt Text
+                    (650.0, 30.0, 45.0),    // 18: Responses API Toggle
                 ];
 
                 // Profile Management Buttons (Standardized Row)
@@ -1296,6 +1298,16 @@ impl SettingsWindow {
                             self.pressed_btn = Some(103);
                             let mut config = ai_config.clone();
                             config.tts_enabled = !config.tts_enabled;
+                            self.config_dirty = true;
+                            self.window.request_redraw();
+                            return SettingsAction::UpdateAiConfig(config);
+                        }
+                        if i == 18 {
+                            tracing::info!("Responses API Toggle clicked");
+                            self.pressed_btn = Some(104);
+                            let mut config = ai_config.clone();
+                            let profile = config.active_profile_mut();
+                            profile.use_responses_api = !profile.use_responses_api;
                             self.config_dirty = true;
                             self.window.request_redraw();
                             return SettingsAction::UpdateAiConfig(config);
@@ -1473,7 +1485,7 @@ impl SettingsWindow {
             13 => ai_config.system_prompt.clone(),
             16 => ai_config.tts_reference_audio.to_string_lossy().into_owned(),
             17 => ai_config.tts_prompt_text.clone(),
-            14 | 15 => String::new(), // Toggles handled via click
+            14 | 15 | 18 => String::new(), // Toggles handled via click
             _ => String::new(),
         }
     }
@@ -1539,11 +1551,11 @@ impl SettingsWindow {
     }
 
     fn ensure_cursor_visible(&mut self, field_idx: usize, scale: f32, ai_config: &AiConfig) {
-        if field_idx >= 18 {
+        if field_idx >= 19 {
             return;
         }
 
-        if field_idx == 14 || field_idx == 15 || field_idx == 16 {
+        if field_idx == 14 || field_idx == 15 || field_idx == 16 || field_idx == 18 {
             return;
         }
 
@@ -1583,9 +1595,9 @@ impl SettingsWindow {
         }
 
         // Single-line fields
-        if field_idx == 14 || field_idx == 15 || field_idx == 16 {
+        if field_idx == 14 || field_idx == 15 || field_idx == 16 || field_idx == 18 {
             return;
-        } // Skip toggles (14/15) or path picker (16)
+        } // Skip toggles (14/15/18) or path picker (16)
 
         let fields = vec![
             (265.0, 30.0, 160.0),   // 0: Profile Name
@@ -1606,6 +1618,7 @@ impl SettingsWindow {
             (230.0, 1330.0, 20.0),  // 15: TTS Toggle
             (230.0, 1430.0, 500.0), // 16: Ref Path
             (230.0, 1530.0, 500.0), // 17: TTS Prompt Text
+            (650.0, 30.0, 45.0),    // 18: Responses API Toggle
         ];
 
         if field_idx >= fields.len() {

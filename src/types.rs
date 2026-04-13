@@ -54,6 +54,8 @@ pub struct AiProfile {
     pub model: String,
     #[serde(default)]
     pub is_multimodal: bool,
+    #[serde(default)]
+    pub use_responses_api: bool,
 }
 
 impl Default for AiProfile {
@@ -64,6 +66,7 @@ impl Default for AiProfile {
             base_url: "https://api.deepseek.com/v1".to_string(),
             model: "deepseek-chat".to_string(),
             is_multimodal: false,
+            use_responses_api: false,
         }
     }
 }
@@ -124,6 +127,7 @@ impl AiConfig {
                 base_url: String::new(),
                 model: String::new(),
                 is_multimodal: false,
+                use_responses_api: false,
             };
             &FALLBACK
         } else {
@@ -150,6 +154,7 @@ impl AiConfig {
                     base_url: self.base_url.clone(),
                     model: self.model.clone(),
                     is_multimodal: false,
+                    use_responses_api: false,
                 });
                 self.api_key.clear();
                 self.base_url.clear();
