@@ -1221,7 +1221,7 @@ fn main() {
                     
                     // Auto-dismiss expired bubbles, but keep hovering ones alive
                     if is_hovered {
-                        if bubbles.is_empty() && !last_response_segments.is_empty() && !is_thinking && pomodoro_manager.visible == false {
+                        if bubbles.is_empty() && !last_response_segments.is_empty() && !is_thinking {
                             // Re-create the last response segments when hovering over the empty pet
                             let mut cumulative_duration = Duration::from_secs(0);
                             for seg in &last_response_segments {
@@ -1308,6 +1308,7 @@ fn main() {
                         loading_h_f = 32.0 * draw_scale as f64;
                     }
 
+                    let gap_between = 10.0 * pet.scale as f64;
                     let total_bubbles_h: f64 = if !bubbles.is_empty() {
                         bubbles.iter().map(|b| b.current_height as f64).sum::<f64>()
                             + (gap_between * (bubbles.len() as f64))
@@ -1341,7 +1342,6 @@ fn main() {
                         }
                     }
 
-                    let gap_between = 10.0 * pet.scale as f64;
                     let pet_cx = cur_pw / 2.0;
                     let b_left = pet_cx - current_bubble_w_f / 2.0;
                     let p_left = pet_cx - current_pomodoro_w_f / 2.0;
@@ -1362,12 +1362,6 @@ fn main() {
 
                     let loading_y_f = if is_thinking { pet_off_y - gap_between - loading_h_f } else { pet_off_y };
                     let bubble_stack_bottom_y = if is_thinking { loading_y_f - gap_between } else { pet_off_y - gap_between };
-                    let bubble_y_f = if !bubbles.is_empty() { 
-                        // bubble_y_f is the Y coordinate of the newest (bottom-most) bubble
-                        bubble_stack_bottom_y - bubbles.last().map(|b| b.current_height as f64).unwrap_or(0.0)
-                    } else { 
-                        bubble_stack_bottom_y 
-                    };
                     
                     let pomodoro_y_f = if pomodoro_manager.visible {
                         if !bubbles.is_empty() {
@@ -1459,7 +1453,17 @@ fn main() {
                         }
                     }
 
-                    is_hovered = over_pet || over_menu || over_bubble || over_music;
+                    let mut over_pomodoro = false;
+                    if pomodoro_manager.visible {
+                        let p_local_x = pet.position.0 - pet_off_x + px_f;
+                        let p_local_y = pet.position.1 - pet_off_y + pomodoro_y_f;
+                        if mouse_x >= p_local_x && mouse_x <= p_local_x + current_pomodoro_w_f &&
+                           mouse_y >= p_local_y && mouse_y <= p_local_y + current_pomodoro_h_f {
+                            over_pomodoro = true;
+                        }
+                    }
+
+                    is_hovered = over_pet || over_menu || over_bubble || over_music || over_pomodoro;
                     
                     if is_hovered {
                         for b in &mut bubbles {
