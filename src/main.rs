@@ -1088,7 +1088,13 @@ fn main() {
                                 }
                                 
                                 // Generate all bubbles concurrently
-                                let mut cumulative_duration = Duration::from_secs(0);
+                                let max_remaining = bubbles.iter()
+                                    .filter_map(|b| b.show_until)
+                                    .map(|until| until.saturating_duration_since(Instant::now()))
+                                    .max()
+                                    .unwrap_or(Duration::from_secs(0));
+                                
+                                let mut cumulative_duration = max_remaining;
                                 for seg in segments {
                                     let mut new_bubble = bubble::SpeechBubble::new();
                                     new_bubble.is_ai_response = true;
