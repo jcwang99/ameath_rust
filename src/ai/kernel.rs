@@ -170,8 +170,7 @@ impl ChatKernel {
         let user_msg = Message {
             role: "user".to_string(),
             content: Some(user_msg_content),
-            tool_calls: None,
-            tool_call_id: None,
+            ..Default::default()
         };
         // DEFER SAVING until we have a response
         // self.memory.add_message(&user_msg).ok();
@@ -201,8 +200,7 @@ impl ChatKernel {
                     Message {
                         role: "system".to_string(),
                         content: Some(Content::Simple(prompt_to_use)),
-                        tool_calls: None,
-                        tool_call_id: None,
+                        ..Default::default()
                     },
                 );
             }
@@ -212,8 +210,7 @@ impl ChatKernel {
                 messages.push(Message {
                     role: "system".to_string(),
                     content: Some(Content::Simple(ctx.clone())),
-                    tool_calls: None,
-                    tool_call_id: None,
+                    ..Default::default()
                 });
             }
 
@@ -234,8 +231,7 @@ impl ChatKernel {
                 messages.push(Message {
                     role: "system".to_string(),
                     content: Some(Content::Simple(format!("{}{}", todo_list_str, todo_instruction))),
-                    tool_calls: None,
-                    tool_call_id: None,
+                    ..Default::default()
                 });
             }
             // -----------------------------------
@@ -257,8 +253,7 @@ impl ChatKernel {
                 messages.push(Message {
                     role: "system".to_string(),
                     content: Some(Content::Simple(format!("{}{}", memo_str, memo_instruction))),
-                    tool_calls: None,
-                    tool_call_id: None,
+                    ..Default::default()
                 });
             }
             // -----------------------------------
@@ -386,8 +381,8 @@ impl ChatKernel {
                                 let tool_response = Message {
                                     role: "tool".to_string(),
                                     content: Some(Content::Simple(result)),
-                                    tool_calls: None,
                                     tool_call_id: Some(tool_call.id.clone()),
+                                    ..Default::default()
                                 };
 
                                 // Store in Layer 2 (Traces)
@@ -437,8 +432,7 @@ impl ChatKernel {
                                 Focus on what tools were called and what key information was obtained.\n\n[Tool Traces]:\n{}",
                                 combined_traces
                             ))),
-                            tool_calls: None,
-                            tool_call_id: None,
+                            ..Default::default()
                         }];
                         if let Ok(summary_msg) = client.chat(summary_prompt, None).await {
                             combined_traces = summary_msg.content_as_str().to_string();
@@ -466,8 +460,7 @@ impl ChatKernel {
                 let response_msg = Message {
                     role: "assistant".to_string(),
                     content: Some(Content::Simple(db_content)),
-                    tool_calls: None,
-                    tool_call_id: None,
+                    ..Default::default()
                 };
                 self.memory.add_message(&response_msg).ok();
 
@@ -527,8 +520,7 @@ impl ChatKernel {
             let summary_prompt = Message {
                 role: "system".to_string(),
                 content: Some(Content::Simple("You have reached the maximum reasoning steps. Summarize your current progress, what you have learned from the tool outputs, and what explicitly needs to be done next. Be concise.".to_string())),
-                tool_calls: None,
-                tool_call_id: None,
+                ..Default::default()
             };
             messages.push(summary_prompt);
 
@@ -598,8 +590,7 @@ impl ChatKernel {
             prompt.push(Message {
                 role: "system".to_string(),
                 content: Some(Content::Simple("Summarize the above conversation into a concise cognitive trace for long-term memory. Focus on key facts, user preferences, and important outcomes.".to_string())),
-                tool_calls: None,
-                tool_call_id: None,
+                ..Default::default()
             });
 
             if let Ok(summary) = client.chat(prompt, None).await {
@@ -652,8 +643,7 @@ impl ChatKernel {
                     let prompt = vec![Message {
                         role: "user".to_string(),
                         content: Some(Content::Simple(prompt_content.clone())),
-                        tool_calls: None,
-                        tool_call_id: None,
+                        ..Default::default()
                     }];
 
                     if let Ok(summary) = client.chat(prompt, None).await {

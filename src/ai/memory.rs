@@ -185,8 +185,7 @@ impl MemoryManager {
             context.push(Message {
                 role: "system".to_string(),
                 content: Some(Content::Simple(format!("Known Facts about User:\n{}", facts_str))),
-                tool_calls: None,
-                tool_call_id: None,
+                ..Default::default()
             });
         }
 
@@ -203,8 +202,7 @@ impl MemoryManager {
             context.push(Message {
                 role: "system".to_string(),
                 content: Some(Content::Simple(format!("Long-term Summary:\n{}", l3))),
-                tool_calls: None,
-                tool_call_id: None,
+                ..Default::default()
             });
         }
 
@@ -229,8 +227,7 @@ impl MemoryManager {
                         "Recent Context Summary:\n{}",
                         l2_summaries.join("\n")
                     ))),
-                    tool_calls: None,
-                    tool_call_id: None,
+                    ..Default::default()
                 });
         }
 
@@ -252,6 +249,7 @@ impl MemoryManager {
                     content: if content_str.is_empty() && tool_calls.is_some() { None } else { Some(Content::Simple(content_str)) },
                     tool_calls,
                     tool_call_id,
+                    ..Default::default()
                 })
             })?;
             for row in trace_rows {
@@ -262,15 +260,13 @@ impl MemoryManager {
             context.push(Message {
                 role: "system".to_string(),
                 content: Some(Content::Simple("--- START OF CURRENT TOOL EXECUTION LOG ---".to_string())),
-                tool_calls: None,
-                tool_call_id: None,
+                ..Default::default()
             });
             context.extend(traces);
             context.push(Message {
                 role: "system".to_string(),
                 content: Some(Content::Simple("--- END OF TOOL EXECUTION LOG ---".to_string())),
-                tool_calls: None,
-                tool_call_id: None,
+                ..Default::default()
             });
         }
 
@@ -285,8 +281,7 @@ impl MemoryManager {
                 Ok(Message {
                     role: row.get(0)?,
                     content: Some(Content::Simple(row.get(1)?)),
-                    tool_calls: None,
-                    tool_call_id: None,
+                    ..Default::default()
                 })
             })?;
 
@@ -308,8 +303,7 @@ impl MemoryManager {
                         history.push(Message {
                             role: "assistant".to_string(),
                             content: Some(Content::Simple(original_response.to_string())),
-                            tool_calls: None,
-                            tool_call_id: None,
+                            ..Default::default()
                         });
 
                         // Create the system context message for the parsed traces
@@ -340,15 +334,13 @@ impl MemoryManager {
                         history.push(Message {
                             role: "system".to_string(),
                             content: Some(Content::Simple(system_trace_text)),
-                            tool_calls: None,
-                            tool_call_id: None,
+                            ..Default::default()
                         });
 
                         history.push(Message {
                             role: "assistant".to_string(),
                             content: Some(Content::Simple(original_response.to_string())),
-                            tool_calls: None,
-                            tool_call_id: None,
+                            ..Default::default()
                         });
 
                     } else {
@@ -401,12 +393,15 @@ impl MemoryManager {
                     }
                     context.push(Message {
                         role: "system".to_string(),
-                        content: Some(Content::Simple(format!(
-                            "Relevant Graph Connections:\n{}",
-                            graph_ctx
-                        ))),
-                        tool_calls: None,
-                        tool_call_id: None,
+                        content: if graph_ctx.is_empty() {
+                            None
+                        } else {
+                            Some(Content::Simple(format!(
+                                "Relevant Graph Connections:\n{}",
+                                graph_ctx
+                            )))
+                        },
+                        ..Default::default()
                     });
                 }
             }
