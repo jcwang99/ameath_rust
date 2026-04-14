@@ -120,33 +120,60 @@ impl ScratchpadRenderer {
                 self.bits = bits as *mut u32;
                 self.width = target_w;
                 self.height = target_h;
+                self.rt = None; // Reset Render Target to trigger recreation with new dimensions
+            }
 
+            // Try up to 2 times: once with current RT, if it fails due to resource loss, recreate and try once more.
+            for attempt in 0..2 {
                 if self.rt.is_none() {
                     let d2d_factory = get_d2d_factory();
                     let props = D2D1_RENDER_TARGET_PROPERTIES {
                         r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
                         pixelFormat: D2D1_PIXEL_FORMAT {
-                            format:
-                                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+                            format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
                             alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
                         },
                         dpiX: 96.0,
                         dpiY: 96.0,
                         ..Default::default()
                     };
-                    self.rt = Some(d2d_factory.CreateDCRenderTarget(&props).unwrap());
+                    match d2d_factory.CreateDCRenderTarget(&props) {
+                        Ok(rt) => self.rt = Some(rt),
+                        Err(e) => {
+                            if attempt == 0 {
+                                tracing::error!("CRITICAL: Failed to create D2D Render Target: {:?}. Retrying once...", e);
+                                continue;
+                            } else {
+                                panic!("CRITICAL: Failed to create D2D Render Target after retry: {:?}", e);
+                            }
+                        }
+                    }
+                }
+
+                let bind_rect = RECT {
+                    left: 0,
+                    top: 0,
+                    right: tw,
+                    bottom: th,
+                };
+                
+                // 0x8899000C is D2DERR_RECREATE_TARGET
+                // We call BindDC on a temporary reference to avoid holding a borrow 
+                // when we might need to reset self.rt below.
+                let bind_result = self.rt.as_ref().unwrap().BindDC(self.hdc_mem, &bind_rect);
+                
+                match bind_result {
+                    Ok(_) => return (self.rt.as_ref().unwrap(), self.bits),
+                    Err(e) if e.code().0 == 0x8899000Cu32 as i32 => {
+                        tracing::warn!("Direct2D Render Target lost (D2DERR_RECREATE_TARGET), recreating... (attempt {})", attempt);
+                        self.rt = None; // Now safe to assign because temp borrow in bind_result is gone
+                    }
+                    Err(e) => {
+                        panic!("Direct2D BindDC critical failure: {:?}. Status: {}x{}", e, tw, th);
+                    }
                 }
             }
-
-            let rt = self.rt.as_ref().unwrap();
-            let bind_rect = RECT {
-                left: 0,
-                top: 0,
-                right: tw,
-                bottom: th,
-            };
-            rt.BindDC(self.hdc_mem, &bind_rect).unwrap();
-            (rt, self.bits)
+            panic!("Failed to recover from Direct2D resource loss after retry.");
         }
     }
 }
