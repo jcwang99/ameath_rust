@@ -152,7 +152,7 @@ impl ChatKernel {
 
         let mut parts = vec![ContentPart::Text { text: llm_content }];
 
-        for img in images {
+        for img in &images {
             let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &img.data);
             parts.push(ContentPart::ImageUrl {
                 image_url: ImageUrl {
@@ -182,9 +182,10 @@ impl ChatKernel {
 
         loop {
             // Refresh context from memory (picks up new summaries and cleared traces)
+            let is_multimodal = self.config.active_profile().is_multimodal;
             let mut messages = self
                 .memory
-                .get_context(self.config.l1_summary_threshold)
+                .get_context(self.config.l1_summary_threshold, is_multimodal)
                 .unwrap_or_default();
 
             // Inject Base System Prompt (Configurable Persona)
@@ -455,7 +456,54 @@ impl ChatKernel {
                 };
 
                 // 3. Save to Memory (L1)
-                self.memory.add_message(&user_msg).ok();
+                let user_msg_id = self.memory.add_message_returning_id(&user_msg).unwrap_or(0);
+                
+                // If it's a multimodal request with images, spawn async task to generate description
+                if user_msg_id > 0 && !images.is_empty() && self.config.active_profile().is_multimodal {
+                    let client_clone = client.clone();
+                    let memory_clone = Arc::clone(&self.memory);
+                    let images_clone = images.clone();
+                    
+                    tokio::spawn(async move {
+                        let mut prompt_parts = vec![ContentPart::Text { 
+                            text: "请用简短客观的语言描述这张/这些图片的内容，重点提取画面中的关键信息（如人物特征、场景、核心物件、明显意图），以便后续脱离图片阅读这段文字也能理解上下文。不要包含多余寒暄。".to_string() 
+                        }];
+                        for img in images_clone {
+                            let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &img.data);
+                            prompt_parts.push(ContentPart::ImageUrl {
+                                image_url: ImageUrl {
+                                    url: format!("data:{};base64,{}", img.mime_type, b64),
+                                },
+                            });
+                        }
+                        
+                        let prompt_msg = Message {
+                            role: "user".to_string(),
+                            content: Some(Content::Multimodal(prompt_parts)),
+                            ..Default::default()
+                        };
+                        
+                        let mut attempts = 0;
+                        let mut desc_result = String::new();
+                        while attempts < 3 {
+                            if let Ok(resp) = client_clone.chat(vec![prompt_msg.clone()], None).await {
+                                let txt = resp.content_as_str().trim();
+                                if !txt.is_empty() {
+                                    desc_result = txt.to_string();
+                                    break;
+                                }
+                            }
+                            attempts += 1;
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        }
+                        
+                        if desc_result.is_empty() {
+                            desc_result = "[未能成功生成此图片的总结代述]".to_string();
+                        }
+                        
+                        let _ = memory_clone.update_image_desc(user_msg_id, &desc_result);
+                    });
+                }
                 
                 let response_msg = Message {
                     role: "assistant".to_string(),
@@ -468,6 +516,9 @@ impl ChatKernel {
 
                 // Clear traces AFTER the turn is fully complete and saved to Layer 1
                 self.memory.clear_traces().ok();
+                
+                // Prune expired images to save DB space (keep last 5)
+                self.memory.prune_expired_images(5).ok();
 
                 // 5. Orchestrate summarization (L1 -> L2)
                 let kernel_clone = Arc::new(Self {
@@ -584,7 +635,7 @@ impl ChatKernel {
             // This is a simplification; a production system would fetch exactly unsummarized messages.
             let context = self
                 .memory
-                .get_context(self.config.l1_summary_threshold)
+                .get_context(self.config.l1_summary_threshold, false)
                 .map_err(|e| e.to_string())?;
             let mut prompt = context.clone();
             prompt.push(Message {

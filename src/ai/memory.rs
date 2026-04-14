@@ -46,6 +46,10 @@ impl MemoryManager {
         
         // Migration: ensure tool_calls column exists
         let _ = conn.execute("ALTER TABLE tool_traces ADD COLUMN tool_calls TEXT", []);
+        
+        // Migration: ensure multi-modal columns exist
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN images_json TEXT", []);
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN images_desc TEXT", []);
 
         // Layer 3: Long-term Summaries (Condensed Knowledge)
         conn.execute(
@@ -126,7 +130,39 @@ impl MemoryManager {
     }
 
     pub fn add_message(&self, msg: &Message) -> Result<()> {
-        self.add_conversation_item(&msg.role, msg.content_as_str(), 1)
+        self.add_message_returning_id(msg)?;
+        Ok(())
+    }
+
+    pub fn add_message_returning_id(&self, msg: &Message) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        
+        let content_str = msg.content_as_str();
+        
+        let (images_json, images_desc): (Option<String>, Option<String>) = match &msg.content {
+            Some(Content::Multimodal(parts)) => {
+                let images: Vec<_> = parts.iter().filter_map(|p| {
+                    if let crate::ai::client::ContentPart::ImageUrl { image_url } = p {
+                        Some(image_url.clone())
+                    } else {
+                        None
+                    }
+                }).collect();
+                if images.is_empty() {
+                    (None, None)
+                } else {
+                    (Some(serde_json::to_string(&images).unwrap_or_default()), None)
+                }
+            }
+            _ => (None, None),
+        };
+
+        // Note: For multi-modal messages, images_desc defaults to NULL initially
+        conn.execute(
+            "INSERT INTO conversations (role, content, layer, images_json, images_desc) VALUES (?1, ?2, 1, ?3, ?4)",
+            params![msg.role, content_str, images_json, images_desc],
+        )?;
+        Ok(conn.last_insert_rowid())
     }
 
     pub fn add_conversation_item(&self, role: &str, content: &str, layer: i32) -> Result<()> {
@@ -134,6 +170,31 @@ impl MemoryManager {
         conn.execute(
             "INSERT INTO conversations (role, content, layer) VALUES (?1, ?2, ?3)",
             params![role, content, layer],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_image_desc(&self, msg_id: i64, desc: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE conversations SET images_desc = ?1 WHERE id = ?2",
+            params![desc, msg_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn prune_expired_images(&self, keep_limit: usize) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE conversations 
+             SET images_json = NULL 
+             WHERE id NOT IN (
+                 SELECT id FROM conversations 
+                 WHERE images_json IS NOT NULL 
+                 ORDER BY id DESC 
+                 LIMIT ?1
+             ) AND images_json IS NOT NULL",
+            params![keep_limit],
         )?;
         Ok(())
     }
@@ -171,7 +232,7 @@ impl MemoryManager {
         Ok(())
     }
 
-    pub fn get_context(&self, limit: usize) -> Result<Vec<Message>> {
+    pub fn get_context(&self, limit: usize, allow_images: bool) -> Result<Vec<Message>> {
         let mut context = Vec::new();
 
         // 1. Get Facts
@@ -275,12 +336,40 @@ impl MemoryManager {
         let mut recent_user_text = String::new();
         {
             let mut stmt = conn.prepare(
-                "SELECT role, content FROM conversations WHERE layer = 1 ORDER BY id DESC LIMIT ?",
+                "SELECT role, content, images_json, images_desc FROM conversations WHERE layer = 1 ORDER BY id DESC LIMIT ?",
             )?;
             let rows = stmt.query_map(params![limit], |row| {
+                let role: String = row.get(0)?;
+                let text_content: String = row.get(1)?;
+                let images_json: Option<String> = row.get(2)?;
+                let images_desc: Option<String> = row.get(3)?;
+                
+                let mut content = Content::Simple(text_content.clone());
+                
+                if let Some(json_str) = images_json {
+                    if allow_images {
+                        if let Ok(images) = serde_json::from_str::<Vec<crate::ai::client::ImageUrl>>(&json_str) {
+                            if !images.is_empty() {
+                                let mut parts = vec![crate::ai::client::ContentPart::Text { text: text_content.clone() }];
+                                for img in images {
+                                    parts.push(crate::ai::client::ContentPart::ImageUrl { image_url: img });
+                                }
+                                content = Content::Multimodal(parts);
+                            }
+                        }
+                    } else {
+                        // Fallback to text description since allow_images is false
+                        let desc = images_desc.unwrap_or_else(|| "[图片内容处理中/暂不可见]".to_string());
+                        content = Content::Simple(format!("{}\n[历史多模态附图摘要: {}]", text_content, desc));
+                    }
+                } else if let Some(desc) = images_desc {
+                     // images_json is expired (or missing from multi-modal inputs originally somehow) but we have description
+                     content = Content::Simple(format!("{}\n[历史多模态附图摘要: {}]", text_content, desc));
+                }
+
                 Ok(Message {
-                    role: row.get(0)?,
-                    content: Some(Content::Simple(row.get(1)?)),
+                    role,
+                    content: Some(content),
                     ..Default::default()
                 })
             })?;
