@@ -492,7 +492,7 @@ impl InteractionManager {
             set_last_cleanup_date(current_date);
             self.last_interaction = now; // Reset routine timer
             return Some(crate::types::ChatInput {
-                text: "[SYSTEM_EVENT] Weekly Routine: Today is Sunday. Please review and clean up the Fact Board using the 'memory_skill' tools (get_facts, delete_fact, update_fact_board, etc). Remove obsolete or temporary facts and consolidate related information. Once done, use 'send_notification' to inform the user of what was cleaned up.".to_string(),
+                text: "[SYSTEM_EVENT] Weekly Routine: Today is Sunday. Please review and clean up the Fact Board using the 'memory_skill' tools (get_facts, delete_fact, update_fact_board, save_fact, etc). Remove obsolete or temporary facts and consolidate related information. Also, explicitly add or update any new important information based on your recent memories. Once done, use 'send_notification' to inform the user of what was cleaned up, added, or updated.".to_string(),
                 images: vec![],
             });
         }

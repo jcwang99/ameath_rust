@@ -237,6 +237,12 @@ impl MemoryManager {
 
         // 1. Get Facts
         let facts = self.get_facts()?;
+        let facts_instruction = "\n[Instruction]\n\
+            You have access to a permanent Fact Board and Entity Graph. \
+            As a proactive AI, you MUST independently use the 'update_fact_board' tool (action='set' or 'add_relation') to remember new persistent facts, preferences, or relationships you learn about the user during conversations. \
+            If existing facts contradict new information, 'update' or 'delete' them. \
+            Do not wait for the user to explicitly tell you to 'remember' something if it is obviously a long-term preference or important context.";
+
         if !facts.is_empty() {
             let facts_str = facts
                 .iter()
@@ -245,7 +251,13 @@ impl MemoryManager {
                 .join("\n");
             context.push(Message {
                 role: "system".to_string(),
-                content: Some(Content::Simple(format!("Known Facts about User:\n{}", facts_str))),
+                content: Some(Content::Simple(format!("[Current Fact Board / Known Facts]\n{}{}", facts_str, facts_instruction))),
+                ..Default::default()
+            });
+        } else {
+            context.push(Message {
+                role: "system".to_string(),
+                content: Some(Content::Simple(format!("[Current Fact Board / Known Facts]\n(Currently Empty){}", facts_instruction))),
                 ..Default::default()
             });
         }

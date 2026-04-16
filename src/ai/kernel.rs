@@ -266,6 +266,7 @@ impl ChatKernel {
             let tools = self.skills.get_tools_for_llm();
             let tools_opt = if tools.is_empty() {
                 tracing::info!("No tools available.");
+
                 None
             } else {
                 tracing::info!("Tools available: {}", tools.len());
