@@ -270,6 +270,21 @@ impl ChatKernel {
                 None
             } else {
                 tracing::info!("Tools available: {}", tools.len());
+                
+                // --- ANTI-HALLUCINATION INTENT DECLARATION ---
+                messages.push(Message {
+                    role: "system".to_string(),
+                    content: Some(Content::Simple(
+                        "CRITICAL TOOL INSTRUCTION: \
+                        You MUST conclude EVERY message by declaring your tool usage intent. \
+                        Append exactly one of these tags at the VERY END of your text response: \
+                        If you will NOT use a tool: '[TOOL_INTENT: NO]' \
+                        If you WILL use a tool: '[TOOL_INTENT: YES]' \
+                        Failure to conclude with this exact format will cause a system error.".to_string()
+                    )),
+                    ..Default::default()
+                });
+
                 Some(tools)
             };
 
@@ -306,16 +321,71 @@ impl ChatKernel {
 
                 match response_result {
                     Ok(response_msg) => {
-                        let content_str = response_msg.content_as_str();
+                        let original_content_str = response_msg.content_as_str();
+                        
+                        // Parse Tool Intent
+                        let mut stripped_content = original_content_str.to_string();
+                        let mut is_declaring_tool = false;
+                        let mut tag_found = false;
+                        
+                        // Re-parse response to extract and strip the [TOOL_INTENT: ...] tag
+                        if let Some(idx) = stripped_content.rfind("[TOOL_INTENT:") {
+                            let sub = &stripped_content[idx..];
+                            if let Some(end_idx) = sub.find(']') {
+                                tag_found = true;
+                                let intent_str = sub["[TOOL_INTENT:".len()..end_idx].trim().to_uppercase();
+                                if intent_str.contains("YES") || intent_str.contains("TRUE") {
+                                    is_declaring_tool = true;
+                                } else if !intent_str.contains("NO") && !intent_str.contains("NONE") && !intent_str.contains("FALSE") {
+                                    // If it's a spelling mistake like [TOOL_INTENT: search_web], we still assume it intends to use a tool
+                                    is_declaring_tool = true;
+                                }
+                                
+                                stripped_content.replace_range(idx..(idx + end_idx + 1), "");
+                                stripped_content = stripped_content.trim_end().to_string();
+                            }
+                        }
+
+                        let has_actual_tool_calls = response_msg.tool_calls.as_ref().map_or(false, |tc| !tc.is_empty());
+
+                        // Verification Logic
+                        let mut requires_correction = false;
+                        let mut correction_reason = String::new();
+
+                        if tag_found {
+                            if is_declaring_tool && !has_actual_tool_calls {
+                                requires_correction = true;
+                                correction_reason = "You declared intent to use a tool but failed to invoke the actual JSON `tool_calls`. You MUST emit the JSON structure.".to_string();
+                            } else if !is_declaring_tool && has_actual_tool_calls {
+                                requires_correction = true;
+                                correction_reason = "You declared [TOOL_INTENT: NO] but you actually invoked a generic tool call. Intent declaration must match your actions!".to_string();
+                            }
+                        }
+                        
+                        if requires_correction {
+                            tracing::warn!("LLM Intent Mismatch: {}", correction_reason);
+                            messages.push(response_msg); // Push original with the error
+                            messages.push(Message {
+                                role: "user".to_string(),
+                                content: Some(Content::Simple(format!("SYSTEM ALERT: {}", correction_reason))),
+                                ..Default::default()
+                            });
+                            continue;
+                        }
+
+                        // Use stripped content downstream
+                        let content_str = stripped_content.as_str();
+
                         let content_preview = if content_str.chars().count() > 100 {
                             format!("{}...", content_str.chars().take(100).collect::<String>())
                         } else {
                             content_str.to_string()
                         };
                         
-                        tracing::info!("LLM Response Received | Role: {} | Content: \"{}\"", 
+                        tracing::info!("LLM Response Received | Role: {} | Content: \"{}\" | Intent Check: Tag={}, DeclaringTool={}", 
                             response_msg.role, 
-                            content_preview.replace("\n", " ")
+                            content_preview.replace("\n", " "),
+                            tag_found, is_declaring_tool
                         );
                         if let Some(calls) = &response_msg.tool_calls {
                             if !calls.is_empty() {
@@ -399,6 +469,7 @@ impl ChatKernel {
                                 "No tool calls. Final response received. ({} turns)",
                                 turns
                             );
+                            
                             if !content_str.is_empty() {
                                 content_accumulator.push(content_str.to_string());
                                 let _ = tx.send(AiResponseEvent::Response(content_str.to_string()));
