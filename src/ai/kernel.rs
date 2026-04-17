@@ -272,15 +272,16 @@ impl ChatKernel {
                 tracing::info!("Tools available: {}", tools.len());
                 
                 // --- ANTI-HALLUCINATION INTENT DECLARATION ---
+                // We use the "user" role here because instruction-tuned models pay the most attention
+                // to the very last user prompt, drastically reducing the chance of forgetting the format.
                 messages.push(Message {
-                    role: "system".to_string(),
+                    role: "user".to_string(),
                     content: Some(Content::Simple(
-                        "CRITICAL TOOL INSTRUCTION: \
-                        You MUST conclude EVERY message by declaring your tool usage intent. \
+                        "\n\n[SYSTEM REQUIREMENT]\nYou MUST conclude your response by declaring your tool usage intent. \
                         Append exactly one of these tags at the VERY END of your text response: \
                         If you will NOT use a tool: '[TOOL_INTENT: NO]' \
                         If you WILL use a tool: '[TOOL_INTENT: YES]' \
-                        Failure to conclude with this exact format will cause a system error.".to_string()
+                        Do not forget this tag!".to_string()
                     )),
                     ..Default::default()
                 });
