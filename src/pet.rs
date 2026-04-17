@@ -30,6 +30,7 @@ pub struct Pet {
     // Layout
     pub scale: f32,
     pub behavior_mode: crate::types::BehaviorMode,
+    pub safe_bounds: Option<(f64, f64, f64, f64)>,
 }
 
 impl Pet {
@@ -54,6 +55,7 @@ impl Pet {
             drag_start_offset: None,
             scale: 1.0,
             behavior_mode: crate::types::BehaviorMode::Active,
+            safe_bounds: None,
         }
     }
 
@@ -133,10 +135,19 @@ impl Pet {
                         BehaviorMode::Clingy => Duration::from_secs(2),
                     };
 
-                    let max_x = self.screen_size.0 - self.window_size.0;
-                    let max_y = self.screen_size.1 - self.window_size.1;
-                    let target_x = rand::thread_rng().gen_range(0.0..max_x.max(1.0));
-                    let target_y = rand::thread_rng().gen_range(0.0..max_y.max(1.0));
+                    let (w, h) = self.get_scaled_size();
+                    let (sw, sh) = self.screen_size;
+                    let (min_x, min_y, mut max_x, mut max_y) = self.safe_bounds.unwrap_or((
+                        0.0,
+                        0.0,
+                        sw - w,
+                        sh - h,
+                    ));
+                    max_x = max_x.max(min_x);
+                    max_y = max_y.max(min_y);
+
+                    let target_x = rand::thread_rng().gen_range(min_x..max_x.max(min_x + 1.0));
+                    let target_y = rand::thread_rng().gen_range(min_y..max_y.max(min_y + 1.0));
                     self.target_position = Some((target_x, target_y));
 
                     let dx = target_x - self.position.0;
@@ -243,20 +254,92 @@ impl Pet {
         let (w, h) = self.get_scaled_size();
         let (sw, sh) = self.screen_size;
 
-        if self.position.0 <= 0.0 {
-            self.position.0 = 0.0;
-            self.velocity.0 = self.velocity.0.abs();
-        } else if self.position.0 + w >= sw {
-            self.position.0 = sw - w;
-            self.velocity.0 = -self.velocity.0.abs();
-        }
+        let (mut min_x, mut min_y, mut max_x, mut max_y) = self.safe_bounds.unwrap_or((
+            0.0,
+            0.0,
+            sw - w,
+            sh - h,
+        ));
+        max_x = max_x.max(min_x);
+        max_y = max_y.max(min_y);
 
-        if self.position.1 <= 0.0 {
-            self.position.1 = 0.0;
-            self.velocity.1 = self.velocity.1.abs();
-        } else if self.position.1 + h >= sh {
-            self.position.1 = sh - h;
-            self.velocity.1 = -self.velocity.1.abs();
+        let mut evading = false;
+        let evade_speed = SPEED_PPS * 4.0;
+
+        if self.state != PetState::Drag {
+            // Evasion logic: if pet is pushed out of bounds, smoothly slide it back
+            if self.position.0 < min_x {
+                self.position.0 += evade_speed * dt;
+                if self.position.0 > min_x {
+                    self.position.0 = min_x;
+                }
+                evading = true;
+            } else if self.position.0 > max_x {
+                self.position.0 -= evade_speed * dt;
+                if self.position.0 < max_x {
+                    self.position.0 = max_x;
+                }
+                evading = true;
+            }
+
+            if self.position.1 < min_y {
+                self.position.1 += evade_speed * dt;
+                if self.position.1 > min_y {
+                    self.position.1 = min_y;
+                }
+                evading = true;
+            } else if self.position.1 > max_y {
+                self.position.1 -= evade_speed * dt;
+                if self.position.1 < max_y {
+                    self.position.1 = max_y;
+                }
+                evading = true;
+            }
+
+            if evading {
+                if self.state == PetState::Idle {
+                    self.state = PetState::Move;
+                    self.current_anim_variant = 0;
+                }
+                if let Some(mut tp) = self.target_position {
+                    tp.0 = tp.0.clamp(min_x, max_x);
+                    tp.1 = tp.1.clamp(min_y, max_y);
+                    self.target_position = Some(tp);
+                }
+            } else {
+                // Normal Bounce logic against safe bounds
+                if self.position.0 <= min_x {
+                    self.position.0 = min_x;
+                    if self.state == PetState::Clingy {
+                        self.velocity.0 = 0.0;
+                    } else {
+                        self.velocity.0 = self.velocity.0.abs();
+                    }
+                } else if self.position.0 >= max_x {
+                    self.position.0 = max_x;
+                    if self.state == PetState::Clingy {
+                        self.velocity.0 = 0.0;
+                    } else {
+                        self.velocity.0 = -self.velocity.0.abs();
+                    }
+                }
+
+                if self.position.1 <= min_y {
+                    self.position.1 = min_y;
+                    if self.state == PetState::Clingy {
+                        self.velocity.1 = 0.0;
+                    } else {
+                        self.velocity.1 = self.velocity.1.abs();
+                    }
+                } else if self.position.1 >= max_y {
+                    self.position.1 = max_y;
+                    if self.state == PetState::Clingy {
+                        self.velocity.1 = 0.0;
+                    } else {
+                        self.velocity.1 = -self.velocity.1.abs();
+                    }
+                }
+            }
         }
     }
 

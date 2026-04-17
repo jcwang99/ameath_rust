@@ -1415,6 +1415,16 @@ fn main() {
                     // Final win_h is the max of all active components' bottoms
                     let win_h = pet_bottom.max(menu_bottom).max(music_bottom) as u32;
 
+                    let monitor_w = pet.screen_size.0;
+                    let monitor_h = pet.screen_size.1;
+                    
+                    let min_x = pet_off_x;
+                    let max_x = monitor_w - win_w as f64 + pet_off_x;
+                    let min_y = pet_off_y;
+                    let max_y = monitor_h - win_h as f64 + pet_off_y;
+                    
+                    pet.safe_bounds = Some((min_x, min_y, max_x, max_y));
+
                     let target_x = monitor_offset.0 + (pet.position.0 - pet_off_x) as i32;
                     let target_y = monitor_offset.1 + (pet.position.1 - pet_off_y) as i32;
                     let target_pos = POINT { x: target_x, y: target_y };
