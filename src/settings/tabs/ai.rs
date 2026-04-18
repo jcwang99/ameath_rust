@@ -421,7 +421,7 @@ pub fn draw(
             input_w.saturating_sub(sc(30.0) as u32),
             sc(30.0) as u32,
             0.0,
-            state.field_scroll_offsets[i],
+            -state.field_scroll_offsets[i],
             1000000,
         );
 
@@ -1039,7 +1039,7 @@ pub fn draw(
             sc(500.0 - 40.0) as u32,
             input_h.saturating_sub(sc(24.0) as u32),
             -state.system_prompt_scroll_offset * scale,
-            state.field_scroll_offsets[13],
+            -state.field_scroll_offsets[13],
             sc(500.0 - 40.0) as u32,
         );
 

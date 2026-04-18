@@ -363,7 +363,27 @@ impl ChatKernel {
                             }
                         }
                         
-                        if requires_correction {
+                        // Use stripped content downstream
+                        let content_str = stripped_content.as_str();
+
+                        let content_preview = {
+                            let char_count = content_str.chars().count();
+                            if char_count > 100 {
+                                let start: String = content_str.chars().take(50).collect();
+                                let end: String = content_str.chars().skip(char_count - 50).collect();
+                                format!("{} ... {}", start, end)
+                            } else {
+                                content_str.to_string()
+                            }
+                        };
+                        
+                        tracing::info!("LLM Response Received | Role: {} | Content: \"{}\" | Intent Check: Tag={}, DeclaringTool={}", 
+                            response_msg.role, 
+                            content_preview.replace("\n", " "),
+                            tag_found, is_declaring_tool
+                        );
+
+                        if requires_correction && turns == 1 {
                             tracing::warn!("LLM Intent Mismatch: {}", correction_reason);
                             messages.push(response_msg); // Push original with the error
                             messages.push(Message {
@@ -372,22 +392,9 @@ impl ChatKernel {
                                 ..Default::default()
                             });
                             continue;
+                        } else if requires_correction && turns > 1 {
+                            tracing::debug!("Bypassed LLM Intent Mismatch on Turn {}: {}", turns, correction_reason);
                         }
-
-                        // Use stripped content downstream
-                        let content_str = stripped_content.as_str();
-
-                        let content_preview = if content_str.chars().count() > 100 {
-                            format!("{}...", content_str.chars().take(100).collect::<String>())
-                        } else {
-                            content_str.to_string()
-                        };
-                        
-                        tracing::info!("LLM Response Received | Role: {} | Content: \"{}\" | Intent Check: Tag={}, DeclaringTool={}", 
-                            response_msg.role, 
-                            content_preview.replace("\n", " "),
-                            tag_found, is_declaring_tool
-                        );
                         if let Some(calls) = &response_msg.tool_calls {
                             if !calls.is_empty() {
                                 tracing::info!("Tool Calls detected: {}", calls.len());
