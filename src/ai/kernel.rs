@@ -350,19 +350,15 @@ impl ChatKernel {
                         let has_actual_tool_calls = response_msg.tool_calls.as_ref().map_or(false, |tc| !tc.is_empty());
 
                         // Verification Logic
-                        let mut requires_correction = false;
-                        let mut correction_reason = String::new();
+                        // Case 1 (HALLUCINATION): Declared YES but no tool_calls emitted.
+                        //   This is always dangerous regardless of turn number — intercept and force retry.
+                        // Case 2 (TENSE-CONFUSION): Declared NO but tool_calls were emitted.
+                        //   This is a minor mis-declaration, commonly caused by the model mixing up
+                        //   "I used a tool earlier" vs "I'm using a tool now". Only intercept on Turn 1
+                        //   to avoid disrupting mid-loop summaries after tool results come back.
+                        let hallucination = tag_found && is_declaring_tool && !has_actual_tool_calls;
+                        let tense_confusion = tag_found && !is_declaring_tool && has_actual_tool_calls;
 
-                        if tag_found {
-                            if is_declaring_tool && !has_actual_tool_calls {
-                                requires_correction = true;
-                                correction_reason = "You declared intent to use a tool but failed to invoke the actual JSON `tool_calls`. You MUST emit the JSON structure.".to_string();
-                            } else if !is_declaring_tool && has_actual_tool_calls {
-                                requires_correction = true;
-                                correction_reason = "You declared [TOOL_INTENT: NO] but you actually invoked a generic tool call. Intent declaration must match your actions!".to_string();
-                            }
-                        }
-                        
                         // Use stripped content downstream
                         let content_str = stripped_content.as_str();
 
@@ -376,24 +372,37 @@ impl ChatKernel {
                                 content_str.to_string()
                             }
                         };
-                        
-                        tracing::info!("LLM Response Received | Role: {} | Content: \"{}\" | Intent Check: Tag={}, DeclaringTool={}", 
-                            response_msg.role, 
+
+                        tracing::info!("LLM Response Received | Role: {} | Content: \"{}\" | Intent Check: Tag={}, DeclaringTool={}",
+                            response_msg.role,
                             content_preview.replace("\n", " "),
                             tag_found, is_declaring_tool
                         );
 
-                        if requires_correction && turns == 1 {
-                            tracing::warn!("LLM Intent Mismatch: {}", correction_reason);
-                            messages.push(response_msg); // Push original with the error
+                        if hallucination {
+                            tracing::warn!("LLM Hallucination on Turn {}: Declared [TOOL_INTENT: YES] but no tool_calls in response. Forcing retry.", turns);
+                            messages.push(response_msg);
                             messages.push(Message {
                                 role: "user".to_string(),
-                                content: Some(Content::Simple(format!("SYSTEM ALERT: {}", correction_reason))),
+                                content: Some(Content::Simple(
+                                    "SYSTEM ALERT: You declared intent to use a tool but failed to invoke the actual JSON `tool_calls`. You MUST emit the tool_calls JSON structure NOW. Do not just describe what you will do — actually do it.".to_string()
+                                )),
                                 ..Default::default()
                             });
                             continue;
-                        } else if requires_correction && turns > 1 {
-                            tracing::debug!("Bypassed LLM Intent Mismatch on Turn {}: {}", turns, correction_reason);
+                        } else if tense_confusion && turns == 1 {
+                            tracing::warn!("LLM Tense-Confusion on Turn 1: Declared [TOOL_INTENT: NO] but tool_calls were emitted. Forcing retry.");
+                            messages.push(response_msg);
+                            messages.push(Message {
+                                role: "user".to_string(),
+                                content: Some(Content::Simple(
+                                    "SYSTEM ALERT: You declared [TOOL_INTENT: NO] but you actually invoked a tool call. Intent declaration must match your actions!".to_string()
+                                )),
+                                ..Default::default()
+                            });
+                            continue;
+                        } else if tense_confusion && turns > 1 {
+                            tracing::debug!("Bypassed tense-confusion mismatch on Turn {} (likely past-tense summary).", turns);
                         }
                         if let Some(calls) = &response_msg.tool_calls {
                             if !calls.is_empty() {
