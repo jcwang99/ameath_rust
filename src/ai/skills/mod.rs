@@ -70,22 +70,30 @@ impl SkillManager {
         let catalog = Arc::new(RwLock::new(
             external::SkillCatalog::scan(&external::get_skills_dir()),
         ));
+
+        // Create client first so we can pass it to both internal LLM skills and the external registry
+        let client_opt = if !profile.api_key.is_empty() {
+            Some(crate::ai::client::OpenAiClient::new(
+                profile.api_key.clone(),
+                profile.base_url.clone(),
+                profile.model.clone(),
+                profile.use_responses_api,
+            ))
+        } else {
+            None
+        };
+
         manager.register(Arc::new(external::SkillRegistrySkill::new(
             catalog,
             manager.clone(),
             profile.api_key.clone(),
             profile.base_url.clone(),
             profile.model.clone(),
+            client_opt.clone(),
         )));
 
         // Register llm_call and sub-agent skills (need actual client)
-        if !profile.api_key.is_empty() {
-            let client = crate::ai::client::OpenAiClient::new(
-                profile.api_key.clone(),
-                profile.base_url.clone(),
-                profile.model.clone(),
-                profile.use_responses_api,
-            );
+        if let Some(client) = client_opt {
             manager.register(Arc::new(llm_call::LlmCallSkill::new(client.clone())));
             manager.register(Arc::new(sub_agent::SubAgentSkill::new(
                 client,

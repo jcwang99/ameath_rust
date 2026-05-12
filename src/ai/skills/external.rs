@@ -237,11 +237,17 @@ impl SkillCatalog {
         if q.is_empty() || q == "*" {
             return self.entries.iter().collect();
         }
+        
+        // Tokenize query by whitespace for multi-keyword matching
+        let keywords: Vec<&str> = q.split_whitespace().collect();
+        
         self.entries
             .iter()
             .filter(|e| {
-                e.name.to_lowercase().contains(&q)
-                    || e.description.to_lowercase().contains(&q)
+                let name = e.name.to_lowercase();
+                let desc = e.description.to_lowercase();
+                // A skill matches if ALL keywords are found in either its name or description
+                keywords.iter().all(|&kw| name.contains(kw) || desc.contains(kw))
             })
             .collect()
     }
@@ -472,6 +478,7 @@ pub struct SkillRegistrySkill {
     api_key: String,
     base_url: String,
     model: String,
+    client: Option<crate::ai::client::OpenAiClient>,
 }
 
 impl SkillRegistrySkill {
@@ -481,8 +488,9 @@ impl SkillRegistrySkill {
         api_key: String,
         base_url: String,
         model: String,
+        client: Option<crate::ai::client::OpenAiClient>,
     ) -> Self {
-        Self { catalog, manager, api_key, base_url, model }
+        Self { catalog, manager, api_key, base_url, model, client }
     }
 
     fn handle_discover(&self, query: &str) -> Result<String, String> {
@@ -832,6 +840,42 @@ impl SkillRegistrySkill {
 
         Ok(format!("Successfully replaced {} occurrence(s) in lines {}-{} of '{}/{}'", matches, start + 1, end, name, file))
     }
+
+    async fn handle_recommend(&self, task: &str) -> Result<String, String> {
+        let client = self.client.as_ref().ok_or("No LLM client available for recommendation")?;
+        
+        let prompt = {
+            let catalog = self.catalog.read().map_err(|e| e.to_string())?;
+            if catalog.entries.is_empty() {
+                return Ok("No external skills available to recommend.".to_string());
+            }
+
+            let mut skills_list = String::new();
+            for entry in &catalog.entries {
+                skills_list.push_str(&format!("Skill Name: {}\nDescription: {}\n\n", entry.name, entry.description));
+            }
+
+            format!(
+                "You are an intelligent skill router. Your job is to match the user's task to the most relevant external skill(s) from the list below.\n\
+                If none match, say so clearly.\n\
+                Task: {}\n\n\
+                Available Skills:\n{}\n\
+                Return the names of the relevant skills and a brief explanation why they match.",
+                task, skills_list
+            )
+        };
+
+        let messages = vec![crate::ai::client::Message {
+            role: "user".to_string(),
+            content: Some(crate::ai::client::Content::Simple(prompt)),
+            ..Default::default()
+        }];
+
+        tracing::info!("[SkillRegistry] recommend_skill for task: {:.50}", task);
+        let response = client.chat(messages, None).await.map_err(|e| format!("LLM semantic search error: {}", e))?;
+        
+        Ok(response.content_as_str().to_string())
+    }
 }
 
 #[async_trait]
@@ -843,7 +887,8 @@ impl Skill for SkillRegistrySkill {
     fn description(&self) -> &str {
         "Discover, load, and manage external skills. All external skills are stored locally in the 'data/skills/' directory. \
          Use this when your built-in tools cannot fulfill a request and you want to check if an external skill can help. \
-         Actions: 'discover_skills' (search available skills), \
+         Actions: 'discover_skills' (search available skills by keyword), \
+         'recommend_skill' (semantic search using an AI sub-agent, use this if keyword search misses), \
          'load_skill' (activate a skill and register its tools), \
          'normalize_skill' (convert raw files into standard format), \
          'read_file' (paginated reading of a skill file by line range), \
@@ -860,6 +905,10 @@ impl Skill for SkillRegistrySkill {
             "discover_skills" => {
                 let query = args["query"].as_str().unwrap_or("*");
                 self.handle_discover(query)
+            }
+            "recommend_skill" => {
+                let task = args["task"].as_str().ok_or("Missing 'task' for recommendation")?;
+                self.handle_recommend(task).await
             }
             "load_skill" => {
                 let name = args["name"].as_str().ok_or("Missing 'name'")?;
@@ -903,7 +952,7 @@ impl Skill for SkillRegistrySkill {
                 self.handle_replace_file(name, file, target, replacement, start_line, end_line, allow_multiple)
             }
             _ => Err(format!(
-                "Unknown action: '{}'. Use discover_skills, load_skill, normalize_skill, read_file, write_file, or replace_file.",
+                "Unknown action: '{}'. Use discover_skills, recommend_skill, load_skill, normalize_skill, read_file, write_file, or replace_file.",
                 action
             )),
         }
@@ -920,12 +969,16 @@ impl Skill for SkillRegistrySkill {
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["discover_skills", "load_skill", "normalize_skill", "read_file", "write_file", "replace_file"],
+                            "enum": ["discover_skills", "recommend_skill", "load_skill", "normalize_skill", "read_file", "write_file", "replace_file"],
                             "description": "Action to perform"
                         },
                         "query": {
                             "type": "string",
                             "description": "Search query for discover_skills (use '*' for all)"
+                        },
+                        "task": {
+                            "type": "string",
+                            "description": "The task requirement for recommend_skill to perform semantic matching"
                         },
                         "name": {
                             "type": "string",
