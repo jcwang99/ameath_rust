@@ -377,6 +377,12 @@ impl ChatKernel {
                             tag_found, is_declaring_tool
                         );
 
+                        // 1. Emit response immediately if content exists (even if it's a hallucination, so user sees it)
+                        if !content_str.is_empty() {
+                            content_accumulator.push(content_str.to_string());
+                            let _ = tx.send(AiResponseEvent::Response(content_str.to_string()));
+                        }
+
                         if hallucination {
                             tracing::warn!("LLM Hallucination on Turn {}: Declared [TOOL_INTENT: YES] but no tool_calls in response. Forcing retry.", turns);
                             messages.push(response_msg);
@@ -411,12 +417,6 @@ impl ChatKernel {
                         messages.push(response_msg.clone());
 
                         if let Some(tool_calls) = &response_msg.tool_calls {
-                            // 1. Emit intermediate response immediately if content exists
-                            if !content_str.is_empty() {
-                                content_accumulator.push(content_str.to_string());
-                                let _ = tx.send(AiResponseEvent::Response(content_str.to_string()));
-                            }
-
                             if tool_calls.is_empty() {
                                 tracing::info!("Tool calls field is present but empty. Breaking loop as final response.");
                                 break; // Break inner loop
@@ -485,10 +485,6 @@ impl ChatKernel {
                                 turns
                             );
                             
-                            if !content_str.is_empty() {
-                                content_accumulator.push(content_str.to_string());
-                                let _ = tx.send(AiResponseEvent::Response(content_str.to_string()));
-                            }
                             break; // Break inner loop
                         }
                     }
