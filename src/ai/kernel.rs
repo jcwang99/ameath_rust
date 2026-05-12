@@ -263,17 +263,9 @@ impl ChatKernel {
             messages.push(user_msg.clone());
             tracing::debug!("Context prepared. Message count: {}", messages.len());
 
-            let tools = self.skills.get_tools_for_llm();
-            let tools_opt = if tools.is_empty() {
-                tracing::info!("No tools available.");
-
-                None
-            } else {
-                tracing::info!("Tools available: {}", tools.len());
-                
-                // --- ANTI-HALLUCINATION INTENT DECLARATION ---
-                // We use the "user" role here because instruction-tuned models pay the most attention
-                // to the very last user prompt, drastically reducing the chance of forgetting the format.
+            // --- ANTI-HALLUCINATION INTENT DECLARATION (inject once) ---
+            let initial_tools = self.skills.get_tools_for_llm();
+            if !initial_tools.is_empty() {
                 messages.push(Message {
                     role: "user".to_string(),
                     content: Some(Content::Simple(
@@ -285,9 +277,7 @@ impl ChatKernel {
                     )),
                     ..Default::default()
                 });
-
-                Some(tools)
-            };
+            }
 
             let mut turns = 0;
             let max_turns = self.config.react_limit;
@@ -304,6 +294,14 @@ impl ChatKernel {
 
             while turns < max_turns {
                 turns += 1;
+
+                // Refresh tools each turn (supports dynamically loaded external skills)
+                let tools = self.skills.get_tools_for_llm();
+                let tools_opt = if tools.is_empty() {
+                    None
+                } else {
+                    Some(tools)
+                };
                 tracing::info!("Turn {}/{}", turns, max_turns);
                 let _ = tx.send(AiResponseEvent::Status(ThinkingState::Network));
                 

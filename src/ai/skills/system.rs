@@ -3,11 +3,15 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::process::Command;
 
-pub struct SystemSkill;
+pub struct SystemSkill {
+    api_key: String,
+    base_url: String,
+    model: String,
+}
 
 impl SystemSkill {
-    pub fn new() -> Self {
-        Self
+    pub fn new(api_key: String, base_url: String, model: String) -> Self {
+        Self { api_key, base_url, model }
     }
 }
 
@@ -27,15 +31,24 @@ impl Skill for SystemSkill {
             .ok_or_else(|| "Missing 'command' argument".to_string())?;
 
         let output = if cfg!(target_os = "windows") {
+            // Force UTF-8 output encoding for PowerShell commands to prevent garbled text
+            let utf8_cmd = format!("$OutputEncoding = [Console]::OutputEncoding = [Text.Encoding]::UTF8; {}", command_str);
             Command::new("powershell")
+                .arg("-NoProfile")
                 .arg("-Command")
-                .arg(command_str)
+                .arg(&utf8_cmd)
+                .env("AMETH_API_KEY", &self.api_key)
+                .env("AMETH_BASE_URL", &self.base_url)
+                .env("AMETH_MODEL", &self.model)
                 .output()
                 .map_err(|e| format!("Failed to execute powershell: {}", e))?
         } else {
             Command::new("sh")
                 .arg("-c")
                 .arg(command_str)
+                .env("AMETH_API_KEY", &self.api_key)
+                .env("AMETH_BASE_URL", &self.base_url)
+                .env("AMETH_MODEL", &self.model)
                 .output()
                 .map_err(|e| format!("Failed to execute sh: {}", e))?
         };
@@ -81,7 +94,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_powershell() {
-        let skill = SystemSkill::new();
+        let skill = SystemSkill::new(String::new(), String::new(), String::new());
         let args = json!({
             "command": "echo 'Hello from PowerShell'"
         });
@@ -91,7 +104,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_powershell_dir() {
-        let skill = SystemSkill::new();
+        let skill = SystemSkill::new(String::new(), String::new(), String::new());
         let args = json!({
             "command": "dir"
         });

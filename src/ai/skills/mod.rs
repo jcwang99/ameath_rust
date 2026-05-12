@@ -1,12 +1,15 @@
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 pub mod browser;
+pub mod external;
+pub mod llm_call;
 pub mod memory_skill;
 pub mod notification_skill;
 pub mod reminder_skill;
+pub mod sub_agent;
 pub mod system;
 pub mod memo_skill;
 pub mod todo_skill;
@@ -22,7 +25,7 @@ pub trait Skill: Send + Sync {
 
 #[derive(Clone)]
 pub struct SkillManager {
-    skills: HashMap<String, Arc<dyn Skill>>,
+    skills: Arc<RwLock<HashMap<String, Arc<dyn Skill>>>>,
 }
 
 impl SkillManager {
@@ -31,13 +34,19 @@ impl SkillManager {
         config: &crate::types::AiConfig,
         scheduler: crate::interaction::ActionScheduler,
     ) -> Self {
-        let mut manager = Self {
-            skills: HashMap::new(),
+        let manager = Self {
+            skills: Arc::new(RwLock::new(HashMap::new())),
         };
 
+        // API config for external skill subprocesses and internal LLM tools
+        let profile = config.active_profile();
+
         // Register default skills
-        manager.register(Arc::new(system::SystemSkill::new()));
-        // Register independent browser skills
+        manager.register(Arc::new(system::SystemSkill::new(
+            profile.api_key.clone(),
+            profile.base_url.clone(),
+            profile.model.clone(),
+        )));
         manager.register(Arc::new(browser::TavilySearchSkill::new(
             config.tavily_api_key.clone(),
         )));
@@ -57,18 +66,54 @@ impl SkillManager {
         manager.register(Arc::new(memo_skill::MemoSkill::new(memory.clone())));
         manager.register(Arc::new(work_log::WorkLogSkill::new(memory)));
 
+        // Register the external skill registry (passes API config as env vars to subprocesses)
+        let catalog = Arc::new(RwLock::new(
+            external::SkillCatalog::scan(&external::get_skills_dir()),
+        ));
+        manager.register(Arc::new(external::SkillRegistrySkill::new(
+            catalog,
+            manager.clone(),
+            profile.api_key.clone(),
+            profile.base_url.clone(),
+            profile.model.clone(),
+        )));
+
+        // Register llm_call and sub-agent skills (need actual client)
+        if !profile.api_key.is_empty() {
+            let client = crate::ai::client::OpenAiClient::new(
+                profile.api_key.clone(),
+                profile.base_url.clone(),
+                profile.model.clone(),
+                profile.use_responses_api,
+            );
+            manager.register(Arc::new(llm_call::LlmCallSkill::new(client.clone())));
+            manager.register(Arc::new(sub_agent::SubAgentSkill::new(
+                client,
+                manager.clone(),
+            )));
+        }
+
         manager
     }
 
-    pub fn register(&mut self, skill: Arc<dyn Skill>) {
-        self.skills.insert(skill.name().to_string(), skill);
+    /// Register a skill (used at init time and by the meta-tool at runtime)
+    pub fn register(&self, skill: Arc<dyn Skill>) {
+        self.skills
+            .write()
+            .unwrap()
+            .insert(skill.name().to_string(), skill);
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Skill>> {
-        self.skills.get(name).cloned()
+        self.skills.read().unwrap().get(name).cloned()
     }
 
     pub fn get_tools_for_llm(&self) -> Vec<Value> {
-        self.skills.values().map(|s| s.to_tool()).collect()
+        self.skills
+            .read()
+            .unwrap()
+            .values()
+            .map(|s| s.to_tool())
+            .collect()
     }
 }
