@@ -79,12 +79,10 @@ impl ChatKernel {
                         self.memory.add_conversation_item("assistant", confirmation, 1).ok();
                         
                         let _ = tx.send(AiResponseEvent::Response(confirmation.to_string()));
-                        let _ = tx.send(AiResponseEvent::Status(ThinkingState::None));
                         return;
                     }
                     Err(e) => {
                         let _ = tx.send(AiResponseEvent::Response(format!("日志记录失败: {}", e)));
-                        let _ = tx.send(AiResponseEvent::Status(ThinkingState::None));
                         return;
                     }
                 }
@@ -103,12 +101,10 @@ impl ChatKernel {
                         self.memory.add_conversation_item("assistant", confirmation, 1).ok();
                         
                         let _ = tx.send(AiResponseEvent::Response(confirmation.to_string()));
-                        let _ = tx.send(AiResponseEvent::Status(ThinkingState::None));
                         return;
                     }
                     Err(e) => {
                         let _ = tx.send(AiResponseEvent::Response(format!("待办添加失败: {}", e)));
-                        let _ = tx.send(AiResponseEvent::Status(ThinkingState::None));
                         return;
                     }
                 }
@@ -126,12 +122,10 @@ impl ChatKernel {
                         self.memory.add_conversation_item("assistant", confirmation, 1).ok();
                         
                         let _ = tx.send(AiResponseEvent::Response(confirmation.to_string()));
-                        let _ = tx.send(AiResponseEvent::Status(ThinkingState::None));
                         return;
                     }
                     Err(e) => {
                         let _ = tx.send(AiResponseEvent::Response(format!("备忘添加失败: {}", e)));
-                        let _ = tx.send(AiResponseEvent::Status(ThinkingState::None));
                         return;
                     }
                 }

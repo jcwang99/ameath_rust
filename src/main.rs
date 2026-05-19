@@ -445,8 +445,16 @@ fn main() {
                                         if let Some(tts) = &tts_controller {
                                             tts.stop();
                                         }
-                                        thinking_state = ThinkingState::Standard;
-                                        thinking_start = Some(Instant::now());
+                                        // Fast-track commands (#log/#todo/#memo) are instant local ops,
+                                        // don't show loading animation to avoid polluting a running task's state.
+                                        let is_fast_track = {
+                                            let t = msg.text.trim_start();
+                                            t.starts_with("#log ") || t.starts_with("#todo ") || t.starts_with("#memo ")
+                                        };
+                                        if !is_fast_track {
+                                            thinking_state = ThinkingState::Standard;
+                                            thinking_start = Some(Instant::now());
+                                        }
                                         
                                         // Update kernel with current config if changed
                                         let kernel = chat_kernel.clone();
