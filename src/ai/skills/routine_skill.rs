@@ -21,13 +21,13 @@ impl Skill for RoutineSkill {
     }
 
     fn description(&self) -> &str {
-        "Manage periodic scheduled routines. Supports 'add', 'list', and 'remove' actions. CRITICAL: Before removing, you MUST call 'list' first to get the exact ID. Never guess or assume an ID — wrong deletions cannot be undone. Max 20 routines."
+        "Manage periodic scheduled routines. Supports 'add', 'list', 'update', and 'remove' actions. CRITICAL: Before 'update' or 'remove', you MUST call 'list' first to get the exact ID. Never guess or assume an ID — wrong operations cannot be undone. Max 20 routines."
     }
 
     async fn execute(&self, args: Value) -> Result<String, String> {
         let action = args["action"]
             .as_str()
-            .ok_or("Missing 'action' (string: 'add', 'list', or 'remove')")?;
+            .ok_or("Missing 'action' (string: 'add', 'list', 'update', or 'remove')")?;
 
         let mut cfg = self.config.lock().unwrap();
 
@@ -135,7 +135,66 @@ impl Skill for RoutineSkill {
                 cfg.save();
                 Ok(format!("Routine '{}' (id={}) removed successfully.", removed_title.unwrap_or_default(), id))
             }
-            _ => Err(format!("Unknown action '{}'. Use 'add', 'list', or 'remove'.", action)),
+            "update" => {
+                let id = args["id"]
+                    .as_str()
+                    .ok_or("Missing 'id' (string). You MUST call this tool with action='list' first, then copy the exact UUID from the output.")?;
+
+                let routine = cfg.routines.iter_mut().find(|r| r.id == id)
+                    .ok_or_else(|| format!("No routine found with id '{}'. Use action='list' to see all routine IDs.", id))?;
+
+                let mut changes = Vec::new();
+
+                if let Some(title) = args["title"].as_str() {
+                    routine.title = title.to_string();
+                    changes.push("title");
+                }
+                if let Some(memo) = args["memo"].as_str() {
+                    routine.memo = memo.to_string();
+                    changes.push("memo");
+                }
+                if let Some(st) = args["schedule_type"].as_str() {
+                    routine.schedule_type = match st.to_lowercase().as_str() {
+                        "daily" => ScheduleType::Daily,
+                        "weekly" => ScheduleType::Weekly,
+                        "monthly" => ScheduleType::Monthly,
+                        "interval_days" => ScheduleType::IntervalDays,
+                        "interval_hours" => ScheduleType::IntervalHours,
+                        "interval_minutes" => ScheduleType::IntervalMinutes,
+                        _ => return Err(format!("Invalid schedule_type '{}'.", st)),
+                    };
+                    changes.push("schedule_type");
+                }
+                if let Some(v) = args["time_of_day"].as_str() {
+                    routine.time_of_day = Some(v.to_string());
+                    changes.push("time_of_day");
+                }
+                if let Some(v) = args["day_of_week"].as_u64() {
+                    routine.day_of_week = Some(v as u32);
+                    changes.push("day_of_week");
+                }
+                if let Some(v) = args["day_of_month"].as_u64() {
+                    routine.day_of_month = Some(v as u32);
+                    changes.push("day_of_month");
+                }
+                if let Some(v) = args["interval"].as_u64() {
+                    routine.interval = Some(v.max(1) as u32);
+                    changes.push("interval");
+                }
+                if let Some(v) = args["is_active"].as_bool() {
+                    routine.is_active = v;
+                    changes.push("is_active");
+                }
+
+                if changes.is_empty() {
+                    return Err("No fields to update. Provide at least one field (title, memo, schedule_type, time_of_day, day_of_week, day_of_month, interval, is_active).".to_string());
+                }
+
+                let name = routine.title.clone();
+                cfg.save();
+                Ok(format!("Routine '{}' updated: [{}]", name, changes.join(", ")))
+            }
+            _ => Err(format!("Unknown action '{}'. Use 'add', 'list', 'update', or 'remove'.", action)),
         }
     }
 
@@ -150,8 +209,12 @@ impl Skill for RoutineSkill {
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["add", "list", "remove"],
+                            "enum": ["add", "list", "update", "remove"],
                             "description": "The action to perform."
+                        },
+                        "is_active": {
+                            "type": "boolean",
+                            "description": "[update] Set routine active (true) or paused (false)."
                         },
                         "title": {
                             "type": "string",
@@ -184,7 +247,7 @@ impl Skill for RoutineSkill {
                         },
                         "id": {
                             "type": "string",
-                            "description": "[remove] The exact UUID of the routine to remove. You MUST call with action='list' first and copy the ID from the output. NEVER guess or fabricate an ID."
+                            "description": "[update/remove] The exact UUID of the routine. You MUST call with action='list' first and copy the ID from the output. NEVER guess or fabricate an ID."
                         }
                     },
                     "required": ["action"]
