@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageData {
@@ -477,5 +478,89 @@ impl PersistentConfig for AiConfig {
 impl PersistentConfig for WindowConfig {
     fn filename() -> &'static str {
         "window_config.json"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum ScheduleType {
+    Daily,
+    Weekly,
+    Monthly,
+    IntervalDays,
+    IntervalHours,
+    IntervalMinutes,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RoutineDef {
+    pub id: String,
+    pub title: String,
+    pub schedule_type: ScheduleType,
+    pub day_of_week: Option<u32>,     // 0-6 (0=Monday, 6=Sunday for chrono)
+    pub day_of_month: Option<u32>,    // 1-31
+    pub interval: Option<u32>,
+    pub time_of_day: Option<String>,  // "HH:MM"
+    pub memo: String,
+    pub is_active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RoutinesConfig {
+    #[serde(default)]
+    pub routines: Vec<RoutineDef>,
+}
+
+impl Default for RoutinesConfig {
+    fn default() -> Self {
+        Self {
+            routines: vec![RoutineDef {
+                id: uuid::Uuid::new_v4().to_string(),
+                title: "Weekly Factboard Cleanup".to_string(),
+                schedule_type: ScheduleType::Weekly,
+                day_of_week: Some(6), // Sunday
+                day_of_month: None,
+                interval: None,
+                time_of_day: Some("12:00".to_string()),
+                memo: "[SYSTEM_EVENT] Weekly Routine: Today is Sunday. Please review and clean up the Fact Board using the 'memory_skill' tools (get_facts, delete_fact, update_fact_board, save_fact, etc). Remove obsolete or temporary facts and consolidate related information. Also, explicitly add or update any new important information based on your recent memories. Once done, use 'send_notification' to inform the user of what was cleaned up, added, or updated.".to_string(),
+                is_active: true,
+            }],
+        }
+    }
+}
+
+impl PersistentConfig for RoutinesConfig {
+    fn filename() -> &'static str {
+        "routines_config.json"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
+pub struct RoutineStateConfig {
+    #[serde(default)]
+    pub last_executions: HashMap<String, String>, // UUID -> ISO8601 string
+}
+
+impl PersistentConfig for RoutineStateConfig {
+    fn filename() -> &'static str {
+        "routine_states.json"
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ScheduledItemDef {
+    pub id: String,
+    pub time: String, // RFC3339/ISO8601 representation of DateTime<Local>
+    pub memo: String,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]
+pub struct RemindersConfig {
+    #[serde(default)]
+    pub items: Vec<ScheduledItemDef>,
+}
+
+impl PersistentConfig for RemindersConfig {
+    fn filename() -> &'static str {
+        "reminders_config.json"
     }
 }

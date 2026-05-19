@@ -899,6 +899,11 @@ fn main() {
                                                     interaction_manager.update_config(ai_config.clone());
                                                     sw.request_redraw();
                                                 }
+                                                settings::SettingsAction::UpdateRoutinesConfig(new_config) => {
+                                                    new_config.save();
+                                                    interaction_manager.update_routines(new_config);
+                                                    sw.request_redraw();
+                                                }
                                                 settings::SettingsAction::SetMonitor(name) => {
                                                     let available = window.available_monitors();
                                                     if let Some(monitor) = available.into_iter().find(|m| m.name().as_ref() == Some(&name)) {

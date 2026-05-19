@@ -44,6 +44,9 @@ pub struct SettingsRenderInput {
     pub field_scroll_offsets: [f32; 19],
     pub available_monitors: Vec<(String, String)>,
     pub current_monitor_name: Option<String>,
+    pub routines_config: crate::types::RoutinesConfig,
+    pub editing_routine: Option<crate::types::RoutineDef>,
+    pub routine_memo_scroll_offset: f32,
 }
 
 pub struct RenderResult {
@@ -57,6 +60,8 @@ pub struct RenderResult {
     pub active_sys_prompt_rect: Option<(f64, f64, f64, f64)>,
     pub active_sys_prompt_content_height: f32,
     pub history_item_rects: Vec<(f64, f64, f64, f64)>,
+    pub routine_memo_rect: Option<(f64, f64, f64, f64)>,
+    pub routine_memo_content_height: f32,
 }
 
 pub struct RenderRequest {
@@ -74,6 +79,8 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
     let mut active_sys_prompt_rect = None;
     let mut active_sys_prompt_content_height = 0.0f32;
     let mut history_item_rects = Vec::new();
+    let mut routine_memo_rect = None;
+    let mut routine_memo_content_height = 0.0f32;
 
     buffer.fill(COLOR_BG_APP);
 
@@ -87,8 +94,8 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
 
     // Sidebar
     draw_rect(buffer, w, 0, 0, s(180), h, COLOR_BG_SIDEBAR, w, h);
-    let icons = ["🏠", "🎨", "🧠", "📜", "ℹ️"];
-    for i in 0..5 {
+    let icons = ["🏠", "🎨", "🧠", "📜", "ℹ️", "⏰"];
+    for i in 0..6 {
         let color = if input.current_tab == i {
             COLOR_PRIMARY
         } else {
@@ -112,7 +119,9 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
         1 => ("Appearance", "Customize your pet's look"),
         2 => ("AI Brain", "Connect Ameath to the cloud"),
         3 => ("History", "Recent Local Memory (Last 50)"),
-        _ => ("About", "Ameath v0.1.0"),
+        4 => ("About", "Ameath v0.1.0"),
+        5 => ("Routines", "Manage your scheduled tasks"),
+        _ => ("", ""),
     };
     let header_h = sy_val(120);
     draw_rect(
@@ -236,6 +245,25 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
             vh = v;
             ch = c;
         }
+        5 => {
+            let mut routines_state = tabs::routines::RoutinesTabState {
+                config: &input.routines_config,
+                editing_routine: &input.editing_routine,
+                focused_field: input.focused_field,
+                cursor_pos: input.cursor_pos,
+                scroll_offset: input.scroll_offset,
+                mouse_pos: input.mouse_pos,
+                pressed_btn: input.pressed_btn,
+                memo_scroll_offset: input.routine_memo_scroll_offset,
+                memo_rect: &mut routine_memo_rect,
+                memo_content_height: &mut routine_memo_content_height,
+                selection_start: input.selection_start,
+            };
+            let (v, c, rect) = tabs::routines::draw(buffer, w, h, scale, off_x, off_y, &mut routines_state);
+            vh = v;
+            ch = c;
+            cursor_rect = rect;
+        }
         _ => {}
     }
 
@@ -252,6 +280,8 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
         active_sys_prompt_rect,
         active_sys_prompt_content_height,
         history_item_rects,
+        routine_memo_rect,
+        routine_memo_content_height,
     }
 }
 
@@ -281,6 +311,7 @@ pub enum SettingsAction {
     ToggleAutoStart,
     SaveWindowConfig,
     OpenWorkingDirectory,
+    UpdateRoutinesConfig(crate::types::RoutinesConfig),
 }
 
 pub struct SettingsWindow {
@@ -318,6 +349,9 @@ pub struct SettingsWindow {
     pub system_prompt_hash: u64,
     pub system_prompt_metrics_cache: f32,
     pub config_dirty: bool,
+    pub routine_memo_scroll_offset: f32,
+    pub routine_memo_rect: Option<(f64, f64, f64, f64)>,
+    pub routine_memo_content_height: f32,
 
     // Layout
     pub is_dragging_scrollbar: bool,
@@ -349,6 +383,9 @@ pub struct SettingsWindow {
     pub last_background_pixels: std::sync::Arc<Vec<u32>>,
     pub render_tx: Sender<RenderRequest>,
     pub _proxy: EventLoopProxy<()>,
+    
+    pub routines_config: crate::types::RoutinesConfig,
+    pub editing_routine: Option<crate::types::RoutineDef>,
 }
 
 impl SettingsWindow {
@@ -457,9 +494,14 @@ impl SettingsWindow {
             history_cursor_pos: 0,
             history_hashes: Vec::new(),
             history_metrics_cache: Vec::new(),
+            dragging_history_idx: None,
+            dragging_sys_prompt: false,
             system_prompt_hash: 0,
             system_prompt_metrics_cache: 0.0,
-            config_dirty: true,
+            config_dirty: false,
+            routine_memo_scroll_offset: 0.0,
+            routine_memo_rect: None,
+            routine_memo_content_height: 0.0,
             is_dragging_scrollbar: false,
             available_monitors,
             current_monitor_name: None,
@@ -473,19 +515,19 @@ impl SettingsWindow {
             pressed_btn: None,
             show_delete_dialog: false,
             notification: None,
+            field_scroll_offsets: [0.0; 19],
             cursor_cache: None,
             cursor_save_under: Vec::new(),
             last_base_state_hash: 0,
             last_sent_hash: 0,
-            dragging_history_idx: None,
-            dragging_sys_prompt: false,
-            field_scroll_offsets: [0.0; 19],
             render_back_buffer,
             render_in_progress,
             idle_buffers,
             last_background_pixels: std::sync::Arc::new(Vec::new()),
             render_tx,
             _proxy: proxy,
+            routines_config: crate::types::RoutinesConfig::load(),
+            editing_routine: None,
         }
     }
 
@@ -577,6 +619,9 @@ impl SettingsWindow {
             field_scroll_offsets: self.field_scroll_offsets,
             available_monitors: self.available_monitors.clone(),
             current_monitor_name: self.current_monitor_name.clone(),
+            routines_config: self.routines_config.clone(),
+            editing_routine: self.editing_routine.clone(),
+            routine_memo_scroll_offset: self.routine_memo_scroll_offset,
         }
     }
 
@@ -741,6 +786,8 @@ impl SettingsWindow {
                     self.active_sys_prompt_rect = res.active_sys_prompt_rect;
                     self.active_sys_prompt_content_height = res.active_sys_prompt_content_height;
                     self.history_item_rects = res.history_item_rects;
+                    self.routine_memo_rect = res.routine_memo_rect;
+                    self.routine_memo_content_height = res.routine_memo_content_height;
 
                     if res.hash == base_state_hash {
                         self.last_base_state_hash = base_state_hash;
@@ -1010,7 +1057,7 @@ impl SettingsWindow {
 
         // Sidebar
         if lx >= 0.0 && lx <= 180.0 {
-            for i in 0..5 {
+            for i in 0..6 {
                 let ty = 60.0 + i as f64 * 80.0;
                 if ly >= ty - 15.0 && ly <= ty + 45.0 {
                     self.current_tab = i;
@@ -1416,7 +1463,7 @@ impl SettingsWindow {
                                     let content_scroll = self.history_scroll_states.get(i).copied().unwrap_or(0.0);
                                     let layout_x = ((lx - content_x_base) as f32 * scale);
                                     // Y within the text block
-                                    let layout_y = ((dly - content_y_base) as f32 * scale) - (content_scroll * scale_f32);
+                                    let layout_y = ((ly - content_y_base) as f32 * scale) - (content_scroll * scale_f32);
                                     self.history_cursor_pos = get_cursor_index_from_xy(content_text, 16.0 * scale_f32, (450.0 * scale_f32) as u32, layout_x, layout_y);
                                     if !_is_right_click {
                                         self.history_selection_start = Some(self.history_cursor_pos);
@@ -1433,6 +1480,164 @@ impl SettingsWindow {
                         self.history_selection_idx = None;
                         self.history_selection_start = None;
                         self.window.request_redraw();
+                    }
+                }
+            }
+            5 => {
+                let mut current_y = 120.0;
+                if self.editing_routine.is_some() {
+                    // Title
+                    current_y += 60.0;
+                    let input_title_y = current_y + 35.0;
+                    if dlx >= 230.0 && dlx <= 730.0 && dly >= input_title_y && dly <= input_title_y + 40.0 {
+                        self.focused_field = Some(501);
+                        let text = self.get_field_text(501, ai_config);
+                        self.cursor_pos = self.get_cursor_from_x(&text, ((lx - 240.0) * scale as f64) as f32, scale as f32);
+                        self.selection_start = Some(self.cursor_pos);
+                        self.is_dragging_text = true;
+                        self.window.request_redraw();
+                        return SettingsAction::None;
+                    }
+                    current_y += 90.0;
+                    
+                    // Type Selection
+                    current_y += 35.0;
+                    let types = [crate::types::ScheduleType::Daily, crate::types::ScheduleType::Weekly, crate::types::ScheduleType::Monthly, crate::types::ScheduleType::IntervalDays, crate::types::ScheduleType::IntervalHours, crate::types::ScheduleType::IntervalMinutes];
+                    for (i, t) in types.iter().enumerate() {
+                        let row = i / 3;
+                        let col = i % 3;
+                        let btn_x = 230.0 + col as f64 * 110.0;
+                        let btn_y = current_y + row as f64 * 50.0;
+                        if dlx >= btn_x && dlx <= btn_x + 100.0 && dly >= btn_y && dly <= btn_y + 40.0 {
+                            if let Some(mut r) = self.editing_routine.clone() {
+                                r.schedule_type = t.clone();
+                                self.editing_routine = Some(r);
+                                self.window.request_redraw();
+                            }
+                            return SettingsAction::None;
+                        }
+                    }
+                    current_y += 110.0;
+                    
+                    // Dynamic value
+                    if !matches!(self.editing_routine.as_ref().unwrap().schedule_type, crate::types::ScheduleType::Daily) {
+                        let input_val_y = current_y + 35.0;
+                        if dlx >= 230.0 && dlx <= 430.0 && dly >= input_val_y && dly <= input_val_y + 40.0 {
+                            self.focused_field = Some(502);
+                            let text = self.get_field_text(502, ai_config);
+                            self.cursor_pos = self.get_cursor_from_x(&text, ((lx - 240.0) * scale as f64) as f32, scale as f32);
+                            self.selection_start = Some(self.cursor_pos);
+                            self.is_dragging_text = true;
+                            self.window.request_redraw();
+                            return SettingsAction::None;
+                        }
+                    }
+                    if matches!(self.editing_routine.as_ref().unwrap().schedule_type, crate::types::ScheduleType::Daily | crate::types::ScheduleType::Weekly | crate::types::ScheduleType::Monthly) {
+                        let input_time_y = current_y + 35.0;
+                        if dlx >= 450.0 && dlx <= 650.0 && dly >= input_time_y && dly <= input_time_y + 40.0 {
+                            self.focused_field = Some(503);
+                            let text = self.get_field_text(503, ai_config);
+                            self.cursor_pos = self.get_cursor_from_x(&text, ((lx - 460.0) * scale as f64) as f32, scale as f32);
+                            self.selection_start = Some(self.cursor_pos);
+                            self.is_dragging_text = true;
+                            self.window.request_redraw();
+                            return SettingsAction::None;
+                        }
+                    }
+                    current_y += 90.0;
+                    
+                    // Memo
+                    let input_memo_y = current_y + 35.0;
+                    if dlx >= 230.0 && dlx <= 730.0 && dly >= input_memo_y && dly <= input_memo_y + 100.0 {
+                        self.focused_field = Some(504);
+                        let text = self.get_field_text(504, ai_config);
+                        let scale_f32 = scale as f32;
+                        let layout_x = ((lx - 240.0) * scale as f64) as f32;
+                        // Use scroll_offset correctly for click hit testing inside text
+                        let scroll_y = self.routine_memo_scroll_offset * scale_f32;
+                        let layout_y = ((dly - input_memo_y - 10.0) * scale as f64) as f32 - scroll_y;
+                        self.cursor_pos = self.get_cursor_from_xy(&text, layout_x, layout_y, scale_f32);
+                        self.selection_start = Some(self.cursor_pos);
+                        self.is_dragging_text = true;
+                        self.window.request_redraw();
+                        return SettingsAction::None;
+                    }
+                    current_y += 150.0;
+                    
+                    // Cancel
+                    if dlx >= 480.0 && dlx <= 580.0 && dly >= current_y && dly <= current_y + 40.0 {
+                        self.editing_routine = None;
+                        self.focused_field = None;
+                        self.window.request_redraw();
+                        return SettingsAction::None;
+                    }
+                    // Save
+                    if dlx >= 600.0 && dlx <= 730.0 && dly >= current_y && dly <= current_y + 40.0 {
+                        if let Some(r) = self.editing_routine.take() {
+                            let mut cfg = self.routines_config.clone();
+                            if let Some(idx) = cfg.routines.iter().position(|x| x.id == r.id) {
+                                cfg.routines[idx] = r;
+                            } else {
+                                cfg.routines.push(r);
+                            }
+                            self.routines_config = cfg.clone();
+                            self.focused_field = None;
+                            self.window.request_redraw();
+                            return SettingsAction::UpdateRoutinesConfig(cfg);
+                        }
+                    }
+                    
+                    self.focused_field = None;
+                    self.window.request_redraw();
+                    return SettingsAction::None;
+                } else {
+                    // List View
+                    if dlx >= 210.0 && dlx <= 770.0 && dly >= current_y && dly <= current_y + 50.0 {
+                        let new_routine = crate::types::RoutineDef {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            title: "New Routine".to_string(),
+                            schedule_type: crate::types::ScheduleType::Daily,
+                            day_of_week: Some(0),
+                            day_of_month: Some(1),
+                            interval: Some(1),
+                            time_of_day: Some("12:00".to_string()),
+                            memo: "".to_string(),
+                            is_active: true,
+                        };
+                        self.editing_routine = Some(new_routine);
+                        self.window.request_redraw();
+                        return SettingsAction::None;
+                    }
+                    current_y += 70.0;
+                    
+                    let mut action = SettingsAction::None;
+                    for (i, r) in self.routines_config.routines.iter().enumerate() {
+                        let card_y = current_y;
+                        if dlx >= 550.0 && dlx <= 620.0 && dly >= card_y + 30.0 && dly <= card_y + 60.0 {
+                            let mut cfg = self.routines_config.clone();
+                            cfg.routines[i].is_active = !cfg.routines[i].is_active;
+                            self.routines_config = cfg.clone();
+                            self.window.request_redraw();
+                            action = SettingsAction::UpdateRoutinesConfig(cfg);
+                            break;
+                        }
+                        if dlx >= 630.0 && dlx <= 680.0 && dly >= card_y + 30.0 && dly <= card_y + 60.0 {
+                            self.editing_routine = Some(r.clone());
+                            self.window.request_redraw();
+                            break;
+                        }
+                        if dlx >= 690.0 && dlx <= 760.0 && dly >= card_y + 30.0 && dly <= card_y + 60.0 {
+                            let mut cfg = self.routines_config.clone();
+                            cfg.routines.remove(i);
+                            self.routines_config = cfg.clone();
+                            self.window.request_redraw();
+                            action = SettingsAction::UpdateRoutinesConfig(cfg);
+                            break;
+                        }
+                        current_y += 120.0;
+                    }
+                    if action != SettingsAction::None {
+                        return action;
                     }
                 }
             }
@@ -1486,6 +1691,24 @@ impl SettingsWindow {
             16 => ai_config.tts_reference_audio.to_string_lossy().into_owned(),
             17 => ai_config.tts_prompt_text.clone(),
             14 | 15 | 18 => String::new(), // Toggles handled via click
+            501 => {
+                if let Some(r) = &self.editing_routine { r.title.clone() } else { "".to_string() }
+            }
+            502 => {
+                if let Some(r) = &self.editing_routine {
+                    match r.schedule_type {
+                        crate::types::ScheduleType::Weekly => r.day_of_week.unwrap_or(0).to_string(),
+                        crate::types::ScheduleType::Monthly => r.day_of_month.unwrap_or(1).to_string(),
+                        _ => r.interval.unwrap_or(1).to_string(),
+                    }
+                } else { "".to_string() }
+            }
+            503 => {
+                if let Some(r) = &self.editing_routine { r.time_of_day.clone().unwrap_or("00:00".to_string()) } else { "".to_string() }
+            }
+            504 => {
+                if let Some(r) = &self.editing_routine { r.memo.clone() } else { "".to_string() }
+            }
             _ => String::new(),
         }
     }
@@ -1546,12 +1769,31 @@ impl SettingsWindow {
             17 => {
                 ai_config.tts_prompt_text = text;
             }
+            501..=504 => {
+                if let Some(mut r) = self.editing_routine.clone() {
+                    match idx {
+                        501 => r.title = text,
+                        502 => {
+                            let v: u32 = text.parse().unwrap_or(1);
+                            match r.schedule_type {
+                                crate::types::ScheduleType::Weekly => r.day_of_week = Some(v),
+                                crate::types::ScheduleType::Monthly => r.day_of_month = Some(v),
+                                _ => r.interval = Some(v),
+                            }
+                        }
+                        503 => r.time_of_day = Some(text),
+                        504 => r.memo = text,
+                        _ => {}
+                    }
+                    self.editing_routine = Some(r);
+                }
+            }
             _ => {}
         }
     }
 
     fn ensure_cursor_visible(&mut self, field_idx: usize, scale: f32, ai_config: &AiConfig) {
-        if field_idx >= 19 {
+        if (field_idx >= 19 && field_idx < 500) || field_idx > 504 {
             return;
         }
 
@@ -1559,8 +1801,8 @@ impl SettingsWindow {
             return;
         }
 
-        if field_idx == 13 {
-            let text = &ai_config.system_prompt;
+        if field_idx == 13 || field_idx == 504 {
+            let text = self.get_field_text(field_idx, ai_config);
             let mut measurement_text = text.clone();
             if measurement_text.ends_with('\n') {
                 measurement_text.push(' ');
@@ -1569,35 +1811,41 @@ impl SettingsWindow {
             let py_logical = py as f32; // Relative to text start (scaled)
             let ch_scaled = ch as f32; // Line height (scaled)
 
-            // Text viewport is smaller than box (padded by 12px top/bottom)
-            let viewport_h_scaled = (250.0 - 24.0) * scale;
-            let mut current_scroll = self.system_prompt_scroll_offset * scale;
+            // Text viewport is smaller than box
+            let viewport_h_scaled = if field_idx == 13 { (250.0 - 24.0) * scale } else { 80.0 * scale };
+            let mut current_scroll = if field_idx == 13 { self.system_prompt_scroll_offset * scale } else { self.routine_memo_scroll_offset * scale };
 
             let top_y = py_logical + current_scroll;
             let bottom_y = top_y + ch_scaled;
 
             // Pad by 10/30px to keep cursor from hitting edges
-            if top_y < 10.0 {
-                current_scroll = (10.0 - py_logical).min(0.0);
-            } else if bottom_y > viewport_h_scaled - 10.0 {
-                current_scroll = (viewport_h_scaled - 10.0 - (py_logical + ch_scaled)).min(0.0);
+            let pad = 10.0 * scale;
+            if top_y < pad {
+                current_scroll = (pad - py_logical).min(0.0);
+            } else if bottom_y > viewport_h_scaled - pad {
+                current_scroll = (viewport_h_scaled - pad - (py_logical + ch_scaled)).min(0.0);
             }
 
             // Content-aware clamping
+            let max_w_design = if field_idx == 13 { 460.0 } else { 480.0 };
             let (_, mh): (f32, f32) =
-                get_metrics_dw(&measurement_text, 14.0 * scale, (460.0 * scale) as u32);
-            let content_h = mh + 24.0 * scale;
-            let min_scroll = (250.0 * scale - content_h).min(0.0f32);
+                get_metrics_dw(&measurement_text, 14.0 * scale, (max_w_design * scale) as u32);
+            let content_h = mh + if field_idx == 13 { 24.0 * scale } else { 20.0 * scale };
+            let min_scroll = (viewport_h_scaled - content_h).min(0.0f32);
             current_scroll = current_scroll.max(min_scroll).min(0.0);
 
-            self.system_prompt_scroll_offset = current_scroll / scale;
+            if field_idx == 13 {
+                self.system_prompt_scroll_offset = current_scroll / scale;
+            } else {
+                self.routine_memo_scroll_offset = current_scroll / scale;
+            }
             return;
         }
 
         // Single-line fields
-        if field_idx == 14 || field_idx == 15 || field_idx == 16 || field_idx == 18 {
-            return;
-        } // Skip toggles (14/15/18) or path picker (16)
+        if field_idx >= 501 && field_idx <= 503 {
+            return; // Scroll offsets not used for routine small fields yet
+        }
 
         let fields = vec![
             (265.0, 30.0, 160.0),   // 0: Profile Name
@@ -1658,6 +1906,8 @@ impl SettingsWindow {
         let field_idx = self.focused_field.unwrap_or(0);
         let max_width = if field_idx == 13 {
             460.0 * scale
+        } else if field_idx == 504 {
+            480.0 * scale
         } else {
             1000000.0
         };
@@ -1668,6 +1918,8 @@ impl SettingsWindow {
         let field_idx = self.focused_field.unwrap_or(0);
         let max_width = if field_idx == 13 {
             460.0 * scale
+        } else if field_idx == 504 {
+            480.0 * scale
         } else {
             1000000.0
         };
@@ -1685,7 +1937,7 @@ impl SettingsWindow {
         let size = self.window.inner_size();
         let scale = ((size.width as f32 / 800.0).min(size.height as f32 / 750.0)) as f32;
         self.last_cursor_action = std::time::Instant::now();
-        if self.current_tab != 2 && self.current_tab != 3 {
+        if self.current_tab != 2 && self.current_tab != 3 && self.current_tab != 5 {
             return false;
         }
 
@@ -1747,7 +1999,14 @@ impl SettingsWindow {
         let has_shift = modifiers.shift_key();
 
         if let Key::Named(NamedKey::ArrowUp) = &event.logical_key {
-            if field_idx == 13 {
+            if field_idx == 13 || field_idx == 504 {
+                if has_shift {
+                    if self.selection_start.is_none() {
+                        self.selection_start = Some(self.cursor_pos);
+                    }
+                } else {
+                    self.selection_start = None;
+                }
                 let (lx, ly, _) = self.get_xy_from_cursor(&text, self.cursor_pos, scale);
                 let line_height = 20.0 * scale; // pixels
                 self.cursor_pos = self.get_cursor_from_xy(
@@ -1756,16 +2015,20 @@ impl SettingsWindow {
                     ly as f32 - line_height + 5.0 * scale,
                     scale,
                 );
-                if !has_shift {
-                    self.selection_start = None;
-                }
                 self.ensure_cursor_visible(field_idx, scale, ai_config);
                 self.window.request_redraw();
                 return true;
             }
         }
         if let Key::Named(NamedKey::ArrowDown) = &event.logical_key {
-            if field_idx == 13 {
+            if field_idx == 13 || field_idx == 504 {
+                if has_shift {
+                    if self.selection_start.is_none() {
+                        self.selection_start = Some(self.cursor_pos);
+                    }
+                } else {
+                    self.selection_start = None;
+                }
                 let (lx, ly, _) = self.get_xy_from_cursor(&text, self.cursor_pos, scale);
                 let line_height = 20.0 * scale; // pixels
                 self.cursor_pos = self.get_cursor_from_xy(
@@ -1774,9 +2037,6 @@ impl SettingsWindow {
                     ly as f32 + line_height + 5.0 * scale,
                     scale,
                 );
-                if !has_shift {
-                    self.selection_start = None;
-                }
                 self.ensure_cursor_visible(field_idx, scale, ai_config);
                 self.window.request_redraw();
                 return true;
@@ -1889,7 +2149,7 @@ impl SettingsWindow {
                 return true;
             }
             Key::Named(NamedKey::Enter) => {
-                if field_idx == 13 {
+                if field_idx == 13 || field_idx == 504 {
                     if let Some(start) = self.selection_start {
                         let min = start.min(self.cursor_pos);
                         let max = start.max(self.cursor_pos);
@@ -1997,7 +2257,7 @@ impl SettingsWindow {
     }
 
     pub fn handle_ime(&mut self, text: &str, ai_config: &mut AiConfig) -> bool {
-        if self.current_tab != 2 {
+        if self.current_tab != 2 && self.current_tab != 5 {
             return false;
         }
         if let Some(idx) = self.focused_field {
@@ -2128,20 +2388,43 @@ impl SettingsWindow {
 
                     if (self.system_prompt_scroll_offset - old_off).abs() > 0.01 {
                         scrolled_sys_prompt = true;
+                        self.window.request_redraw();
                     } else {
-                        if (dy_logical > 0.0 && self.system_prompt_scroll_offset >= -0.01)
-                            || (dy_logical < 0.0
-                                && self.system_prompt_scroll_offset <= min_offset + 0.01)
-                        {
-                            scrolled_sys_prompt = false;
-                        } else {
-                            scrolled_sys_prompt = true;
-                        }
+                        // At boundary
+                        scrolled_sys_prompt = false;
                     }
                 }
             }
 
             if !scrolled_sys_prompt {
+                self.scroll_offset += dy_logical;
+                let min_offset = -(self.content_height - self.viewport_height).max(0.0);
+                self.scroll_offset = self.scroll_offset.clamp(min_offset, 0.0);
+            }
+        } else if self.current_tab == 5 {
+            // Routines Tab
+            let mut scrolled_memo = false;
+            if let Some((min_x, min_y, max_x, max_y)) = self.routine_memo_rect {
+                // Here, dlx/dly are used but min_x/min_y are returned from routines.rs with absolute coords (sy_val).
+                // Wait, sy_val includes scroll_offset in routines.rs. Let's use physical x/y for check
+                if cursor_pos.is_some() {
+                    let pos = cursor_pos.unwrap();
+                    if pos.x >= min_x && pos.x <= max_x && pos.y >= min_y && pos.y <= max_y {
+                        let old_off = self.routine_memo_scroll_offset;
+                        self.routine_memo_scroll_offset += dy_logical;
+                        let view_h = 80.0;
+                        let content_h = (self.routine_memo_content_height / scale as f32) + 20.0;
+                        let min_offset = -(content_h - view_h).max(0.0);
+                        self.routine_memo_scroll_offset = self.routine_memo_scroll_offset.clamp(min_offset, 0.0);
+                        
+                        if (self.routine_memo_scroll_offset - old_off).abs() > 0.01 {
+                            scrolled_memo = true;
+                            self.window.request_redraw();
+                        }
+                    }
+                }
+            }
+            if !scrolled_memo {
                 self.scroll_offset += dy_logical;
                 let min_offset = -(self.content_height - self.viewport_height).max(0.0);
                 self.scroll_offset = self.scroll_offset.clamp(min_offset, 0.0);
@@ -2280,7 +2563,7 @@ impl SettingsWindow {
                             let scale_f32 = scale as f32;
                             let scroll_y = self.history_scroll_states.get(idx).copied().unwrap_or(0.0);
                             let layout_x = (lx as f32 - content_x_base as f32) * scale_f32;
-                            let layout_y = (dly - content_y_base as f32) * scale_f32 - (scroll_y * scale_f32);
+                            let layout_y = (ly as f32 - content_y_base as f32) * scale_f32 - (scroll_y * scale_f32);
                             self.history_cursor_pos = get_cursor_index_from_xy(text, 16.0 * scale_f32, (450.0 * scale_f32) as u32, layout_x, layout_y);
                             self.window.request_redraw();
                         }
@@ -2313,6 +2596,28 @@ impl SettingsWindow {
             (230.0, 1430.0), // 16: Ref Path
             (230.0, 1530.0), // 17: TTS Prompt Text
         ];
+
+        if field_idx >= 501 {
+            let scale_f32 = scale as f32;
+            let fx = if field_idx == 503 { 450.0 } else { 230.0 };
+            let text_x = dlx as f64 - fx - 10.0;
+            if text_x.is_finite() {
+                let layout_x = (text_x as f32) * scale_f32;
+                if field_idx == 504 {
+                    // Base Y of the memo field:
+                    // 120 + 60 + 90 + 35 + 110 + 90 = 505
+                    // input_memo_y = 505 + 35 = 540
+                    let input_memo_y = 540.0;
+                    let scroll_y = self.routine_memo_scroll_offset * scale_f32;
+                    let layout_y = (dly as f32 - input_memo_y - 10.0) * scale_f32 - scroll_y;
+                    self.cursor_pos = self.get_cursor_from_xy(&val, layout_x, layout_y, scale_f32);
+                } else {
+                    self.cursor_pos = self.get_cursor_from_x(&val, layout_x, scale_f32);
+                }
+                self.window.request_redraw();
+            }
+            return None;
+        }
 
         let (fx, fy) = fields[field_idx];
         let design_card_y = 120.0;

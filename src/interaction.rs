@@ -1,62 +1,64 @@
 use arboard::Clipboard;
-use chrono::{Local, Datelike, NaiveDate};
+use chrono::{DateTime, Local, NaiveDate, NaiveTime, Timelike, Datelike};
 use rand::Rng;
 use std::time::{Duration, Instant};
 use sysinfo::{Components, Disks, Networks, System};
 
-use crate::types::AiConfig;
+use crate::types::{AiConfig, PersistentConfig, RemindersConfig, ScheduledItemDef, RoutinesConfig, RoutineStateConfig, ScheduleType};
 use std::sync::{Arc, Mutex};
-
-#[derive(Debug, Clone)]
-pub struct ScheduledItem {
-    pub time: Instant,
-    pub memo: String,
-}
 
 #[derive(Clone)]
 pub struct ActionScheduler {
-    pub queue: Arc<Mutex<Vec<ScheduledItem>>>,
+    pub config: Arc<Mutex<RemindersConfig>>,
 }
 
 impl ActionScheduler {
     pub fn new() -> Self {
         Self {
-            queue: Arc::new(Mutex::new(Vec::new())),
+            config: Arc::new(Mutex::new(RemindersConfig::load())),
         }
     }
 
     pub fn schedule(&self, minutes: u32, memo: String) -> Result<String, String> {
-        let mut q = self.queue.lock().unwrap();
-        if q.len() >= 5 {
+        let mut cfg = self.config.lock().unwrap();
+        if cfg.items.len() >= 5 {
             return Err(
                 "Too many active reminders (max 5). Please wait for some to trigger.".to_string(),
             );
         }
 
-        // Safety: Enforce 1 minute minimum
         let mins = minutes.max(1);
-        let trigger_time = Instant::now() + Duration::from_secs(mins as u64 * 60);
+        let trigger_time = Local::now() + chrono::Duration::minutes(mins as i64);
 
-        q.push(ScheduledItem {
-            time: trigger_time,
+        cfg.items.push(ScheduledItemDef {
+            id: uuid::Uuid::new_v4().to_string(),
+            time: trigger_time.to_rfc3339(),
             memo: memo.clone(),
         });
 
-        // Keep sorted by time
-        q.sort_by_key(|i| i.time);
+        cfg.items.sort_by(|a, b| {
+            let t_a = DateTime::parse_from_rfc3339(&a.time).unwrap_or_default();
+            let t_b = DateTime::parse_from_rfc3339(&b.time).unwrap_or_default();
+            t_a.cmp(&t_b)
+        });
+
+        cfg.save();
 
         Ok(format!("Scheduled: '{}' in {} minutes.", memo, mins))
     }
 
     pub fn poll(&self) -> Option<String> {
-        let mut q = self.queue.lock().unwrap();
-        if q.is_empty() {
+        let mut cfg = self.config.lock().unwrap();
+        if cfg.items.is_empty() {
             return None;
         }
 
-        let now = Instant::now();
-        if now >= q[0].time {
-            let item = q.remove(0);
+        let now = Local::now();
+        let target_time = DateTime::parse_from_rfc3339(&cfg.items[0].time).unwrap_or_default();
+        
+        if now.with_timezone(&target_time.timezone()) >= target_time {
+            let item = cfg.items.remove(0);
+            cfg.save();
             return Some(item.memo);
         }
         None
@@ -445,7 +447,8 @@ pub struct InteractionManager {
     base_interval: Duration,
     scheduler: ActionScheduler,
     first_run: bool,
-    last_factboard_cleanup: Option<NaiveDate>,
+    routines: RoutinesConfig,
+    routine_states: RoutineStateConfig,
 }
 
 impl InteractionManager {
@@ -459,7 +462,8 @@ impl InteractionManager {
             base_interval,
             scheduler,
             first_run: true,
-            last_factboard_cleanup: get_last_cleanup_date(),
+            routines: RoutinesConfig::load(),
+            routine_states: RoutineStateConfig::load(),
         }
     }
 
@@ -467,6 +471,10 @@ impl InteractionManager {
         self.config = config;
         // Enforce 1 minute minimum to avoid accidental spam during typing
         self.base_interval = Duration::from_secs(self.config.interaction_frequency.max(1) * 60);
+    }
+
+    pub fn update_routines(&mut self, routines: RoutinesConfig) {
+        self.routines = routines;
     }
 
     pub fn check_for_trigger(&mut self) -> Option<crate::types::ChatInput> {
@@ -486,15 +494,151 @@ impl InteractionManager {
             });
         }
 
-        let current_date = Local::now().date_naive();
-        if current_date.weekday() == chrono::Weekday::Sun && self.last_factboard_cleanup != Some(current_date) {
-            self.last_factboard_cleanup = Some(current_date);
-            set_last_cleanup_date(current_date);
-            self.last_interaction = now; // Reset routine timer
-            return Some(crate::types::ChatInput {
-                text: "[SYSTEM_EVENT] Weekly Routine: Today is Sunday. Please review and clean up the Fact Board using the 'memory_skill' tools (get_facts, delete_fact, update_fact_board, save_fact, etc). Remove obsolete or temporary facts and consolidate related information. Also, explicitly add or update any new important information based on your recent memories. Once done, use 'send_notification' to inform the user of what was cleaned up, added, or updated.".to_string(),
-                images: vec![],
-            });
+        // 0.5 Poll Routines
+        for routine in &self.routines.routines {
+            if !routine.is_active {
+                continue;
+            }
+
+            let now_local = Local::now();
+            let last_run_str = self.routine_states.last_executions.get(&routine.id);
+            let last_run = last_run_str
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Local));
+
+            let should_run = match routine.schedule_type {
+                ScheduleType::Daily => {
+                    // Run if last_run is before today, OR if time_of_day is set and passed today but not run today yet
+                    if let Some(lr) = last_run {
+                        if lr.date_naive() < now_local.date_naive() {
+                            if let Some(ref t) = routine.time_of_day {
+                                if let Ok(time) = NaiveTime::parse_from_str(t, "%H:%M") {
+                                    now_local.time() >= time
+                                } else {
+                                    true
+                                }
+                            } else {
+                                true
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        // Never run before
+                        if let Some(ref t) = routine.time_of_day {
+                            if let Ok(time) = NaiveTime::parse_from_str(t, "%H:%M") {
+                                now_local.time() >= time
+                            } else {
+                                true
+                            }
+                        } else {
+                            true
+                        }
+                    }
+                }
+                ScheduleType::Weekly => {
+                    let target_day = routine.day_of_week.unwrap_or(0);
+                    let current_day = now_local.weekday().num_days_from_monday() as u32;
+                    if current_day == target_day {
+                        if let Some(lr) = last_run {
+                            if lr.date_naive() < now_local.date_naive() {
+                                if let Some(ref t) = routine.time_of_day {
+                                    if let Ok(time) = NaiveTime::parse_from_str(t, "%H:%M") {
+                                        now_local.time() >= time
+                                    } else {
+                                        true
+                                    }
+                                } else {
+                                    true
+                                }
+                            } else {
+                                false
+                            }
+                        } else {
+                            if let Some(ref t) = routine.time_of_day {
+                                if let Ok(time) = NaiveTime::parse_from_str(t, "%H:%M") {
+                                    now_local.time() >= time
+                                } else {
+                                    true
+                                }
+                            } else {
+                                true
+                            }
+                        }
+                    } else {
+                        false
+                    }
+                }
+                ScheduleType::Monthly => {
+                    let target_date = routine.day_of_month.unwrap_or(1);
+                    if now_local.day() == target_date {
+                        if let Some(lr) = last_run {
+                            if lr.date_naive() < now_local.date_naive() {
+                                if let Some(ref t) = routine.time_of_day {
+                                    if let Ok(time) = NaiveTime::parse_from_str(t, "%H:%M") {
+                                        now_local.time() >= time
+                                    } else {
+                                        true
+                                    }
+                                } else {
+                                    true
+                                }
+                            } else {
+                                false
+                            }
+                        } else {
+                            if let Some(ref t) = routine.time_of_day {
+                                if let Ok(time) = NaiveTime::parse_from_str(t, "%H:%M") {
+                                    now_local.time() >= time
+                                } else {
+                                    true
+                                }
+                            } else {
+                                true
+                            }
+                        }
+                    } else {
+                        false
+                    }
+                }
+                ScheduleType::IntervalDays => {
+                    let interval = routine.interval.unwrap_or(1);
+                    if let Some(lr) = last_run {
+                        let duration = now_local.signed_duration_since(lr);
+                        duration.num_days() >= interval as i64
+                    } else {
+                        true
+                    }
+                }
+                ScheduleType::IntervalHours => {
+                    let interval = routine.interval.unwrap_or(1);
+                    if let Some(lr) = last_run {
+                        let duration = now_local.signed_duration_since(lr);
+                        duration.num_hours() >= interval as i64
+                    } else {
+                        true
+                    }
+                }
+                ScheduleType::IntervalMinutes => {
+                    let interval = routine.interval.unwrap_or(1);
+                    if let Some(lr) = last_run {
+                        let duration = now_local.signed_duration_since(lr);
+                        duration.num_minutes() >= interval as i64
+                    } else {
+                        true
+                    }
+                }
+            };
+
+            if should_run {
+                self.routine_states.last_executions.insert(routine.id.clone(), now_local.to_rfc3339());
+                self.routine_states.save();
+                self.last_interaction = now; // Reset random interaction timer
+                return Some(crate::types::ChatInput {
+                    text: routine.memo.clone(),
+                    images: vec![],
+                });
+            }
         }
 
         let elapsed = now.duration_since(self.last_interaction);
