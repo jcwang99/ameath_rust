@@ -9,6 +9,7 @@ pub mod llm_call;
 pub mod memory_skill;
 pub mod notification_skill;
 pub mod reminder_skill;
+pub mod routine_skill;
 pub mod sub_agent;
 pub mod system;
 pub mod memo_skill;
@@ -33,6 +34,7 @@ impl SkillManager {
         memory: Arc<crate::ai::memory::MemoryManager>,
         config: &crate::types::AiConfig,
         scheduler: crate::interaction::ActionScheduler,
+        shared_routines: std::sync::Arc<std::sync::Mutex<crate::types::RoutinesConfig>>,
     ) -> Self {
         let manager = Self {
             skills: Arc::new(RwLock::new(HashMap::new())),
@@ -65,6 +67,7 @@ impl SkillManager {
         manager.register(Arc::new(todo_skill::TodoSkill::new(memory.clone())));
         manager.register(Arc::new(memo_skill::MemoSkill::new(memory.clone())));
         manager.register(Arc::new(work_log::WorkLogSkill::new(memory)));
+        manager.register(Arc::new(routine_skill::RoutineSkill::new(shared_routines)));
 
         // Register the external skill registry (passes API config as env vars to subprocesses)
         let catalog = Arc::new(RwLock::new(

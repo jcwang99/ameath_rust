@@ -301,9 +301,10 @@ fn main() {
 
     // AI Kernel & Channel
     let scheduler = interaction::ActionScheduler::new();
+    let shared_routines = std::sync::Arc::new(std::sync::Mutex::new(types::RoutinesConfig::load()));
     let (ai_tx, ai_rx) = std::sync::mpsc::channel::<AiResponseEvent>();
     let mut chat_kernel =
-        std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
+        std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone(), shared_routines.clone()));
     let music_dir = window_config
         .music_path
         .clone()
@@ -313,7 +314,7 @@ fn main() {
     }
     music_player.set_path(music_dir);
     let mut interaction_manager =
-        interaction::InteractionManager::new(ai_config.clone(), scheduler.clone());
+        interaction::InteractionManager::new(ai_config.clone(), scheduler.clone(), shared_routines.clone());
     let (path_tx, path_rx) = std::sync::mpsc::channel::<Option<std::path::PathBuf>>();
     let (tts_path_tx, tts_path_rx) = std::sync::mpsc::channel::<Option<std::path::PathBuf>>();
     let (tts_controller, tts_rx) = if let Some((c, r)) = tts::TtsController::new() {
@@ -854,38 +855,38 @@ fn main() {
                                                 settings::SettingsAction::SetAiApiKey(key) => {
                                                     ai_config.active_profile_mut().api_key = key;
                                                     ai_config.save();
-                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
+                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone(), shared_routines.clone()));
                                                     sw.request_redraw();
                                                 }
                                                 settings::SettingsAction::SetAiBaseUrl(url) => {
                                                     ai_config.active_profile_mut().base_url = url;
                                                     ai_config.save();
-                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
+                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone(), shared_routines.clone()));
                                                     sw.request_redraw();
                                                 }
                                                 settings::SettingsAction::SetAiModel(model) => {
                                                     ai_config.active_profile_mut().model = model;
                                                     ai_config.active_interaction_screenshots_enabled = false;
                                                     ai_config.save();
-                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
+                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone(), shared_routines.clone()));
                                                     sw.request_redraw();
                                                 }
                                                 settings::SettingsAction::SetAiReactLimit(limit) => {
                                                     ai_config.react_limit = limit;
                                                     ai_config.save();
-                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
+                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone(), shared_routines.clone()));
                                                     sw.request_redraw();
                                                 }
                                                 settings::SettingsAction::SetAiL1Threshold(t) => {
                                                     ai_config.l1_summary_threshold = t;
                                                     ai_config.save();
-                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
+                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone(), shared_routines.clone()));
                                                     sw.request_redraw();
                                                 }
                                                 settings::SettingsAction::SetAiL2Threshold(val) => {
                                                     ai_config.l2_merge_threshold = val;
                                                     ai_config.save();
-                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
+                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone(), shared_routines.clone()));
                                                     sw.request_redraw();
                                                 }
                                                 settings::SettingsAction::SetAiInteractionFrequency(val) => {
@@ -897,13 +898,13 @@ fn main() {
                                                 settings::SettingsAction::SetAiTavilyKey(key) => {
                                                     ai_config.tavily_api_key = key;
                                                     ai_config.save();
-                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
+                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone(), shared_routines.clone()));
                                                     sw.request_redraw();
                                                 }
                                                 settings::SettingsAction::UpdateAiConfig(new_config) => {
                                                     ai_config = new_config;
                                                     ai_config.save();
-                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
+                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone(), shared_routines.clone()));
                                                     interaction_manager.update_config(ai_config.clone());
                                                     sw.request_redraw();
                                                 }
@@ -935,7 +936,7 @@ fn main() {
                                                 settings::SettingsAction::SetAiSystemPrompt(prompt) => {
                                                     ai_config.system_prompt = prompt;
                                                     ai_config.save();
-                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
+                                                    chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone(), shared_routines.clone()));
                                                     sw.request_redraw();
                                                 }
                                                 settings::SettingsAction::RequestHistory => {
@@ -993,14 +994,14 @@ fn main() {
                                 }
                                 WindowEvent::KeyboardInput { event: key_event, .. } => {
                                     if sw.handle_key_input(&key_event, &mut ai_config, modifier_state) {
-                                        chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
+                                        chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone(), shared_routines.clone()));
                                         interaction_manager.update_config(ai_config.clone());
                                     }
                                 }
                                 WindowEvent::Ime(ime_event) => {
                                     if let winit::event::Ime::Commit(text) = ime_event {
                                         sw.handle_ime(&text, &mut ai_config);
-                                        chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
+                                        chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone(), shared_routines.clone()));
                                         interaction_manager.update_config(ai_config.clone());
                                     }
                                 }
@@ -1180,7 +1181,7 @@ fn main() {
                         if let Some(path) = path_opt {
                             ai_config.tts_reference_audio = path;
                             ai_config.save();
-                            chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone()));
+                            chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone(), shared_routines.clone()));
                             interaction_manager.update_config(ai_config.clone());
                         }
                         if let Some(sw) = &mut settings_win {

@@ -13,7 +13,7 @@ pub struct ChatKernel {
 }
 
 impl ChatKernel {
-    pub fn new(config: &AiConfig, scheduler: crate::interaction::ActionScheduler) -> Self {
+    pub fn new(config: &AiConfig, scheduler: crate::interaction::ActionScheduler, shared_routines: std::sync::Arc<std::sync::Mutex<crate::types::RoutinesConfig>>) -> Self {
         let profile = config.active_profile();
         let client = if profile.api_key.is_empty() {
             None
@@ -27,7 +27,7 @@ impl ChatKernel {
         };
 
         let memory = Arc::new(MemoryManager::new());
-        let skills = SkillManager::new(Arc::clone(&memory), config, scheduler);
+        let skills = SkillManager::new(Arc::clone(&memory), config, scheduler, shared_routines);
 
         Self {
             config: config.clone(),

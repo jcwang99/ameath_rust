@@ -447,12 +447,12 @@ pub struct InteractionManager {
     base_interval: Duration,
     scheduler: ActionScheduler,
     first_run: bool,
-    routines: RoutinesConfig,
+    routines: std::sync::Arc<std::sync::Mutex<RoutinesConfig>>,
     routine_states: RoutineStateConfig,
 }
 
 impl InteractionManager {
-    pub fn new(config: AiConfig, scheduler: ActionScheduler) -> Self {
+    pub fn new(config: AiConfig, scheduler: ActionScheduler, shared_routines: std::sync::Arc<std::sync::Mutex<RoutinesConfig>>) -> Self {
         let base_interval = Duration::from_secs(config.interaction_frequency * 60);
 
         Self {
@@ -462,7 +462,7 @@ impl InteractionManager {
             base_interval,
             scheduler,
             first_run: true,
-            routines: RoutinesConfig::load(),
+            routines: shared_routines,
             routine_states: RoutineStateConfig::load(),
         }
     }
@@ -474,7 +474,8 @@ impl InteractionManager {
     }
 
     pub fn update_routines(&mut self, routines: RoutinesConfig) {
-        self.routines = routines;
+        let mut cfg = self.routines.lock().unwrap();
+        *cfg = routines;
     }
 
     pub fn check_for_trigger(&mut self) -> Option<crate::types::ChatInput> {
@@ -495,7 +496,8 @@ impl InteractionManager {
         }
 
         // 0.5 Poll Routines
-        for routine in &self.routines.routines {
+        let routines_snapshot = self.routines.lock().unwrap().routines.clone();
+        for routine in &routines_snapshot {
             if !routine.is_active {
                 continue;
             }
