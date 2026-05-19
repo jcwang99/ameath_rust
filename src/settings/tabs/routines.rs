@@ -247,7 +247,7 @@ pub fn draw(
         draw_rounded_rect(buffer, w, s(600.0) as i32, sy_val(current_y) as i32, sc(130.0) as u32, sc(40.0) as u32, 8, COLOR_PRIMARY, w, h);
         draw_text(buffer, w, &[], "Save", s(645.0) as i32, sy_val(current_y + 10.0) as i32, sc(16.0), 0x00FFFFFF);
         
-        return (600.0, current_y + 100.0, cursor_rect);
+        return (600.0, current_y - state.scroll_offset + 100.0, cursor_rect);
     }
     
     // List View
@@ -285,5 +285,5 @@ pub fn draw(
         current_y += 120.0;
     }
     
-    (600.0, current_y + 40.0, cursor_rect)
+    (600.0, current_y - state.scroll_offset + 40.0, cursor_rect)
 }
