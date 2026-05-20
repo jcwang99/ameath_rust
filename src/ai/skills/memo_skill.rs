@@ -112,6 +112,7 @@ impl Skill for MemoSkill {
 
     async fn execute(&self, args: Value) -> Result<String, String> {
         let action = args["action"].as_str().ok_or("Missing action")?;
+        tracing::info!("[MemoSkill] action={} | args: {:.200}", action, args);
         match action {
             "add_memo" => {
                 let content = args["content"].as_str().ok_or("Missing content")?;

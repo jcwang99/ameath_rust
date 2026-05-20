@@ -28,7 +28,7 @@ impl Skill for MemorySkill {
         let action = args["action"]
             .as_str()
             .ok_or_else(|| "Missing 'action' (set/get)".to_string())?;
-
+        tracing::info!("[MemorySkill] action={} | args: {:.200}", action, args);
         match action {
             "set" => {
                 let key = args["key"].as_str().ok_or("Missing 'key'")?;

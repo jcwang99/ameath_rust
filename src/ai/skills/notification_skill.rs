@@ -71,6 +71,7 @@ impl Skill for NotificationSkill {
             .as_str()
             .ok_or("Missing 'message' parameter")?;
         let title = args["title"].as_str().unwrap_or("Ameath");
+        tracing::info!("[NotificationSkill] title='{}' | message: {:.100}", title, message);
 
         self.send_notification(title, message)?;
         Ok(format!("Notification sent: [{}] {}", title, message))

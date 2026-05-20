@@ -28,6 +28,7 @@ impl Skill for RoutineSkill {
         let action = args["action"]
             .as_str()
             .ok_or("Missing 'action' (string: 'add', 'list', 'update', or 'remove')")?;
+        tracing::info!("[RoutineSkill] action={} | args: {:.200}", action, args);
 
         let mut cfg = self.config.lock().unwrap();
 
@@ -47,9 +48,13 @@ impl Skill for RoutineSkill {
                         ScheduleType::IntervalMinutes => format!("Every {} minutes", r.interval.unwrap_or(1)),
                     };
                     let status = if r.is_active { "ON" } else { "OFF" };
+                    let expiry_str = match r.expiry_minutes {
+                        Some(m) => format!("expire: {}min", m),
+                        None => "always_run".to_string(),
+                    };
                     out.push_str(&format!(
-                        "{}. [{}] \"{}\" | {} | memo: {:.80}\n   id: {}\n",
-                        i + 1, status, r.title, schedule, r.memo, r.id
+                        "{}. [{}] \"{}\" | {} | {} | memo: {:.80}\n   id: {}\n",
+                        i + 1, status, r.title, schedule, expiry_str, r.memo, r.id
                     ));
                 }
                 Ok(out)
@@ -85,6 +90,7 @@ impl Skill for RoutineSkill {
                 let day_of_week = args["day_of_week"].as_u64().map(|v| v as u32);
                 let day_of_month = args["day_of_month"].as_u64().map(|v| v as u32);
                 let interval = args["interval"].as_u64().map(|v| v.max(1) as u32);
+                let expiry_minutes = args["expiry_minutes"].as_u64().map(|v| v as u32);
 
                 // Validate required fields per schedule type
                 match schedule_type {
@@ -112,6 +118,7 @@ impl Skill for RoutineSkill {
                     time_of_day,
                     memo,
                     is_active: true,
+                    expiry_minutes,
                 };
 
                 cfg.routines.push(routine);
@@ -185,9 +192,19 @@ impl Skill for RoutineSkill {
                     routine.is_active = v;
                     changes.push("is_active");
                 }
+                // expiry_minutes: accepts integer to set, or null to clear (back to always_run)
+                if args.get("expiry_minutes").is_some() {
+                    if args["expiry_minutes"].is_null() {
+                        routine.expiry_minutes = None;
+                        changes.push("expiry_minutes(cleared)");
+                    } else if let Some(v) = args["expiry_minutes"].as_u64() {
+                        routine.expiry_minutes = Some(v as u32);
+                        changes.push("expiry_minutes");
+                    }
+                }
 
                 if changes.is_empty() {
-                    return Err("No fields to update. Provide at least one field (title, memo, schedule_type, time_of_day, day_of_week, day_of_month, interval, is_active).".to_string());
+                    return Err("No fields to update. Provide at least one field (title, memo, schedule_type, time_of_day, day_of_week, day_of_month, interval, is_active, expiry_minutes).".to_string());
                 }
 
                 let name = routine.title.clone();
@@ -248,6 +265,10 @@ impl Skill for RoutineSkill {
                         "id": {
                             "type": "string",
                             "description": "[update/remove] The exact UUID of the routine. You MUST call with action='list' first and copy the ID from the output. NEVER guess or fabricate an ID."
+                        },
+                        "expiry_minutes": {
+                            "type": "integer",
+                            "description": "[add/update] Optional. Minutes after scheduled time before the routine expires and is skipped. If omitted or null, the routine always runs regardless of how late it is triggered. Use this for time-sensitive tasks (e.g., 60 = skip if more than 1 hour late)."
                         }
                     },
                     "required": ["action"]

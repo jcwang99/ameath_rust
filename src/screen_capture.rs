@@ -234,6 +234,7 @@ pub fn capture_all_monitors() -> Result<Vec<DynamicImage>, String> {
         if images.is_empty() {
             Err("Failed to capture any monitors".to_string())
         } else {
+            tracing::debug!("[ScreenCapture] Captured {} monitor(s)", images.len());
             Ok(images)
         }
     }

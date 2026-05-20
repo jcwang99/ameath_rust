@@ -28,7 +28,7 @@ impl Skill for TavilySearchSkill {
         let query = args["query"]
             .as_str()
             .ok_or_else(|| "Missing 'query' argument".to_string())?;
-
+        tracing::info!("[TavilySearch] query: {:.100}", query);
         if self.api_key.is_empty() {
             return Err("Tavily API key not configured".to_string());
         }
@@ -125,7 +125,7 @@ impl Skill for BraveSearchSkill {
         let query = args["query"]
             .as_str()
             .ok_or_else(|| "Missing 'query' argument".to_string())?;
-
+        tracing::info!("[BraveSearch] query: {:.100}", query);
         if self.api_key.is_empty() {
             return Err("Brave API key not configured".to_string());
         }
@@ -216,7 +216,7 @@ impl Skill for WebScrapeSkill {
         let target_url = args["url"]
             .as_str()
             .ok_or_else(|| "Missing 'url' argument".to_string())?;
-
+        tracing::info!("[WebScrape] url: {:.200}", target_url);
         if self.url.is_empty() {
             return Err("Firecrawl URL not configured".to_string());
         }

@@ -1564,6 +1564,43 @@ impl SettingsWindow {
                     }
                     current_y += 150.0;
                     
+                    // Expiry Mode buttons
+                    let expiry_btn_y = current_y + 35.0;
+                    // Always Run button
+                    if dlx >= 230.0 && dlx <= 370.0 && dly >= expiry_btn_y && dly <= expiry_btn_y + 40.0 {
+                        if let Some(mut r) = self.editing_routine.clone() {
+                            r.expiry_minutes = None;
+                            self.editing_routine = Some(r);
+                            self.focused_field = None;
+                            self.window.request_redraw();
+                        }
+                        return SettingsAction::None;
+                    }
+                    // Expire After button
+                    if dlx >= 380.0 && dlx <= 520.0 && dly >= expiry_btn_y && dly <= expiry_btn_y + 40.0 {
+                        if let Some(mut r) = self.editing_routine.clone() {
+                            if r.expiry_minutes.is_none() {
+                                r.expiry_minutes = Some(60); // Default 60 min
+                            }
+                            self.editing_routine = Some(r);
+                            self.window.request_redraw();
+                        }
+                        return SettingsAction::None;
+                    }
+                    // Minutes input (Field 505)
+                    if self.editing_routine.as_ref().map_or(false, |r| r.expiry_minutes.is_some()) {
+                        if dlx >= 540.0 && dlx <= 660.0 && dly >= expiry_btn_y && dly <= expiry_btn_y + 40.0 {
+                            self.focused_field = Some(505);
+                            let text = self.get_field_text(505, ai_config);
+                            self.cursor_pos = self.get_cursor_from_x(&text, ((lx - 550.0) * scale as f64) as f32, scale as f32);
+                            self.selection_start = Some(self.cursor_pos);
+                            self.is_dragging_text = true;
+                            self.window.request_redraw();
+                            return SettingsAction::None;
+                        }
+                    }
+                    current_y += 90.0;
+                    
                     // Cancel
                     if dlx >= 480.0 && dlx <= 580.0 && dly >= current_y && dly <= current_y + 40.0 {
                         self.editing_routine = None;
@@ -1603,6 +1640,7 @@ impl SettingsWindow {
                             time_of_day: Some("12:00".to_string()),
                             memo: "".to_string(),
                             is_active: true,
+                            expiry_minutes: None,
                         };
                         self.editing_routine = Some(new_routine);
                         self.window.request_redraw();
@@ -1709,6 +1747,9 @@ impl SettingsWindow {
             504 => {
                 if let Some(r) = &self.editing_routine { r.memo.clone() } else { "".to_string() }
             }
+            505 => {
+                if let Some(r) = &self.editing_routine { r.expiry_minutes.unwrap_or(60).to_string() } else { "".to_string() }
+            }
             _ => String::new(),
         }
     }
@@ -1769,7 +1810,7 @@ impl SettingsWindow {
             17 => {
                 ai_config.tts_prompt_text = text;
             }
-            501..=504 => {
+            501..=505 => {
                 if let Some(mut r) = self.editing_routine.clone() {
                     match idx {
                         501 => r.title = text,
@@ -1783,6 +1824,10 @@ impl SettingsWindow {
                         }
                         503 => r.time_of_day = Some(text),
                         504 => r.memo = text,
+                        505 => {
+                            let v: u32 = text.parse().unwrap_or(60).max(1);
+                            r.expiry_minutes = Some(v);
+                        }
                         _ => {}
                     }
                     self.editing_routine = Some(r);
@@ -1793,7 +1838,7 @@ impl SettingsWindow {
     }
 
     fn ensure_cursor_visible(&mut self, field_idx: usize, scale: f32, ai_config: &AiConfig) {
-        if (field_idx >= 19 && field_idx < 500) || field_idx > 504 {
+        if (field_idx >= 19 && field_idx < 500) || field_idx > 505 {
             return;
         }
 
@@ -1843,7 +1888,7 @@ impl SettingsWindow {
         }
 
         // Single-line fields
-        if field_idx >= 501 && field_idx <= 503 {
+        if field_idx >= 501 && field_idx <= 503 || field_idx == 505 {
             return; // Scroll offsets not used for routine small fields yet
         }
 

@@ -56,6 +56,7 @@ impl MusicPlayer {
 
     pub fn set_path<P: AsRef<Path>>(&mut self, path: P) {
         let path = path.as_ref().to_path_buf();
+        tracing::info!("[MusicPlayer] set_path: {:?}", path);
         self.music_path = Some(path.clone());
         if let Some(sink) = &self.sink {
             sink.stop();
@@ -81,6 +82,7 @@ impl MusicPlayer {
         }
         self.songs.sort(); // Sequential order
         self.current_song_idx = 0;
+        tracing::info!("[MusicPlayer] Loaded {} songs from {:?}", self.songs.len(), path);
     }
 
     pub fn next(&mut self) {
@@ -211,7 +213,12 @@ impl MusicPlayer {
                 sink.stop();
                 sink.append(source);
                 sink.play();
+                tracing::debug!("[MusicPlayer] Playing: {:?}", song_path.file_name().unwrap_or_default());
+            } else {
+                tracing::warn!("[MusicPlayer] Failed to decode: {:?}", song_path);
             }
+        } else {
+            tracing::warn!("[MusicPlayer] Failed to open: {:?}", song_path);
         }
     }
 

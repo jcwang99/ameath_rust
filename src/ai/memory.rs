@@ -101,6 +101,8 @@ impl MemoryManager {
         )
         .expect("Failed to create index on entity_graph(target)");
 
+        tracing::info!("[Memory] Database initialized at {:?}", db_path);
+
         Self {
             conn: Mutex::new(conn),
         }
@@ -123,10 +125,14 @@ impl MemoryManager {
             |r| r.get(0),
         )?;
 
-        Ok((
-            l1_count >= config.l1_summary_threshold as i64,
-            l2_count >= config.l2_merge_threshold as i64,
-        ))
+        let l1_hit = l1_count >= config.l1_summary_threshold as i64;
+        let l2_hit = l2_count >= config.l2_merge_threshold as i64;
+        if l1_hit || l2_hit {
+            tracing::info!("[Memory] Threshold check: L1={}/{} (hit={}), L2={}/{} (hit={})",
+                l1_count, config.l1_summary_threshold, l1_hit, l2_count, config.l2_merge_threshold, l2_hit);
+        }
+
+        Ok((l1_hit, l2_hit))
     }
 
     pub fn add_message(&self, msg: &Message) -> Result<()> {
@@ -162,7 +168,10 @@ impl MemoryManager {
             "INSERT INTO conversations (role, content, layer, images_json, images_desc) VALUES (?1, ?2, 1, ?3, ?4)",
             params![msg.role, content_str, images_json, images_desc],
         )?;
-        Ok(conn.last_insert_rowid())
+        let id = conn.last_insert_rowid();
+        tracing::debug!("[Memory] add_message: role={}, chars={}, images={}, id={}",
+            msg.role, content_str.len(), images_json.is_some(), id);
+        Ok(id)
     }
 
     pub fn add_conversation_item(&self, role: &str, content: &str, layer: i32) -> Result<()> {
@@ -228,7 +237,10 @@ impl MemoryManager {
 
     pub fn clear_traces(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM tool_traces", [])?;
+        let deleted = conn.execute("DELETE FROM tool_traces", [])?;
+        if deleted > 0 {
+            tracing::debug!("[Memory] Cleared {} tool traces", deleted);
+        }
         Ok(())
     }
 
@@ -271,6 +283,7 @@ impl MemoryManager {
             )?;
             stmt.query_row([], |r| r.get(0)).ok()
         };
+        let has_l3 = l3_opt.is_some();
         if let Some(l3) = l3_opt {
             context.push(Message {
                 role: "system".to_string(),
@@ -510,6 +523,10 @@ impl MemoryManager {
 
         context.extend(history);
 
+        tracing::debug!("[Memory] get_context assembled: {} messages total (facts={}, L3={}, L2={}, traces, L1 limit={})",
+            context.len(), if facts.is_empty() { 0 } else { 1 }, if has_l3 { 1 } else { 0 },
+            l2_summaries.len(), limit);
+
         Ok(context)
     }
 
@@ -628,6 +645,7 @@ impl MemoryManager {
             )?;
         }
         tx.commit()?;
+        tracing::info!("[Memory] Marked {} L2 items as compacted", ids.len());
         Ok(())
     }
 
@@ -649,13 +667,15 @@ impl MemoryManager {
             "UPDATE conversations SET {} = 1 WHERE layer = ?1 AND id <= ?2",
             field
         );
-        conn.execute(&query, params![layer, upto_id])?;
+        let affected = conn.execute(&query, params![layer, upto_id])?;
+        tracing::info!("[Memory] mark_layer_processed: layer={}, upto_id={}, affected={}", layer, upto_id, affected);
         Ok(())
     }
 
     pub fn vacuum(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("VACUUM", [])?;
+        tracing::debug!("[Memory] Database vacuumed");
         Ok(())
     }
 
@@ -701,7 +721,7 @@ impl MemoryManager {
         let conn = self.conn.lock().unwrap();
 
         // Prune Layer 1 (Dialogue) -> Delete if summarized AND not in the last N
-        conn.execute(
+        let l1_deleted = conn.execute(
             "DELETE FROM conversations 
              WHERE layer = 1 
              AND summarized = 1 
@@ -710,7 +730,7 @@ impl MemoryManager {
         )?;
 
         // Prune Layer 2 (Summaries) -> Delete if compacted AND not in the last N
-        conn.execute(
+        let l2_deleted = conn.execute(
             "DELETE FROM conversations 
              WHERE layer = 2 
              AND compacted = 1 
@@ -719,11 +739,16 @@ impl MemoryManager {
         )?;
 
         // Prune Layer 3 (Long-term Summaries) -> Keep latest N versions
-        conn.execute(
+        let l3_deleted = conn.execute(
             "DELETE FROM summaries 
              WHERE id NOT IN (SELECT id FROM summaries ORDER BY id DESC LIMIT ?1)",
             params![20], // Keep last 20 versions of L3
         )?;
+
+        if l1_deleted > 0 || l2_deleted > 0 || l3_deleted > 0 {
+            tracing::info!("[Memory] prune_layers: L1 deleted={}, L2 deleted={}, L3 deleted={} (keep={})",
+                l1_deleted, l2_deleted, l3_deleted, keep_count);
+        }
 
         Ok(())
     }

@@ -29,7 +29,7 @@ impl Skill for SystemSkill {
         let command_str = args["command"]
             .as_str()
             .ok_or_else(|| "Missing 'command' argument".to_string())?;
-
+        tracing::info!("[SystemSkill] executing command: {:.200}", command_str);
         let output = if cfg!(target_os = "windows") {
             // Force UTF-8 output encoding for PowerShell commands to prevent garbled text
             let utf8_cmd = format!("$OutputEncoding = [Console]::OutputEncoding = [Text.Encoding]::UTF8; {}", command_str);

@@ -189,6 +189,8 @@ impl TtsController {
             }
         });
 
+        tracing::info!("[TTS] Controller initialized");
+
         Some((
             Self {
                 _stream,
@@ -216,12 +218,14 @@ impl TtsController {
         };
 
         if let Ok(mut q) = self.queue.lock() {
+            tracing::info!("[TTS] speak: {} chars, queue_len={}", cmd.text.len(), q.len() + 1);
             q.push_back(cmd);
             self.notifier.notify_one();
         }
     }
 
     pub fn stop(&self) {
+        tracing::debug!("[TTS] stop: clearing queue and aborting synthesis");
         // 1. Clear the queue
         if let Ok(mut q) = self.queue.lock() {
             q.clear();

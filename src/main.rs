@@ -75,6 +75,7 @@ fn main() {
     }
 
     logging::init_logging();
+    tracing::info!("[App] Ameath starting up | cwd: {:?}", std::env::current_dir().unwrap_or_default());
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();

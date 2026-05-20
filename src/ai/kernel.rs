@@ -685,6 +685,7 @@ impl ChatKernel {
         input_data: crate::types::ChatInput,
         tx: Sender<AiResponseEvent>,
     ) {
+        tracing::info!("[Kernel] handle_system_event | text: {:.100}, images: {}", input_data.text, input_data.images.len());
         let prompt = format!(
             "{}\n\n[SYSTEM INSTRUCTION] This is an autonomous system event. You are proactive. \
             Based on the context and everything you know, decide if you should use tools (e.g. search weather, check news, send_notification) to help the user or record new insights. \
@@ -722,8 +723,10 @@ impl ChatKernel {
             });
 
             if let Ok(summary) = client.chat(prompt, None).await {
+                let summary_text = summary.content_as_str();
+                tracing::info!("[Kernel] L1->L2 summary generated: {} chars", summary_text.len());
                 self.memory
-                    .add_conversation_item("assistant", summary.content_as_str(), 2)
+                    .add_conversation_item("assistant", summary_text, 2)
                     .ok();
 
                 // 1. Mark L1 messages as summarized
@@ -778,6 +781,7 @@ impl ChatKernel {
                         let summary_text = summary.content_as_str();
                         if summary_text.chars().count() <= 3000 {
                             // Success! Save to Layer 3
+                            tracing::info!("[Kernel] L2->L3 summary generated: {} chars, {} items compacted", summary_text.chars().count(), l2_items.len());
                             self.memory.add_summary(summary_text, 3).ok();
 
                             // Mark L2 items as compacted

@@ -31,6 +31,7 @@ impl Skill for ScheduleReminderSkill {
             .as_str()
             .ok_or("Missing 'memo' (string)")?
             .to_string();
+        tracing::info!("[ReminderSkill] scheduling: {}min | memo: {:.100}", minutes, memo);
 
         self.scheduler.schedule(minutes, memo)
     }

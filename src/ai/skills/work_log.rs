@@ -83,6 +83,7 @@ impl Skill for WorkLogSkill {
         let action = args["action"]
             .as_str()
             .ok_or_else(|| "Missing 'action'".to_string())?;
+        tracing::info!("[WorkLogSkill] action={}", action);
 
         match action {
             "record_log" => {

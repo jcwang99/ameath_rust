@@ -502,6 +502,8 @@ pub struct RoutineDef {
     pub time_of_day: Option<String>,  // "HH:MM"
     pub memo: String,
     pub is_active: bool,
+    #[serde(default)]
+    pub expiry_minutes: Option<u32>,  // None = always run, Some(n) = skip if n minutes past scheduled time
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -523,6 +525,7 @@ impl Default for RoutinesConfig {
                 time_of_day: Some("12:00".to_string()),
                 memo: "[SYSTEM_EVENT] Weekly Routine: Today is Sunday. Please review and clean up the Fact Board using the 'memory_skill' tools (get_facts, delete_fact, update_fact_board, save_fact, etc). Remove obsolete or temporary facts and consolidate related information. Also, explicitly add or update any new important information based on your recent memories. Once done, use 'send_notification' to inform the user of what was cleaned up, added, or updated.".to_string(),
                 is_active: true,
+                expiry_minutes: None,
             }],
         }
     }

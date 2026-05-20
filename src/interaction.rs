@@ -43,6 +43,7 @@ impl ActionScheduler {
         });
 
         cfg.save();
+        tracing::info!("[Scheduler] Reminder scheduled: '{}' in {} min, trigger at {}", memo, mins, trigger_time.format("%H:%M"));
 
         Ok(format!("Scheduled: '{}' in {} minutes.", memo, mins))
     }
@@ -59,6 +60,7 @@ impl ActionScheduler {
         if now.with_timezone(&target_time.timezone()) >= target_time {
             let item = cfg.items.remove(0);
             cfg.save();
+            tracing::info!("[Scheduler] Reminder fired: '{}'", item.memo);
             return Some(item.memo);
         }
         None
@@ -633,9 +635,48 @@ impl InteractionManager {
             };
 
             if should_run {
+                // Expiry check: skip if past the allowed time window
+                if let Some(expiry_min) = routine.expiry_minutes {
+                    let is_expired = match routine.schedule_type {
+                        ScheduleType::Daily | ScheduleType::Weekly | ScheduleType::Monthly => {
+                            // For time-based routines, check scheduled_time + expiry < now
+                            if let Some(ref t) = routine.time_of_day {
+                                if let Ok(time) = NaiveTime::parse_from_str(t, "%H:%M") {
+                                    let scheduled = now_local.date_naive().and_time(time);
+                                    let deadline = scheduled + chrono::Duration::minutes(expiry_min as i64);
+                                    now_local.naive_local() > deadline
+                                } else { false }
+                            } else { false }
+                        }
+                        _ => {
+                            // For interval routines, check last_run + interval + expiry < now
+                            if let Some(lr) = last_run {
+                                let interval_secs = match routine.schedule_type {
+                                    ScheduleType::IntervalDays => routine.interval.unwrap_or(1) as i64 * 86400,
+                                    ScheduleType::IntervalHours => routine.interval.unwrap_or(1) as i64 * 3600,
+                                    ScheduleType::IntervalMinutes => routine.interval.unwrap_or(1) as i64 * 60,
+                                    _ => 0,
+                                };
+                                let deadline = lr + chrono::Duration::seconds(interval_secs)
+                                    + chrono::Duration::minutes(expiry_min as i64);
+                                now_local > deadline
+                            } else { false } // First run never expires
+                        }
+                    };
+
+                    if is_expired {
+                        // Mark as executed but skip actual trigger
+                        self.routine_states.last_executions.insert(routine.id.clone(), now_local.to_rfc3339());
+                        self.routine_states.save();
+                        tracing::info!("Routine '{}' expired (past {}min window), skipping.", routine.title, expiry_min);
+                        continue;
+                    }
+                }
+
                 self.routine_states.last_executions.insert(routine.id.clone(), now_local.to_rfc3339());
                 self.routine_states.save();
                 self.last_interaction = now; // Reset random interaction timer
+                tracing::info!("[Routine] Triggered: '{}' (type={:?})", routine.title, routine.schedule_type);
                 return Some(crate::types::ChatInput {
                     text: routine.memo.clone(),
                     images: vec![],

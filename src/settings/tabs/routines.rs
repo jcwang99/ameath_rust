@@ -35,7 +35,7 @@ pub fn draw(
     if let Some(ref editing) = state.editing_routine {
         // Draw Editor
         let card_w = 560.0;
-        let card_h = 600.0;
+        let card_h = 680.0;
         draw_rounded_rect(buffer, w, s(210.0) as i32, sy_val(current_y) as i32, sc(card_w) as u32, sc(card_h) as u32, 12, COLOR_BG_CARD, w, h);
         
         draw_text(buffer, w, &[], "Edit Routine", s(230.0) as i32, sy_val(current_y + 20.0) as i32, sc(20.0), COLOR_TEXT_MAIN);
@@ -238,6 +238,45 @@ pub fn draw(
         
         current_y += 150.0;
         
+        // 6. Expiry Mode
+        draw_text(buffer, w, &[], "Expiry Mode:", s(230.0) as i32, sy_val(current_y + 10.0) as i32, sc(16.0), COLOR_TEXT_SEC);
+        let is_always_run = editing.expiry_minutes.is_none();
+        
+        // Always Run button
+        let ar_btn_x = s(230.0) as i32;
+        let ar_btn_y = sy_val(current_y + 35.0) as i32;
+        draw_rounded_rect(buffer, w, ar_btn_x, ar_btn_y, sc(140.0) as u32, sc(40.0) as u32, 8, if is_always_run { COLOR_PRIMARY } else { COLOR_BORDER }, w, h);
+        draw_rounded_rect(buffer, w, ar_btn_x + 1, ar_btn_y + 1, sc(140.0) as u32 - 2, sc(40.0) as u32 - 2, 7, if is_always_run { COLOR_PRIMARY } else { COLOR_BG_LIGHT }, w, h);
+        draw_text(buffer, w, &[], "Always Run", ar_btn_x + sc(20.0) as i32, ar_btn_y + sc(10.0) as i32, sc(14.0), if is_always_run { 0x00FFFFFF } else { COLOR_TEXT_MAIN });
+        
+        // Expire After button
+        let ea_btn_x = s(380.0) as i32;
+        let ea_btn_y = sy_val(current_y + 35.0) as i32;
+        draw_rounded_rect(buffer, w, ea_btn_x, ea_btn_y, sc(140.0) as u32, sc(40.0) as u32, 8, if !is_always_run { COLOR_PRIMARY } else { COLOR_BORDER }, w, h);
+        draw_rounded_rect(buffer, w, ea_btn_x + 1, ea_btn_y + 1, sc(140.0) as u32 - 2, sc(40.0) as u32 - 2, 7, if !is_always_run { COLOR_PRIMARY } else { COLOR_BG_LIGHT }, w, h);
+        draw_text(buffer, w, &[], "Expire After", ea_btn_x + sc(15.0) as i32, ea_btn_y + sc(10.0) as i32, sc(14.0), if !is_always_run { 0x00FFFFFF } else { COLOR_TEXT_MAIN });
+        
+        // Minutes input (Field 505) - only when Expire After is selected
+        if !is_always_run {
+            let min_x = s(540.0) as i32;
+            let min_y = sy_val(current_y + 35.0) as i32;
+            let is_focused_min = state.focused_field == Some(505);
+            draw_rounded_rect(buffer, w, min_x, min_y, sc(120.0) as u32, sc(40.0) as u32, 8, if is_focused_min { COLOR_PRIMARY } else { COLOR_BORDER }, w, h);
+            draw_rounded_rect(buffer, w, min_x + 1, min_y + 1, sc(120.0) as u32 - 2, sc(40.0) as u32 - 2, 7, COLOR_BG_LIGHT, w, h);
+            
+            let display_min = editing.expiry_minutes.unwrap_or(60).to_string();
+            draw_text(buffer, w, &[], &display_min, min_x + sc(10.0) as i32, min_y + sc(10.0) as i32, sc(16.0), COLOR_TEXT_MAIN);
+            draw_text(buffer, w, &[], "min", min_x + sc(85.0) as i32, min_y + sc(12.0) as i32, sc(12.0), COLOR_TEXT_SEC);
+            if is_focused_min {
+                let (px, _py, _ch) = crate::ui_primitives::get_xy_from_cursor_index(
+                    &display_min, sc(16.0), sc(70.0) as u32, state.cursor_pos,
+                );
+                cursor_rect = Some((min_x + sc(10.0) as i32 + px as i32, min_y + sc(8.0) as i32, sc(2.0) as u32, sc(20.0) as u32));
+            }
+        }
+        
+        current_y += 90.0;
+        
         // Actions
         // Cancel Button
         draw_rounded_rect(buffer, w, s(480.0) as i32, sy_val(current_y) as i32, sc(100.0) as u32, sc(40.0) as u32, 8, COLOR_BORDER, w, h);
@@ -273,6 +312,13 @@ pub fn draw(
             ScheduleType::IntervalMinutes => format!("Every {} Mins", routine.interval.unwrap_or(1)),
         };
         draw_text(buffer, w, &[], &type_str, s(230.0) as i32, sy_val(current_y + 55.0) as i32, sc(14.0), active_color);
+        
+        // Expiry info
+        let expiry_str = match routine.expiry_minutes {
+            Some(m) => format!("Expire: {}min", m),
+            None => "Always Run".to_string(),
+        };
+        draw_text(buffer, w, &[], &expiry_str, s(230.0) as i32, sy_val(current_y + 75.0) as i32, sc(12.0), COLOR_TEXT_SEC);
         
         // Active Toggle
         let toggle_txt = if routine.is_active { "[ON]" } else { "[OFF]" };
