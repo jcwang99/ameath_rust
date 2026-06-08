@@ -332,6 +332,26 @@ fn main() {
     let (ai_tx, ai_rx) = std::sync::mpsc::channel::<AiResponseEvent>();
     let mut chat_kernel =
         std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone(), shared_routines.clone()));
+
+    // AI 请求队列：用户输入(高优先级) + 系统事件(低优先级)，单一消费者顺序处理
+    let (user_req_tx, mut user_req_rx) = tokio::sync::mpsc::unbounded_channel::<(crate::types::ChatInput, std::sync::Arc<ai::kernel::ChatKernel>)>();
+    let (sys_req_tx, mut sys_req_rx) = tokio::sync::mpsc::unbounded_channel::<(crate::types::ChatInput, std::sync::Arc<ai::kernel::ChatKernel>)>();
+    {
+        let consumer_tx = ai_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    biased; // 总是先检查用户请求，确保用户输入优先
+                    Some((input, kernel)) = user_req_rx.recv() => {
+                        kernel.handle(input, consumer_tx.clone()).await;
+                    }
+                    Some((input, kernel)) = sys_req_rx.recv() => {
+                        kernel.handle_system_event(input, consumer_tx.clone()).await;
+                    }
+                }
+            }
+        });
+    }
     let music_dir = window_config
         .music_path
         .clone()
@@ -484,14 +504,8 @@ fn main() {
                                             thinking_start = Some(Instant::now());
                                         }
                                         
-                                        // Update kernel with current config if changed
-                                        let kernel = chat_kernel.clone();
-                                        let tx = ai_tx.clone();
-                                        let input = msg;
-                                        
-                                        tokio::spawn(async move {
-                                            kernel.handle(input, tx).await;
-                                        });
+                                        // 发送到请求队列（用户优先级通道），由消费者顺序处理
+                                        let _ = user_req_tx.send((msg, chat_kernel.clone()));
 
                                         window.request_redraw();
                                     }
@@ -1219,11 +1233,8 @@ fn main() {
                     }
 
                     while let Ok(system_input) = interaction_capture_rx.try_recv() {
-                        let kernel = chat_kernel.clone();
-                        let tx = ai_tx.clone();
-                        tokio::spawn(async move {
-                            kernel.handle_system_event(system_input, tx).await;
-                        });
+                        // 发送到请求队列（系统优先级通道），由消费者顺序处理
+                        let _ = sys_req_tx.send((system_input, chat_kernel.clone()));
                     }
 
                     if let Ok(event) = MenuEvent::receiver().try_recv() {
