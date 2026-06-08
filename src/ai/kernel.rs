@@ -185,12 +185,8 @@ impl ChatKernel {
 
             // Inject Base System Prompt (Configurable Persona)
             if !self.config.system_prompt.is_empty() {
-                let prompt_to_use = if is_system_event {
-                    self.config.system_prompt.clone()
-                } else {
-                    let current_time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                    format!("{}\n\n[Current System Time]: {}", self.config.system_prompt, current_time)
-                };
+                let current_time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                let prompt_to_use = format!("{}\n\n[Current System Time]: {}", self.config.system_prompt, current_time);
                 messages.insert(
                     0,
                     Message {

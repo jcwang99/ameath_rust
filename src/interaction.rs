@@ -96,7 +96,8 @@ impl ActionScheduler {
         Ok(format!("Scheduled: '{}' in {} minutes.", memo, mins))
     }
 
-    pub fn poll(&self) -> Option<String> {
+    /// Returns (memo, original_scheduled_time_rfc3339) if a reminder is due.
+    pub fn poll(&self) -> Option<(String, String)> {
         let mut cfg = self.config.lock().unwrap();
         if cfg.items.is_empty() {
             return None;
@@ -109,7 +110,7 @@ impl ActionScheduler {
             let item = cfg.items.remove(0);
             cfg.save();
             tracing::info!("[Scheduler] Reminder fired: '{}'", item.memo);
-            return Some(item.memo);
+            return Some((item.memo, item.time));
         }
         None
     }
@@ -435,10 +436,6 @@ impl Senses {
 
     pub fn get_context_snapshot(&mut self) -> String {
         self.refresh();
-        let now = Local::now();
-        let date = now.format("%Y-%m-%d").to_string();
-        let day = now.format("%A").to_string();
-        let time = now.format("%H:%M:%S").to_string();
 
         let cpu = self.get_cpu_usage();
         let hardware = self.get_hardware_info();
@@ -465,7 +462,7 @@ impl Senses {
         let clip = self.get_clipboard_preview();
 
         format!(
-            "[{hardware}] Date: {date} ({day}), Time: {time}, Theme: {theme}, Displays: {monitors}, Active App: {app}, CPU: {cpu:.1}%, Temp: {temp}, RAM: {used_mem}/{total_mem}MB, Disk: {disk}, Net: {net}, Battery: {battery}, Uptime: {uptime}, User Idle: {idle_str}, Interesting Apps: {procs}, Clipboard: {clip}"
+            "[{hardware}] Theme: {theme}, Displays: {monitors}, Active App: {app}, CPU: {cpu:.1}%, Temp: {temp}, RAM: {used_mem}/{total_mem}MB, Disk: {disk}, Net: {net}, Battery: {battery}, Uptime: {uptime}, User Idle: {idle_str}, Interesting Apps: {procs}, Clipboard: {clip}"
         )
     }
 }
@@ -537,10 +534,18 @@ impl InteractionManager {
 
         // 0. Poll Scheduler FIRST (Explicit User/AI Requests take precedence)
         // Scheduler items are text-only for now
-        if let Some(memo) = self.scheduler.poll() {
+        if let Some((memo, scheduled_time)) = self.scheduler.poll() {
             self.last_interaction = now; // Reset routine timer too
+            let now_local = Local::now();
+            let scheduled_fmt = DateTime::parse_from_rfc3339(&scheduled_time)
+                .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or(scheduled_time);
+            let now_fmt = now_local.format("%Y-%m-%d %H:%M").to_string();
             return Some(PendingInteractionRequest {
-                text: format!("[SYSTEM_EVENT] Scheduled Reminder triggered: '{}'. If you deem this reminder critical or the user won't notice your speech bubble, use 'send_notification' to alert them.", memo),
+                text: format!(
+                    "[SYSTEM_EVENT] Scheduled Reminder triggered. Originally scheduled for: {}. Current time: {}. Content: '{}'. If you deem this reminder critical or the user won't notice your speech bubble, use 'send_notification' to alert them.",
+                    scheduled_fmt, now_fmt, memo
+                ),
                 capture_screenshots: false,
             });
         }
@@ -725,8 +730,18 @@ impl InteractionManager {
                 self.routine_states.save();
                 self.last_interaction = now; // Reset random interaction timer
                 tracing::info!("[Routine] Triggered: '{}' (type={:?})", routine.title, routine.schedule_type);
+                let scheduled_time_hint = match routine.schedule_type {
+                    ScheduleType::Daily | ScheduleType::Weekly | ScheduleType::Monthly => {
+                        routine.time_of_day.as_deref().unwrap_or("N/A").to_string()
+                    }
+                    _ => "interval-based".to_string(),
+                };
+                let now_fmt = now_local.format("%Y-%m-%d %H:%M").to_string();
                 return Some(PendingInteractionRequest {
-                    text: routine.memo.clone(),
+                    text: format!(
+                        "[Routine '{}'] Scheduled time: {}. Current time: {}.\n{}",
+                        routine.title, scheduled_time_hint, now_fmt, routine.memo
+                    ),
                     capture_screenshots: false,
                 });
             }
