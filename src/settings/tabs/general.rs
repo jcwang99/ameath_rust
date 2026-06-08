@@ -13,6 +13,10 @@ pub struct GeneralTabState<'a> {
     pub current_monitor_name: Option<&'a str>,
 }
 
+fn card_y(base_y: f32, scroll_y: f32, scale: f32, off_y: f32) -> f32 {
+    base_y * scale + off_y + scroll_y * scale
+}
+
 pub fn draw(
     buffer: &mut [u32],
     w: u32,
@@ -34,7 +38,7 @@ pub fn draw(
     let sc = |val: f32| -> f32 { val * scale };
 
     let card_w = (560.0 * scale) as u32;
-    let card1_y = (sy_val(120) as f32 + scroll_y) as i32;
+    let card1_y = card_y(120.0, scroll_y, scale, off_y) as i32;
 
     // 1. Pet Scale
     draw_rounded_rect(
@@ -127,7 +131,7 @@ pub fn draw(
     );
 
     // 2. Behavior Mode
-    let card2_y = (sy_val(280) as f32 + scroll_y * scale) as i32;
+    let card2_y = card_y(280.0, scroll_y, scale, off_y) as i32;
     draw_rounded_rect(
         buffer,
         w,
@@ -203,7 +207,7 @@ pub fn draw(
     }
 
     // 3. Music Directory
-    let card3_y = (sy_val(505) as f32 + scroll_y * scale) as i32;
+    let card3_y = card_y(505.0, scroll_y, scale, off_y) as i32;
     draw_rounded_rect(
         buffer,
         w,
@@ -266,7 +270,7 @@ pub fn draw(
     );
 
     // 4. Window Layer
-    let card4_y = (sy_val(665) as f32 + scroll_y * scale) as i32;
+    let card4_y = card_y(665.0, scroll_y, scale, off_y) as i32;
     draw_rounded_rect(
         buffer,
         w,
@@ -344,7 +348,7 @@ pub fn draw(
     }
 
     // 5. Monitor Selection
-    let card5_y = (sy_val(825) as f32 + scroll_y * scale) as i32;
+    let card5_y = card_y(825.0, scroll_y, scale, off_y) as i32;
     let rows = (available_monitors.len() + 2) / 3;
     let monitors_h = if rows > 0 { rows as f32 * 65.0 } else { 65.0 };
     let card5_h = (60.0 + monitors_h) * scale;
@@ -422,7 +426,7 @@ pub fn draw(
     }
 
     // 6. Auto-Start
-    let card6_y = (sy_val(825 + 60 + monitors_h as u32 + 20) as f32 + scroll_y * scale) as i32;
+    let card6_y = card_y(825.0 + 60.0 + monitors_h + 20.0, scroll_y, scale, off_y) as i32;
     draw_rounded_rect(
         buffer,
         w,
@@ -490,4 +494,19 @@ pub fn draw(
     let content_height = 825.0 + 60.0 + monitors_h + 40.0 + 100.0; // Added height for card 6
 
     (viewport_height, content_height, None)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn card_vertical_offsets_scale_consistently() {
+        let scroll_offset = -30.0;
+        let scale = 1.5;
+
+        let card1 = super::card_y(120.0, scroll_offset, scale, 0.0);
+        let card2 = super::card_y(280.0, scroll_offset, scale, 0.0);
+
+        let gap = card2 - card1;
+        assert!((gap - (280.0 - 120.0) * scale).abs() < 0.001);
+    }
 }

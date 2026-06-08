@@ -60,6 +60,31 @@ use windows::Win32::Foundation::{HWND, POINT};
 
 use image::GenericImageView;
 
+fn compute_clingy_follow_target(
+    current_mouse: (f64, f64),
+    _monitor_offset: (i32, i32),
+) -> (f64, f64) {
+    current_mouse
+}
+
+fn is_mouse_over_bubble(
+    mouse: (f64, f64),
+    target_pos: (i32, i32),
+    bubble_rect: (i32, i32, i32, i32),
+    mouse_is_monitor_local: bool,
+) -> bool {
+    let (bx, by, bw, bh) = bubble_rect;
+    let (bubble_x, bubble_y) = if mouse_is_monitor_local {
+        (bx as f64, by as f64)
+    } else {
+        (target_pos.0 as f64 + bx as f64, target_pos.1 as f64 + by as f64)
+    };
+    mouse.0 >= bubble_x
+        && mouse.0 <= bubble_x + bw as f64
+        && mouse.1 >= bubble_y
+        && mouse.1 <= bubble_y + bh as f64
+}
+
 fn main() {
     // 【修复开机自启动】强制将工作目录设置为可执行文件所在目录，
     // 防止 Windows 注册表启动时工作目录在 System32 导致无权限写日志或找不到相对路径的 assets。
@@ -298,6 +323,7 @@ fn main() {
     let mut menu_manager = menu::QuickMenu::new();
     let mut music_player = music_player::MusicPlayer::new();
     let music_renderer = music_panel::MusicRenderer::new();
+    let (interaction_capture_tx, interaction_capture_rx) = std::sync::mpsc::channel::<crate::types::ChatInput>();
     let mut last_music_render: Option<music_panel::MusicRenderResult> = None;
 
     // AI Kernel & Channel
@@ -1192,6 +1218,14 @@ fn main() {
                         }
                     }
 
+                    while let Ok(system_input) = interaction_capture_rx.try_recv() {
+                        let kernel = chat_kernel.clone();
+                        let tx = ai_tx.clone();
+                        tokio::spawn(async move {
+                            kernel.handle_system_event(system_input, tx).await;
+                        });
+                    }
+
                     if let Ok(event) = MenuEvent::receiver().try_recv() {
                         if event.id == settings_id {
                             if settings_win.is_none() {
@@ -1228,9 +1262,8 @@ fn main() {
 
                     // 2. Pet Position / Physics (Update depends on previous frame is_hovered, which is fine)
                     if pet.state == PetState::Clingy || pet.behavior_mode == BehaviorMode::Clingy {
-                        let local_mx = current_mouse.0 - monitor_offset.0 as f64;
-                        let local_my = current_mouse.1 - monitor_offset.1 as f64;
-                        pet.follow_mouse((local_mx, local_my));
+                        let target_mouse = compute_clingy_follow_target(current_mouse, monitor_offset);
+                        pet.follow_mouse(target_mouse);
                     }
                     
                     // Logic update pause check (one-frame lag for hover is intended for stability)
@@ -1300,11 +1333,13 @@ fn main() {
                     }
                     if !is_thinking {
                         if let Some(system_event) = interaction_manager.check_for_trigger() {
-                            let kernel = chat_kernel.clone();
-                            let tx = ai_tx.clone();
-                            let input_struct = system_event;
-                            tokio::spawn(async move {
-                                kernel.handle_system_event(input_struct, tx).await;
+                            let capture_tx = interaction_capture_tx.clone();
+                            std::thread::spawn(move || {
+                                let mut input_struct = system_event.into_chat_input(Vec::new());
+                                if system_event.capture_screenshots {
+                                    input_struct.images = crate::interaction::collect_screenshot_images();
+                                }
+                                let _ = capture_tx.send(input_struct);
                             });
                             thinking_state = ThinkingState::Standard;
                             thinking_start = Some(Instant::now());
@@ -1464,10 +1499,12 @@ fn main() {
                     let mut over_bubble = false;
                     for b in &bubbles {
                         if let Some((bx, by, bw, bh)) = b.get_rect() {
-                            let b_screen_x = target_x as f64 + bx as f64;
-                            let b_screen_y = target_y as f64 + by as f64;
-                            if mouse_x >= b_screen_x && mouse_x <= (b_screen_x + bw as f64) &&
-                               mouse_y >= b_screen_y && mouse_y <= (b_screen_y + bh as f64) {
+                            if is_mouse_over_bubble(
+                                (mouse_x, mouse_y),
+                                (target_x, target_y),
+                                (bx, by, bw, bh),
+                                true,
+                            ) {
                                 over_bubble = true;
                                 break;
                             }
@@ -1990,6 +2027,42 @@ fn main() {
             }
         })
         .unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    fn clingy_target(current_mouse: (f64, f64), monitor_offset: (i32, i32)) -> (f64, f64) {
+        super::compute_clingy_follow_target(current_mouse, monitor_offset)
+    }
+
+    fn bubble_hover(
+        mouse: (f64, f64),
+        target_pos: (i32, i32),
+        bubble_rect: (i32, i32, i32, i32),
+        mouse_is_monitor_local: bool,
+    ) -> bool {
+        super::is_mouse_over_bubble(mouse, target_pos, bubble_rect, mouse_is_monitor_local)
+    }
+
+    #[test]
+    fn clingy_follow_uses_monitor_local_mouse_once() {
+        let current_mouse = (150.0, 120.0);
+        let target = clingy_target(current_mouse, (1920, 0));
+        assert_eq!(target, current_mouse);
+    }
+
+    #[test]
+    fn bubble_hover_uses_same_coordinate_space() {
+        let target_pos = (1920, 100);
+        let bubble_rect = (20, 30, 100, 40);
+
+        assert!(bubble_hover(
+            (40.0, 50.0),
+            target_pos,
+            bubble_rect,
+            true,
+        ));
+    }
 }
 
 #[cfg(target_os = "windows")]

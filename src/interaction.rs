@@ -7,6 +7,54 @@ use sysinfo::{Components, Disks, Networks, System};
 use crate::types::{AiConfig, PersistentConfig, RemindersConfig, ScheduledItemDef, RoutinesConfig, RoutineStateConfig, ScheduleType};
 use std::sync::{Arc, Mutex};
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingInteractionRequest {
+    pub text: String,
+    pub capture_screenshots: bool,
+}
+
+impl PendingInteractionRequest {
+    pub fn into_chat_input(&self, images: Vec<crate::types::ImageData>) -> crate::types::ChatInput {
+        crate::types::ChatInput {
+            text: self.text.clone(),
+            images,
+        }
+    }
+}
+
+fn build_active_interaction_request(
+    context: String,
+    capture_screenshots: bool,
+) -> PendingInteractionRequest {
+    PendingInteractionRequest {
+        text: format!(
+            "[SYSTEM_EVENT] Routine Check. Context: {}. Observe current activities and decide if you need to use tools or send a system notification for important findings.",
+            context
+        ),
+        capture_screenshots,
+    }
+}
+
+pub fn collect_screenshot_images() -> Vec<crate::types::ImageData> {
+    let mut images = Vec::new();
+    match crate::screen_capture::capture_all_monitors() {
+        Ok(imgs) => {
+            for img in imgs {
+                if let Ok(data) = crate::screen_capture::compress_to_jpeg(&img, 80) {
+                    images.push(crate::types::ImageData {
+                        data,
+                        mime_type: "image/jpeg".to_string(),
+                    });
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!("Screenshot failed: {}", e);
+        }
+    }
+    images
+}
+
 #[derive(Clone)]
 pub struct ActionScheduler {
     pub config: Arc<Mutex<RemindersConfig>>,
@@ -480,7 +528,7 @@ impl InteractionManager {
         *cfg = routines;
     }
 
-    pub fn check_for_trigger(&mut self) -> Option<crate::types::ChatInput> {
+    pub fn check_for_trigger(&mut self) -> Option<PendingInteractionRequest> {
         if !self.config.active_interaction_enabled || self.config.interaction_frequency == 0 {
             return None;
         }
@@ -491,9 +539,9 @@ impl InteractionManager {
         // Scheduler items are text-only for now
         if let Some(memo) = self.scheduler.poll() {
             self.last_interaction = now; // Reset routine timer too
-            return Some(crate::types::ChatInput {
+            return Some(PendingInteractionRequest {
                 text: format!("[SYSTEM_EVENT] Scheduled Reminder triggered: '{}'. If you deem this reminder critical or the user won't notice your speech bubble, use 'send_notification' to alert them.", memo),
-                images: vec![],
+                capture_screenshots: false,
             });
         }
 
@@ -677,9 +725,9 @@ impl InteractionManager {
                 self.routine_states.save();
                 self.last_interaction = now; // Reset random interaction timer
                 tracing::info!("[Routine] Triggered: '{}' (type={:?})", routine.title, routine.schedule_type);
-                return Some(crate::types::ChatInput {
+                return Some(PendingInteractionRequest {
                     text: routine.memo.clone(),
-                    images: vec![],
+                    capture_screenshots: false,
                 });
             }
         }
@@ -703,33 +751,27 @@ impl InteractionManager {
         if is_triggered {
             self.first_run = false;
             self.last_interaction = now;
-                let context = self.senses.get_context_snapshot();
-
-                let mut images = Vec::new();
-                if self.config.active_interaction_screenshots_enabled {
-                    match crate::screen_capture::capture_all_monitors() {
-                        Ok(imgs) => {
-                            for img in imgs {
-                                 if let Ok(data) = crate::screen_capture::compress_to_jpeg(&img, 80) {
-                                     images.push(crate::types::ImageData {
-                                         data,
-                                         mime_type: "image/jpeg".to_string(),
-                                     });
-                                 }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("Screenshot failed: {}", e);
-                        }
-                    }
-                }
-
-                return Some(crate::types::ChatInput {
-                    text: format!("[SYSTEM_EVENT] Routine Check. Context: {}. Observe current activities and decide if you need to use tools or send a system notification for important findings.", context),
-                    images,
-                });
+            let context = self.senses.get_context_snapshot();
+            return Some(build_active_interaction_request(
+                context,
+                self.config.active_interaction_screenshots_enabled,
+            ));
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn active_interaction_request_defers_screenshot_capture() {
+        let pending = super::build_active_interaction_request("cpu=20%".to_string(), true);
+
+        assert!(pending.capture_screenshots);
+
+        let input = pending.into_chat_input(Vec::new());
+        assert!(input.images.is_empty());
+        assert!(input.text.contains("cpu=20%"));
     }
 }

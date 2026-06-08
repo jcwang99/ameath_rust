@@ -1,10 +1,22 @@
 use crate::ai::client::{Content, Message};
 use crate::types::AiConfig;
 use rusqlite::{params, Connection, Result};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 pub struct MemoryManager {
     conn: Mutex<Connection>,
+    summarization_in_progress: AtomicBool,
+}
+
+pub struct SummarizationGuard<'a> {
+    flag: &'a AtomicBool,
+}
+
+impl Drop for SummarizationGuard<'_> {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::Release);
+    }
 }
 
 impl MemoryManager {
@@ -15,6 +27,28 @@ impl MemoryManager {
         db_path.push("ameath_memory.db");
 
         let conn = Connection::open(&db_path).expect("Failed to open database");
+
+        tracing::info!("[Memory] Database initialized at {:?}", db_path);
+
+        Self::from_connection(conn)
+    }
+
+    #[cfg(test)]
+    pub fn new_in_memory() -> Self {
+        let conn = Connection::open_in_memory().expect("Failed to open in-memory database");
+        Self::from_connection(conn)
+    }
+
+    fn from_connection(conn: Connection) -> Self {
+        Self::initialize_schema(&conn);
+
+        Self {
+            conn: Mutex::new(conn),
+            summarization_in_progress: AtomicBool::new(false),
+        }
+    }
+
+    fn initialize_schema(conn: &Connection) {
 
         // Layer 1 & 2: Conversations (Core Dialogue & L1 Summaries)
         conn.execute(
@@ -35,6 +69,7 @@ impl MemoryManager {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS tool_traces (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 tool_call_id TEXT,
@@ -46,6 +81,7 @@ impl MemoryManager {
         
         // Migration: ensure tool_calls column exists
         let _ = conn.execute("ALTER TABLE tool_traces ADD COLUMN tool_calls TEXT", []);
+        let _ = conn.execute("ALTER TABLE tool_traces ADD COLUMN request_id TEXT", []);
         
         // Migration: ensure multi-modal columns exist
         let _ = conn.execute("ALTER TABLE conversations ADD COLUMN images_json TEXT", []);
@@ -100,12 +136,6 @@ impl MemoryManager {
             [],
         )
         .expect("Failed to create index on entity_graph(target)");
-
-        tracing::info!("[Memory] Database initialized at {:?}", db_path);
-
-        Self {
-            conn: Mutex::new(conn),
-        }
     }
 
     pub fn check_thresholds(&self, config: &AiConfig) -> Result<(bool, bool)> {
@@ -209,8 +239,12 @@ impl MemoryManager {
     }
 
     pub fn add_trace(&self, msg: &Message) -> Result<()> {
+        self.add_trace_for_request("", msg)
+    }
+
+    pub fn add_trace_for_request(&self, request_id: &str, msg: &Message) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        let content = if let Some(tc) = &msg.tool_calls {
+        let content = if let Some(_tc) = &msg.tool_calls {
             // Keep original content if present, or use empty
             msg.content_as_str().to_string()
         } else {
@@ -220,8 +254,8 @@ impl MemoryManager {
         let tool_calls_json = msg.tool_calls.as_ref().map(|tc| serde_json::to_string(tc).unwrap_or_default());
 
         conn.execute(
-            "INSERT INTO tool_traces (role, content, tool_call_id, tool_calls) VALUES (?1, ?2, ?3, ?4)",
-            params![msg.role, content, msg.tool_call_id, tool_calls_json],
+            "INSERT INTO tool_traces (request_id, role, content, tool_call_id, tool_calls) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![request_id, msg.role, content, msg.tool_call_id, tool_calls_json],
         )?;
         Ok(())
     }
@@ -244,7 +278,53 @@ impl MemoryManager {
         Ok(())
     }
 
+    pub fn clear_traces_for_request(&self, request_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let deleted = conn.execute(
+            "DELETE FROM tool_traces WHERE request_id = ?1",
+            params![request_id],
+        )?;
+        if deleted > 0 {
+            tracing::debug!(
+                "[Memory] Cleared {} tool traces for request {}",
+                deleted,
+                request_id
+            );
+        }
+        Ok(())
+    }
+
     pub fn get_context(&self, limit: usize, allow_images: bool) -> Result<Vec<Message>> {
+        self.get_context_for_request(limit, allow_images, None)
+    }
+
+    pub fn get_context_for_request(
+        &self,
+        limit: usize,
+        allow_images: bool,
+        request_id: Option<&str>,
+    ) -> Result<Vec<Message>> {
+        fn trace_message_from_row(row: &rusqlite::Row<'_>) -> Result<Message> {
+            let role: String = row.get(0)?;
+            let content_str: String = row.get(1)?;
+            let tool_call_id: Option<String> = row.get(2)?;
+            let tool_calls_json: Option<String> = row.get(3)?;
+
+            let tool_calls = tool_calls_json.and_then(|s| serde_json::from_str(&s).ok());
+
+            Ok(Message {
+                role,
+                content: if content_str.is_empty() && tool_calls.is_some() {
+                    None
+                } else {
+                    Some(Content::Simple(content_str))
+                },
+                tool_calls,
+                tool_call_id,
+                ..Default::default()
+            })
+        }
+
         let mut context = Vec::new();
 
         // 1. Get Facts
@@ -320,26 +400,22 @@ impl MemoryManager {
         // 4. Get Active Tool Traces (Volatile)
         let mut traces = Vec::new();
         {
-            let mut stmt = conn
-                .prepare("SELECT role, content, tool_call_id, tool_calls FROM tool_traces ORDER BY id ASC")?;
-            let trace_rows = stmt.query_map([], |row| {
-                let role: String = row.get(0)?;
-                let content_str: String = row.get(1)?;
-                let tool_call_id: Option<String> = row.get(2)?;
-                let tool_calls_json: Option<String> = row.get(3)?;
-                
-                let tool_calls = tool_calls_json.and_then(|s| serde_json::from_str(&s).ok());
-
-                Ok(Message {
-                    role,
-                    content: if content_str.is_empty() && tool_calls.is_some() { None } else { Some(Content::Simple(content_str)) },
-                    tool_calls,
-                    tool_call_id,
-                    ..Default::default()
-                })
-            })?;
-            for row in trace_rows {
-                traces.push(row?);
+            let trace_query = if request_id.is_some() {
+                "SELECT role, content, tool_call_id, tool_calls FROM tool_traces WHERE request_id = ?1 ORDER BY id ASC"
+            } else {
+                "SELECT role, content, tool_call_id, tool_calls FROM tool_traces ORDER BY id ASC"
+            };
+            let mut stmt = conn.prepare(trace_query)?;
+            if let Some(request_id) = request_id {
+                let trace_rows = stmt.query_map(params![request_id], trace_message_from_row)?;
+                for row in trace_rows {
+                    traces.push(row?);
+                }
+            } else {
+                let trace_rows = stmt.query_map([], trace_message_from_row)?;
+                for row in trace_rows {
+                    traces.push(row?);
+                }
             }
         }
         if !traces.is_empty() {
@@ -528,6 +604,67 @@ impl MemoryManager {
             l2_summaries.len(), limit);
 
         Ok(context)
+    }
+
+    pub fn get_l1_unsummarized_batch(&self, limit: usize) -> Result<Vec<(i64, Message)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, role, content, images_desc FROM conversations WHERE layer = 1 AND summarized = 0 ORDER BY id ASC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit], |row| {
+            let id: i64 = row.get(0)?;
+            let role: String = row.get(1)?;
+            let text_content: String = row.get(2)?;
+            let images_desc: Option<String> = row.get(3)?;
+
+            let content = if let Some(desc) = images_desc {
+                Content::Simple(format!(
+                    "{}\n[历史多模态附图摘要: {}]",
+                    text_content, desc
+                ))
+            } else {
+                Content::Simple(text_content)
+            };
+
+            Ok((
+                id,
+                Message {
+                    role,
+                    content: Some(content),
+                    ..Default::default()
+                },
+            ))
+        })?;
+
+        let mut batch = Vec::new();
+        for row in rows {
+            batch.push(row?);
+        }
+        Ok(batch)
+    }
+
+    pub fn mark_l1_summarized(&self, ids: &[i64]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+
+        let conn = self.conn.lock().unwrap();
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let query = format!(
+            "UPDATE conversations SET summarized = 1 WHERE layer = 1 AND id IN ({})",
+            placeholders
+        );
+        conn.execute(&query, rusqlite::params_from_iter(ids.iter()))?;
+        Ok(())
+    }
+
+    pub fn try_start_summarization(&self) -> Option<SummarizationGuard<'_>> {
+        self.summarization_in_progress
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| SummarizationGuard {
+                flag: &self.summarization_in_progress,
+            })
     }
 
     pub fn get_latest_l3(&self) -> Result<Option<String>> {
@@ -751,5 +888,116 @@ impl MemoryManager {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::client::{Content, Message, ToolCall, ToolFunction};
+
+    fn text_message(role: &str, text: &str) -> Message {
+        Message {
+            role: role.to_string(),
+            content: Some(Content::Simple(text.to_string())),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn request_scoped_traces_are_isolated() {
+        let memory = MemoryManager::new_in_memory();
+        let req_a = "req-a";
+        let req_b = "req-b";
+
+        let assistant_a = Message {
+            role: "assistant".to_string(),
+            content: None,
+            tool_calls: Some(vec![ToolCall {
+                id: "call-a".to_string(),
+                r#type: "function".to_string(),
+                function: ToolFunction {
+                    name: "tool_a".to_string(),
+                    arguments: "{}".to_string(),
+                },
+            }]),
+            ..Default::default()
+        };
+        let assistant_b = Message {
+            role: "assistant".to_string(),
+            content: None,
+            tool_calls: Some(vec![ToolCall {
+                id: "call-b".to_string(),
+                r#type: "function".to_string(),
+                function: ToolFunction {
+                    name: "tool_b".to_string(),
+                    arguments: "{}".to_string(),
+                },
+            }]),
+            ..Default::default()
+        };
+
+        memory.add_trace_for_request(req_a, &assistant_a).unwrap();
+        memory.add_trace_for_request(req_b, &assistant_b).unwrap();
+
+        let context_a = memory
+            .get_context_for_request(10, false, Some(req_a))
+            .unwrap();
+        let trace_names_a: Vec<String> = context_a
+            .iter()
+            .filter_map(|msg| msg.tool_calls.as_ref())
+            .flat_map(|calls: &Vec<ToolCall>| calls.iter().map(|call| call.function.name.clone()))
+            .collect();
+
+        assert!(trace_names_a.contains(&"tool_a".to_string()));
+        assert!(!trace_names_a.contains(&"tool_b".to_string()));
+
+        memory.clear_traces_for_request(req_a).unwrap();
+        let context_b = memory
+            .get_context_for_request(10, false, Some(req_b))
+            .unwrap();
+        let trace_names_b: Vec<String> = context_b
+            .iter()
+            .filter_map(|msg| msg.tool_calls.as_ref())
+            .flat_map(|calls: &Vec<ToolCall>| calls.iter().map(|call| call.function.name.clone()))
+            .collect();
+
+        assert!(trace_names_b.contains(&"tool_b".to_string()));
+    }
+
+    #[test]
+    fn l1_batch_marking_only_affects_selected_messages() {
+        let memory = MemoryManager::new_in_memory();
+        memory.add_message(&text_message("user", "oldest")).unwrap();
+        memory.add_message(&text_message("assistant", "middle")).unwrap();
+        memory.add_message(&text_message("user", "newest")).unwrap();
+
+        let batch = memory.get_l1_unsummarized_batch(2).unwrap();
+        let batch_texts: Vec<String> = batch
+            .iter()
+            .map(|(_, msg): &(i64, Message)| msg.content_as_str().to_string())
+            .collect();
+        assert_eq!(batch_texts, vec!["oldest".to_string(), "middle".to_string()]);
+
+        let processed_ids: Vec<i64> = batch.iter().map(|(id, _)| *id).collect();
+        memory.mark_l1_summarized(&processed_ids).unwrap();
+
+        let remaining = memory.get_l1_unsummarized_batch(10).unwrap();
+        let remaining_texts: Vec<String> = remaining
+            .iter()
+            .map(|(_, msg): &(i64, Message)| msg.content_as_str().to_string())
+            .collect();
+        assert_eq!(remaining_texts, vec!["newest".to_string()]);
+    }
+
+    #[test]
+    fn summarization_guard_is_exclusive() {
+        let memory = MemoryManager::new_in_memory();
+
+        let guard = memory.try_start_summarization().unwrap();
+        assert!(memory.try_start_summarization().is_none());
+
+        drop(guard);
+        assert!(memory.try_start_summarization().is_some());
     }
 }

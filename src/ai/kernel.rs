@@ -5,6 +5,10 @@ use crate::types::{AiConfig, AiResponseEvent, ThinkingState};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
+fn next_request_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
 pub struct ChatKernel {
     config: AiConfig,
     client: Option<OpenAiClient>,
@@ -45,6 +49,7 @@ impl ChatKernel {
     pub async fn handle(&self, input_data: crate::types::ChatInput, tx: Sender<AiResponseEvent>) {
         let input = input_data.text;
         let images = input_data.images;
+        let request_id = next_request_id();
 
         let mut log_msg = if input.chars().count() > 50 {
             format!("[INPUT_TRACE] Received: {}...", input.chars().take(47).collect::<String>().replace("\n", " "))
@@ -133,10 +138,6 @@ impl ChatKernel {
         }
         // -----------------------
 
-        // 1. Initial User Message
-        // Clear volatile tool traces from previous sessions/requests
-        self.memory.clear_traces().ok();
-
         let is_system_event = input.find("\n\n[SYSTEM INSTRUCTION]").is_some();
         let (db_content, llm_content) = if let Some(idx) = input.find("\n\n[SYSTEM INSTRUCTION]") {
             (input[..idx].to_string(), input.clone())
@@ -179,7 +180,7 @@ impl ChatKernel {
             let is_multimodal = self.config.active_profile().is_multimodal;
             let mut messages = self
                 .memory
-                .get_context(self.config.l1_summary_threshold, is_multimodal)
+                .get_context_for_request(self.config.l1_summary_threshold, is_multimodal, Some(&request_id))
                 .unwrap_or_default();
 
             // Inject Base System Prompt (Configurable Persona)
@@ -467,8 +468,8 @@ impl ChatKernel {
                                 };
 
                                 // Store in Layer 2 (Traces)
-                                self.memory.add_trace(&response_msg).ok();
-                                self.memory.add_trace(&tool_response).ok();
+                                self.memory.add_trace_for_request(&request_id, &response_msg).ok();
+                                self.memory.add_trace_for_request(&request_id, &tool_response).ok();
 
                                 messages.push(tool_response);
                             }
@@ -592,7 +593,7 @@ impl ChatKernel {
                 // 4. Send to UI (Already done incrementally)
 
                 // Clear traces AFTER the turn is fully complete and saved to Layer 1
-                self.memory.clear_traces().ok();
+                self.memory.clear_traces_for_request(&request_id).ok();
                 
                 // Prune expired images to save DB space (keep last 5)
                 self.memory.prune_expired_images(5).ok();
@@ -668,7 +669,7 @@ impl ChatKernel {
                 ));
 
                 // Clear Volatile Traces from DB
-                self.memory.clear_traces().ok();
+                self.memory.clear_traces_for_request(&request_id).ok();
 
                 // Loop continues -> `handover_context` will be injected into `messages` in next iteration.
             } else {
@@ -701,6 +702,14 @@ impl ChatKernel {
     }
 
     async fn orchestrate_summarization(&self) -> Result<(), String> {
+        let _guard = match self.memory.try_start_summarization() {
+            Some(guard) => guard,
+            None => {
+                tracing::debug!("[Kernel] Summarization skipped: another task is already running");
+                return Ok(());
+            }
+        };
+
         let (l1_hit, l2_hit) = self
             .memory
             .check_thresholds(&self.config)
@@ -709,12 +718,11 @@ impl ChatKernel {
 
         if l1_hit {
             // 1. Summarize L1 -> L2
-            // We get L1 messages that are not summarized
-            // This is a simplification; a production system would fetch exactly unsummarized messages.
-            let context = self
+            let l1_batch = self
                 .memory
-                .get_context(self.config.l1_summary_threshold, false)
+                .get_l1_unsummarized_batch(self.config.l1_summary_threshold)
                 .map_err(|e| e.to_string())?;
+            let context: Vec<Message> = l1_batch.iter().map(|(_, msg)| msg.clone()).collect();
             let mut prompt = context.clone();
             prompt.push(Message {
                 role: "system".to_string(),
@@ -730,8 +738,9 @@ impl ChatKernel {
                     .ok();
 
                 // 1. Mark L1 messages as summarized
-                if let Ok(Some(latest_id)) = self.memory.get_latest_id_for_layer(1) {
-                    self.memory.mark_layer_processed(1, latest_id).ok();
+                let processed_ids: Vec<i64> = l1_batch.iter().map(|(id, _)| *id).collect();
+                if !processed_ids.is_empty() {
+                    self.memory.mark_l1_summarized(&processed_ids).ok();
                 }
 
                 // 2. Prune and Vacuum
