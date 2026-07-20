@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::time::Duration;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Message {
@@ -465,7 +466,11 @@ impl OpenAiClient {
             base_url: base_url.trim().to_string(),
             model: model.trim().to_string(),
             use_responses_api,
-            http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(180))
+                .build()
+                .expect("AI HTTP client configuration is valid"),
         }
     }
 
