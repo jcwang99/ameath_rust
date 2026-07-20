@@ -21,6 +21,7 @@ pub struct ScaledButton {
     pub id: MenuAction,
     pub rect: (i32, i32, i32, i32),
     pub icon: RgbaImage,
+    pub hover_icon: RgbaImage,
 }
 
 pub struct QuickMenu {
@@ -117,11 +118,20 @@ impl QuickMenu {
                     image::imageops::FilterType::Triangle,
                 )
                 .to_rgba8();
+            let hover_size = (btn_size as f32 * 1.2) as u32;
+            let hover_icon = image::DynamicImage::ImageRgba8(icon.clone())
+                .resize(
+                    hover_size,
+                    hover_size,
+                    image::imageops::FilterType::Triangle,
+                )
+                .to_rgba8();
 
             self.scaled_buttons.push(ScaledButton {
                 id: btn.id,
                 rect: (x, y, x + btn_size, y + btn_size),
                 icon,
+                hover_icon,
             });
 
             y += btn_size + padding;
@@ -140,32 +150,26 @@ impl QuickMenu {
         // Draw Buttons
         for btn in &self.scaled_buttons {
             let is_hovered = hovered_id == Some(btn.id);
-            let hover_scale = if is_hovered { 1.2 } else { 1.0 };
-            
+
             let btn_center_x = btn.rect.0 + (btn.rect.2 - btn.rect.0) / 2;
             let btn_center_y = btn.rect.1 + (btn.rect.3 - btn.rect.1) / 2;
 
-            let orig_w = btn.rect.2 - btn.rect.0;
-            let orig_h = btn.rect.3 - btn.rect.1;
-
-            let draw_w = (orig_w as f32 * hover_scale) as i32;
-            let draw_h = (orig_h as f32 * hover_scale) as i32;
+            let (icon_to_draw, draw_w, draw_h) = if is_hovered {
+                (
+                    &btn.hover_icon,
+                    btn.hover_icon.width() as i32,
+                    btn.hover_icon.height() as i32,
+                )
+            } else {
+                (
+                    &btn.icon,
+                    btn.rect.2 - btn.rect.0,
+                    btn.rect.3 - btn.rect.1,
+                )
+            };
 
             let draw_x_offset = btn_center_x - draw_w / 2;
             let draw_y_offset = btn_center_y - draw_h / 2;
-            
-            // On-the-fly upscale if hovered for crispness
-            let icon_to_draw = if is_hovered {
-                 image::DynamicImage::ImageRgba8(btn.icon.clone())
-                    .resize(
-                        draw_w as u32,
-                        draw_h as u32,
-                        image::imageops::FilterType::Triangle,
-                    )
-                    .to_rgba8()
-            } else {
-                 btn.icon.clone()
-            };
 
             for y in 0..draw_h {
                 let sy = draw_y_offset + y;
@@ -220,5 +224,26 @@ impl QuickMenu {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::QuickMenu;
+
+    #[test]
+    fn menu_layout_precomputes_hover_icons() {
+        let menu = QuickMenu::new();
+        assert!(!menu.scaled_buttons.is_empty());
+        for button in &menu.scaled_buttons {
+            assert_eq!(
+                button.hover_icon.width(),
+                (button.icon.width() as f32 * 1.2) as u32
+            );
+            assert_eq!(
+                button.hover_icon.height(),
+                (button.icon.height() as f32 * 1.2) as u32
+            );
+        }
     }
 }

@@ -85,6 +85,38 @@ fn is_mouse_over_bubble(
         && mouse.1 <= bubble_y + bh as f64
 }
 
+type FrameCacheKey = (PetState, usize, usize);
+
+fn get_frame_pixels<'a>(
+    frame_cache: &'a mut lru::LruCache<FrameCacheKey, Vec<u8>>,
+    cache_key: FrameCacheKey,
+    frame: &PreprocessedFrame,
+    scratch: &'a mut Vec<u8>,
+) -> &'a [u8] {
+    if frame_cache.get(&cache_key).is_some() {
+        return frame_cache
+            .get(&cache_key)
+            .expect("frame cache entry disappeared")
+            .as_slice();
+    }
+
+    match lz4_flex::decompress_size_prepended(&frame.lz4_data) {
+        Ok(data) => {
+            frame_cache.put(cache_key, data);
+            frame_cache
+                .get(&cache_key)
+                .expect("newly inserted frame cache entry missing")
+                .as_slice()
+        }
+        Err(error) => {
+            tracing::warn!("Failed to decompress pet frame: {}", error);
+            scratch.resize((frame.width * frame.height * 4).max(0) as usize, 0);
+            scratch.fill(0);
+            scratch.as_slice()
+        }
+    }
+}
+
 fn main() {
     // 【修复开机自启动】强制将工作目录设置为可执行文件所在目录，
     // 防止 Windows 注册表启动时工作目录在 System32 导致无权限写日志或找不到相对路径的 assets。
@@ -1742,24 +1774,15 @@ fn main() {
 
                         let facing_right = pet.facing_right;
                         
-                        // Frame cache lookup - get key values first
+                        // Frame cache lookup. The returned slice avoids copying cached pixels.
                         let cache_key = (pet.state, pet.current_anim_variant, pet.current_frame_idx);
-                        if let Some(cached_data) = frame_cache.get(&cache_key) {
-                            decompressed_frame_buffer.clone_from(cached_data);
-                        } else {
-                            // Cache miss: decompress and store
-                            let frame = pet.current_frame();
-                            if let Ok(data) = lz4_flex::decompress_size_prepended(&frame.lz4_data) {
-                                frame_cache.put(cache_key, data.clone());
-                                decompressed_frame_buffer = data;
-                            } else {
-                                // Fallback if decompression fails
-                                decompressed_frame_buffer.resize((frame.width * frame.height * 4) as usize, 0);
-                            }
-                        }
-                        
-                        // Get frame reference for rendering (it's the same frame we just cached)
                         let frame = pet.current_frame();
+                        let frame_pixels = get_frame_pixels(
+                            &mut frame_cache,
+                            cache_key,
+                            frame,
+                            &mut decompressed_frame_buffer,
+                        );
                         
                         let dest_y_start = pet_off_y as usize;
                         let dest_x_start = pet_off_x as usize;
@@ -1777,7 +1800,7 @@ fn main() {
                                                 let y = dy - dest_y_start;
                                                 let (start_x_unflipped, end_x_unflipped) = frame.opaque_rows[y];
                                                 if start_x_unflipped < end_x_unflipped {
-                                                    let src_row = &decompressed_frame_buffer[y * fw * 4..(y + 1) * fw * 4];
+                                                    let src_row = &frame_pixels[y * fw * 4..(y + 1) * fw * 4];
                                                     let (start_x, end_x) = if facing_right {
                                                         (start_x_unflipped, end_x_unflipped)
                                                     } else {
@@ -1828,11 +1851,11 @@ fn main() {
 
                                             if src_x >= fw { continue; }
                                             let s_idx = src_row_idx + src_x * 4;
-                                            let a = decompressed_frame_buffer[s_idx + 3];
+                                            let a = frame_pixels[s_idx + 3];
                                             if a > 0 {
                                                 let d_idx = (dest_x_start + x) * 4;
                                                 if d_idx + 4 <= dest_row.len() {
-                                                    dest_row[d_idx..d_idx+4].copy_from_slice(&decompressed_frame_buffer[s_idx..s_idx+4]);
+                                                    dest_row[d_idx..d_idx+4].copy_from_slice(&frame_pixels[s_idx..s_idx+4]);
                                                 }
                                             }
                                         }
@@ -2119,6 +2142,52 @@ mod tests {
             bubble_rect,
             true,
         ));
+    }
+
+    #[test]
+    fn frame_cache_returns_cached_pixels_without_copying_to_scratch() {
+        let pixels = vec![1, 2, 3, 4];
+        let frame = super::PreprocessedFrame {
+            width: 1,
+            height: 1,
+            lz4_data: lz4_flex::compress_prepend_size(&pixels),
+            delay: std::time::Duration::from_millis(16),
+            opaque_rows: vec![(0, 1)],
+        };
+        let key = (super::PetState::Idle, 0, 0);
+        let mut cache = lru::LruCache::new(std::num::NonZeroUsize::new(2).unwrap());
+        let mut scratch = vec![99];
+
+        let first_ptr = {
+            let result = super::get_frame_pixels(&mut cache, key, &frame, &mut scratch);
+            assert_eq!(result, pixels.as_slice());
+            result.as_ptr()
+        };
+        assert_eq!(scratch, vec![99]);
+        {
+            let second = super::get_frame_pixels(&mut cache, key, &frame, &mut scratch);
+            assert_eq!(second, pixels.as_slice());
+            assert_eq!(second.as_ptr(), first_ptr);
+        }
+        assert_eq!(scratch, vec![99]);
+    }
+
+    #[test]
+    fn frame_cache_clears_scratch_after_decompression_failure() {
+        let frame = super::PreprocessedFrame {
+            width: 1,
+            height: 1,
+            lz4_data: vec![0xff, 0x00],
+            delay: std::time::Duration::from_millis(16),
+            opaque_rows: vec![(0, 1)],
+        };
+        let key = (super::PetState::Idle, 0, 0);
+        let mut cache = lru::LruCache::new(std::num::NonZeroUsize::new(2).unwrap());
+        let mut scratch = vec![42, 42, 42, 42];
+
+        let result = super::get_frame_pixels(&mut cache, key, &frame, &mut scratch);
+
+        assert_eq!(result, &[0, 0, 0, 0]);
     }
 }
 
