@@ -238,10 +238,6 @@ impl MemoryManager {
         Ok(())
     }
 
-    pub fn add_trace(&self, msg: &Message) -> Result<()> {
-        self.add_trace_for_request("", msg)
-    }
-
     pub fn add_trace_for_request(&self, request_id: &str, msg: &Message) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let content = if let Some(_tc) = &msg.tool_calls {
@@ -269,15 +265,6 @@ impl MemoryManager {
         Ok(())
     }
 
-    pub fn clear_traces(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        let deleted = conn.execute("DELETE FROM tool_traces", [])?;
-        if deleted > 0 {
-            tracing::debug!("[Memory] Cleared {} tool traces", deleted);
-        }
-        Ok(())
-    }
-
     pub fn clear_traces_for_request(&self, request_id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let deleted = conn.execute(
@@ -292,10 +279,6 @@ impl MemoryManager {
             );
         }
         Ok(())
-    }
-
-    pub fn get_context(&self, limit: usize, allow_images: bool) -> Result<Vec<Message>> {
-        self.get_context_for_request(limit, allow_images, None)
     }
 
     pub fn get_context_for_request(
@@ -783,29 +766,6 @@ impl MemoryManager {
         }
         tx.commit()?;
         tracing::info!("[Memory] Marked {} L2 items as compacted", ids.len());
-        Ok(())
-    }
-
-    pub fn get_latest_id_for_layer(&self, layer: i32) -> Result<Option<i64>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT MAX(id) FROM conversations WHERE layer = ?1")?;
-        let id_opt: Option<i64> = stmt.query_row(params![layer], |r| r.get(0)).ok();
-        Ok(id_opt)
-    }
-
-    pub fn mark_layer_processed(&self, layer: i32, upto_id: i64) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        let field = match layer {
-            1 => "summarized",
-            2 => "compacted",
-            _ => return Ok(()),
-        };
-        let query = format!(
-            "UPDATE conversations SET {} = 1 WHERE layer = ?1 AND id <= ?2",
-            field
-        );
-        let affected = conn.execute(&query, params![layer, upto_id])?;
-        tracing::info!("[Memory] mark_layer_processed: layer={}, upto_id={}, affected={}", layer, upto_id, affected);
         Ok(())
     }
 

@@ -1,7 +1,7 @@
 use crate::render::{get_d2d_factory, get_dwrite_factory};
 use rayon::prelude::*;
 use rusttype::Font;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, OnceLock, RwLock};
 use windows::Win32::Foundation::{HWND, RECT};
 #[cfg(target_os = "windows")]
@@ -30,6 +30,7 @@ use windows::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetS
 pub struct ScratchpadRenderer {
     hdc_mem: HDC,
     h_bitmap: HBITMAP,
+    old_bitmap: windows::Win32::Graphics::Gdi::HGDIOBJ,
     rt: Option<ID2D1DCRenderTarget>,
     width: i32,
     height: i32,
@@ -41,7 +42,10 @@ impl Drop for ScratchpadRenderer {
     fn drop(&mut self) {
         unsafe {
             if self.h_bitmap.0 != 0 {
-                DeleteObject(self.h_bitmap);
+                if self.old_bitmap.0 != 0 {
+                    let _ = SelectObject(self.hdc_mem, self.old_bitmap);
+                }
+                let _ = DeleteObject(self.h_bitmap);
             }
             if self.hdc_mem.0 != 0 {
                 let _ = DeleteDC(self.hdc_mem);
@@ -54,9 +58,14 @@ impl Drop for ScratchpadRenderer {
 impl ScratchpadRenderer {
     fn reset(&mut self) {
         unsafe {
+            self.rt = None;
             if self.h_bitmap.0 != 0 {
-                DeleteObject(self.h_bitmap);
+                if self.old_bitmap.0 != 0 {
+                    let _ = SelectObject(self.hdc_mem, self.old_bitmap);
+                }
+                let _ = DeleteObject(self.h_bitmap);
                 self.h_bitmap = HBITMAP(0);
+                self.old_bitmap = windows::Win32::Graphics::Gdi::HGDIOBJ(0);
             }
             self.width = 0;
             self.height = 0;
@@ -72,6 +81,7 @@ impl ScratchpadRenderer {
             Self {
                 hdc_mem,
                 h_bitmap: HBITMAP(0),
+                old_bitmap: windows::Win32::Graphics::Gdi::HGDIOBJ(0),
                 rt: None,
                 width: 0,
                 height: 0,
@@ -95,9 +105,8 @@ impl ScratchpadRenderer {
                 let target_w = tw.max(self.width).max(1024).min(4096);
                 let target_h = th.max(self.height).max(512).min(2048);
 
-                if self.h_bitmap.0 != 0 {
-                    let _ = DeleteObject(self.h_bitmap);
-                }
+                self.rt = None;
+                self.release_bitmap();
 
                 let bmi = BITMAPINFO {
                     bmiHeader: BITMAPINFOHEADER {
@@ -116,7 +125,7 @@ impl ScratchpadRenderer {
                 self.h_bitmap =
                     CreateDIBSection(self.hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
                         .unwrap();
-                SelectObject(self.hdc_mem, self.h_bitmap);
+                self.old_bitmap = SelectObject(self.hdc_mem, self.h_bitmap);
                 self.bits = bits as *mut u32;
                 self.width = target_w;
                 self.height = target_h;
@@ -176,6 +185,19 @@ impl ScratchpadRenderer {
             panic!("Failed to recover from Direct2D resource loss after retry.");
         }
     }
+
+    unsafe fn release_bitmap(&mut self) {
+        if self.h_bitmap.0 == 0 {
+            return;
+        }
+        if self.old_bitmap.0 != 0 {
+            let _ = SelectObject(self.hdc_mem, self.old_bitmap);
+        }
+        let _ = DeleteObject(self.h_bitmap);
+        self.h_bitmap = HBITMAP(0);
+        self.old_bitmap = windows::Win32::Graphics::Gdi::HGDIOBJ(0);
+        self.bits = std::ptr::null_mut();
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -216,7 +238,7 @@ pub struct RasterEntry {
 
 pub struct CacheState<K, V> {
     pub map: HashMap<K, V>,
-    pub order: Vec<K>,
+    pub order: VecDeque<K>,
     pub total_pixels: usize,
 }
 
@@ -224,9 +246,32 @@ impl<K: std::hash::Hash + Eq + Clone, V> CacheState<K, V> {
     fn new() -> Self {
         Self {
             map: HashMap::new(),
-            order: Vec::new(),
+            order: VecDeque::new(),
             total_pixels: 0,
         }
+    }
+
+    fn touch(&mut self, key: &K) {
+        if self.order.iter().any(|entry| entry == key) {
+            self.order.retain(|entry| entry != key);
+            self.order.push_back(key.clone());
+        }
+    }
+
+    fn remove_lru(&mut self) -> Option<(K, V)> {
+        while let Some(key) = self.order.pop_front() {
+            if let Some(value) = self.map.remove(&key) {
+                return Some((key, value));
+            }
+        }
+        None
+    }
+
+    fn insert_lru(&mut self, key: K, value: V) -> Option<V> {
+        let previous = self.map.insert(key.clone(), value);
+        self.order.retain(|entry| entry != &key);
+        self.order.push_back(key);
+        previous
     }
 }
 
@@ -239,7 +284,7 @@ thread_local! {
     static LAST_RASTER_RESULT: std::cell::RefCell<Option<(RasterKey, Arc<RasterEntry>)>> = std::cell::RefCell::new(None);
 }
 
-pub fn get_raster_cache() -> &'static RwLock<CacheState<RasterKey, Arc<RasterEntry>>> {
+fn get_raster_cache() -> &'static RwLock<CacheState<RasterKey, Arc<RasterEntry>>> {
     RASTER_CACHE.get_or_init(|| RwLock::new(CacheState::new()))
 }
 
@@ -273,10 +318,8 @@ pub fn harvest_memory() {
         if len > 10 {
             let to_remove = len / 2;
             for _ in 0..to_remove {
-                if let Some(oldest) = lock.order.pop() {
-                    if let Some(entry) = lock.map.remove(&oldest) {
-                        lock.total_pixels -= entry.pixel_count;
-                    }
+                if let Some((_, entry)) = lock.remove_lru() {
+                    lock.total_pixels = lock.total_pixels.saturating_sub(entry.pixel_count);
                 }
             }
         }
@@ -333,8 +376,11 @@ pub fn get_or_create_layout_ex(
         // 1. Read lock first for performance
         {
             let cache = cache_lock.read().unwrap();
-            if let Some(layout) = cache.map.get(&key) {
-                return layout.clone();
+            if let Some(layout) = cache.map.get(&key).cloned() {
+                drop(cache);
+                let mut cache = cache_lock.write().unwrap();
+                cache.touch(&key);
+                return layout;
             }
         }
     }
@@ -397,15 +443,11 @@ pub fn get_or_create_layout_ex(
         let mut cache = get_layout_cache().write().unwrap();
         // Eviction logic
         while cache.map.len() >= 100 {
-            if !cache.order.is_empty() {
-                let oldest = cache.order.remove(0);
-                cache.map.remove(&oldest);
-            } else {
+            if cache.remove_lru().is_none() {
                 break;
             }
         }
-        cache.order.push(key.clone());
-        cache.map.insert(key, layout.clone());
+        cache.insert_lru(key, layout.clone());
         layout
     }
 }
@@ -578,10 +620,7 @@ pub fn draw_rounded_rect(
             blit_alpha(buffer, surface_w, x, y, h, alpha, color, max_w, max_h);
 
             // LRU promotion
-            if let Some(pos) = cache.order.iter().position(|k| k == &key) {
-                let k = cache.order.remove(pos);
-                cache.order.push(k);
-            }
+            cache.touch(&key);
             true
         } else {
             false
@@ -605,12 +644,12 @@ pub fn draw_rounded_rect(
         let mut cache = cache_lock.write().unwrap();
 
         while cache.order.len() >= 20 {
-            let oldest = cache.order.remove(0);
-            cache.map.remove(&oldest);
+            if cache.remove_lru().is_none() {
+                break;
+            }
         }
 
-        cache.order.push(key.clone());
-        cache.map.insert(key, alpha);
+        cache.insert_lru(key, alpha);
     }
 }
 
@@ -753,7 +792,7 @@ pub fn draw_circle(
                 let g_dest = bg & 0x0000FF00;
                 let rb_res = (rb_src * alpha + rb_dest * inv_a) >> 8;
                 let g_res = (g_src * alpha + g_dest * inv_a) >> 8;
-                let a_res = alpha + (((bg >> 24) & 0xFF) * inv_a >> 8);
+                let a_res = alpha + ((((bg >> 24) & 0xFF) * inv_a) >> 8);
                 buffer[idx] = (a_res << 24) | (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
             }
         }
@@ -819,7 +858,7 @@ pub fn blit_alpha(
             
             let rb_res = (rb_src * effective_a + rb_dest * inv_a) >> 8;
             let g_res = (g_src * effective_a + g_dest * inv_a) >> 8;
-            let a_res = effective_a + (((d >> 24) & 0xFF) * inv_a >> 8);
+            let a_res = effective_a + ((((d >> 24) & 0xFF) * inv_a) >> 8);
 
             dest_slice[i] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00) | (a_res << 24);
         }
@@ -1038,7 +1077,6 @@ pub fn draw_text_dw_ex(
 }
 
 #[cfg(target_os = "windows")]
-#[cfg(target_os = "windows")]
 pub fn get_text_width(text: &str, font_size: f32, is_bold: bool) -> f32 {
     if text.is_empty() {
         return 0.0;
@@ -1107,6 +1145,10 @@ fn draw_text_dw_ex_internal(
             let cache = cache_lock.read().unwrap();
             if let Some(entry) = cache.map.get(&raster_key) {
                 let entry_cloned = entry.clone();
+                drop(cache);
+                if let Ok(mut cache) = cache_lock.write() {
+                    cache.touch(&raster_key);
+                }
                 blit_alpha_pixels(
                     buffer,
                     surface_w,
@@ -1224,25 +1266,25 @@ fn draw_text_dw_ex_internal(
 
             // ONLY skip cache if it's truly giant to avoid re-rasterizing medium text
             // Also bypass if it's a "huge" scrolled item to avoid stale rendering bug
-            if metrics.height < 3000.0 && !is_huge {
+            if metrics.height < 3000.0 && !is_huge && pixel_count <= 1_000_000 {
                 let mut cache = get_raster_cache().write().unwrap();
                 // Limit to ~1M pixels (~4MB)
                 while cache.total_pixels + pixel_count > 1_000_000 && !cache.order.is_empty() {
-                    let oldest = cache.order.remove(0);
-                    if let Some(old_entry) = cache.map.remove(&oldest) {
+                    if let Some((_, old_entry)) = cache.remove_lru() {
                         cache.total_pixels -= old_entry.pixel_count;
                     }
                 }
-                cache.order.push(raster_key.clone());
-                cache.total_pixels += pixel_count;
                 let entry_arc = Arc::new(RasterEntry {
                     alpha: captured_alpha,
                     tw,
                     th,
                     pixel_count,
                 });
-                
-                cache.map.insert(raster_key.clone(), entry_arc.clone());
+
+                if let Some(old_entry) = cache.insert_lru(raster_key.clone(), entry_arc.clone()) {
+                    cache.total_pixels = cache.total_pixels.saturating_sub(old_entry.pixel_count);
+                }
+                cache.total_pixels += pixel_count;
                 
                 // Update L1
                 LAST_RASTER_RESULT.with(|r| {
@@ -1331,7 +1373,7 @@ pub fn blit_alpha_pixels(
 
                             let rb_res = (rb_src * effective_a + rb_dest * inv_a) >> 8;
                             let g_res = (g_src * effective_a + g_dest * inv_a) >> 8;
-                            let a_res = effective_a + (((d >> 24) & 0xFF) * inv_a >> 8);
+                            let a_res = effective_a + ((((d >> 24) & 0xFF) * inv_a) >> 8);
 
                             row[x as usize] =
                                 (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00) | (a_res << 24);
@@ -1372,7 +1414,7 @@ pub fn blit_alpha_pixels(
 
                         let rb_res = (rb_src * effective_a + rb_dest * inv_a) >> 8;
                         let g_res = (g_src * effective_a + g_dest * inv_a) >> 8;
-                        let a_res = effective_a + (((d >> 24) & 0xFF) * inv_a >> 8);
+                        let a_res = effective_a + ((((d >> 24) & 0xFF) * inv_a) >> 8);
 
                         buffer[d_idx] =
                             (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00) | (a_res << 24);
@@ -1380,27 +1422,6 @@ pub fn blit_alpha_pixels(
                 }
             }
         }
-    }
-}
-
-#[inline(always)]
-fn blend_row_u8(dest_slice: &mut [u32], src_alpha: &[u8], sr: u32, sg: u32, sb: u32, sa: u32) {
-    let len = dest_slice.len();
-    let color_v = (sa << 24) | (sr << 16) | (sg << 8) | sb;
-
-    for i in 0..len {
-        let a = src_alpha[i] as u32;
-        let bg = dest_slice[i];
-        let inv_a = 255 - a;
-
-        let rb = bg & 0x00FF00FF;
-        let g = bg & 0x0000FF00;
-
-        let rb_res = ((color_v & 0x00FF00FF) * a + rb * inv_a) >> 8;
-        let g_res = ((color_v & 0x0000FF00) * a + g * inv_a) >> 8;
-        let a_res = (sa * a + (bg >> 24) * inv_a) >> 8;
-
-        dest_slice[i] = (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00) | (a_res << 24);
     }
 }
 
@@ -1722,7 +1743,7 @@ pub fn draw_triangle(
                 let g_dest = d & 0x0000FF00;
                 let rb_res = (rb_src * alpha + rb_dest * inv_a) >> 8;
                 let g_res = (g_src * alpha + g_dest * inv_a) >> 8;
-                let a_res = alpha + (((d >> 24) & 0xFF) * inv_a >> 8);
+                let a_res = alpha + ((((d >> 24) & 0xFF) * inv_a) >> 8);
                 buffer[idx] = (a_res << 24) | (rb_res & 0x00FF00FF) | (g_res & 0x0000FF00);
             }
         }
@@ -1764,12 +1785,12 @@ pub fn blit_32bit_premultiplied(
             let s_pixel = src[src_row_base + sx as usize];
             
             // Extract source components (premultiplied)
-            let sa = ((s_pixel >> 24) & 0xFF) * global_alpha >> 8;
+            let sa = (((s_pixel >> 24) & 0xFF) * global_alpha) >> 8;
             if sa == 0 { continue; }
 
-            let sr = ((s_pixel >> 16) & 0xFF) * global_alpha >> 8;
-            let sg = ((s_pixel >> 8) & 0xFF) * global_alpha >> 8;
-            let sb = (s_pixel & 0xFF) * global_alpha >> 8;
+            let sr = (((s_pixel >> 16) & 0xFF) * global_alpha) >> 8;
+            let sg = (((s_pixel >> 8) & 0xFF) * global_alpha) >> 8;
+            let sb = ((s_pixel & 0xFF) * global_alpha) >> 8;
 
             let d_pixel = dst[dst_row_base + dx as usize];
             
@@ -1787,10 +1808,10 @@ pub fn blit_32bit_premultiplied(
             let db = d_pixel & 0xFF;
             let da = (d_pixel >> 24) & 0xFF;
 
-            let r = (sr + (dr * inv_sa >> 8)).min(255);
-            let g = (sg + (dg * inv_sa >> 8)).min(255);
-            let b = (sb + (db * inv_sa >> 8)).min(255);
-            let a = (sa + (da * inv_sa >> 8)).min(255);
+            let r = (sr + ((dr * inv_sa) >> 8)).min(255);
+            let g = (sg + ((dg * inv_sa) >> 8)).min(255);
+            let b = (sb + ((db * inv_sa) >> 8)).min(255);
+            let a = (sa + ((da * inv_sa) >> 8)).min(255);
 
             dst[dst_row_base + dx as usize] = (a << 24) | (r << 16) | (g << 8) | b;
         }
@@ -1815,5 +1836,25 @@ pub fn premultiply_alpha_buffer(buffer: &mut [u32]) {
         let g = ((*pixel >> 8) & 0xFF) * a / 255;
         let b = (*pixel & 0xFF) * a / 255;
         *pixel = (a << 24) | (r << 16) | (g << 8) | b;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CacheState;
+
+    #[test]
+    fn cache_state_tracks_lru_order_and_replaces_keys() {
+        let mut cache = CacheState::<u32, &'static str>::new();
+        cache.insert_lru(1, "one");
+        cache.insert_lru(2, "two");
+        cache.touch(&1);
+
+        assert_eq!(cache.order.iter().copied().collect::<Vec<_>>(), vec![2, 1]);
+        assert_eq!(cache.remove_lru(), Some((2, "two")));
+
+        assert_eq!(cache.insert_lru(1, "updated"), Some("one"));
+        assert_eq!(cache.order.iter().copied().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(cache.map.get(&1), Some(&"updated"));
     }
 }

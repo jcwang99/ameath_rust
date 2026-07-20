@@ -29,7 +29,6 @@ pub struct SettingsRenderInput {
     pub history_selection_idx: Option<usize>,
     pub history_selection_start: Option<usize>,
     pub history_cursor_pos: usize,
-    pub system_prompt_hash: u64,
     pub system_prompt_metrics_cache: f32,
     pub current_scale: f32,
     pub current_mode: String,
@@ -196,7 +195,6 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
                 active_sys_prompt_content_height: &mut local_sys_content_h,
                 active_sys_prompt_rect: &mut local_sys_rect,
                 system_prompt_metrics_cache: &mut sys_metrics,
-                system_prompt_hash: input.system_prompt_hash,
                 draw_cursor: false,
                 mouse_pos: (lx, ly),
                 content_mouse_pos: (lx, dly),
@@ -252,8 +250,6 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
                 focused_field: input.focused_field,
                 cursor_pos: input.cursor_pos,
                 scroll_offset: input.scroll_offset,
-                mouse_pos: input.mouse_pos,
-                pressed_btn: input.pressed_btn,
                 memo_scroll_offset: input.routine_memo_scroll_offset,
                 memo_rect: &mut routine_memo_rect,
                 memo_content_height: &mut routine_memo_content_height,
@@ -604,7 +600,6 @@ impl SettingsWindow {
             history_selection_idx: self.history_selection_idx,
             history_selection_start: self.history_selection_start,
             history_cursor_pos: self.history_cursor_pos,
-            system_prompt_hash: self.system_prompt_hash,
             system_prompt_metrics_cache: self.system_prompt_metrics_cache,
             current_scale,
             current_mode: current_mode.to_string(),
@@ -1418,7 +1413,6 @@ impl SettingsWindow {
             }
             3 => {
                 // Tab 3: History
-                let mut hit_scrollbar = false;
                 if dlx >= 230.0 + 480.0 && dlx <= 230.0 + 480.0 + 8.0 {
                     for (i, (rx_start, ry_start, rx_end, ry_end)) in
                         self.history_item_rects.iter().enumerate()
@@ -1430,7 +1424,6 @@ impl SettingsWindow {
                             let track_y_start = *ry_start + 35.0;
                             let track_h = 140.0;
                             if dly >= track_y_start && dly <= track_y_start + track_h {
-                                hit_scrollbar = true;
                                 self.dragging_history_idx = Some(i);
                                 let progress = ((dly - track_y_start) / track_h).clamp(0.0, 1.0);
                                 let content_h_logical = if self.history_metrics_cache.len() > i {
@@ -1447,9 +1440,8 @@ impl SettingsWindow {
                     }
                 }
                 
-                if !hit_scrollbar {
-                    let mut found_selection = false;
-                    for (i, (rx_start, ry_start, rx_end, ry_end)) in self.history_item_rects.iter().enumerate() {
+                {
+                    for (i, (_, ry_start, _, ry_end)) in self.history_item_rects.iter().enumerate() {
                         if dly >= *ry_start && dly <= *ry_end {
                             // Hit this item. Is it inside the text area?
                             let content_y_base = ry_start + 35.0;
@@ -1461,7 +1453,7 @@ impl SettingsWindow {
                                     self.history_selection_idx = Some(i);
                                     let scale_f32 = scale as f32;
                                     let content_scroll = self.history_scroll_states.get(i).copied().unwrap_or(0.0);
-                                    let layout_x = ((lx - content_x_base) as f32 * scale);
+                                    let layout_x = (lx - content_x_base) as f32 * scale;
                                     // Y within the text block
                                     let layout_y = ((ly - content_y_base) as f32 * scale) - (content_scroll * scale_f32);
                                     self.history_cursor_pos = get_cursor_index_from_xy(content_text, 16.0 * scale_f32, (450.0 * scale_f32) as u32, layout_x, layout_y);
@@ -1469,18 +1461,15 @@ impl SettingsWindow {
                                         self.history_selection_start = Some(self.history_cursor_pos);
                                         self.is_dragging_text = true;
                                     }
-                                    found_selection = true;
                                     self.window.request_redraw();
                                     return SettingsAction::None;
                                 }
                             }
                         }
                     }
-                    if !found_selection {
-                        self.history_selection_idx = None;
-                        self.history_selection_start = None;
-                        self.window.request_redraw();
-                    }
+                    self.history_selection_idx = None;
+                    self.history_selection_start = None;
+                    self.window.request_redraw();
                 }
             }
             5 => {
@@ -1988,7 +1977,7 @@ impl SettingsWindow {
 
         if self.current_tab == 3 {
             // History tab specific handling (Ctrl+C for copy)
-            use winit::keyboard::{Key, NamedKey};
+            use winit::keyboard::Key;
             let is_pressed = event.state == winit::event::ElementState::Pressed;
             if !is_pressed {
                 return false;

@@ -8,7 +8,7 @@ use winit::{
     keyboard::{Key, NamedKey},
     window::{Window, WindowBuilder, WindowLevel},
 };
-use crate::ui_primitives::{draw_rounded_rect_with_border, draw_circle};
+use crate::ui_primitives::draw_circle;
 
 #[derive(Clone)]
 pub struct Thumbnail {
@@ -448,9 +448,10 @@ impl ChatWindow {
                             self.layout_valid = false;
                             self.request_redraw();
                         } else if self.cursor_byte_idx < self.input_text.len() {
-                            if let Some((idx, c)) = self.input_text[self.cursor_byte_idx..]
+                            if self.input_text[self.cursor_byte_idx..]
                                 .char_indices()
                                 .next()
+                                .is_some()
                             {
                                 self.input_text.remove(self.cursor_byte_idx);
                                 self.cursor_blink_start = std::time::Instant::now();
@@ -913,7 +914,7 @@ impl ChatWindow {
             self.base_ui_buffer.resize(buf_w * buf_h, 0);
             self.base_ui_buffer.fill(0);
             
-            let mut base_buffer = &mut self.base_ui_buffer[..];
+            let base_buffer = &mut self.base_ui_buffer[..];
             let bg_color: u32 = 0xFF2D2D2D;
 
             crate::ui_primitives::draw_rounded_rect(

@@ -8,8 +8,6 @@ pub struct RoutinesTabState<'a> {
     pub focused_field: Option<usize>,
     pub cursor_pos: usize,
     pub scroll_offset: f32,
-    pub mouse_pos: (f32, f32),
-    pub pressed_btn: Option<usize>,
     pub memo_scroll_offset: f32,
     pub memo_rect: &'a mut Option<(f64, f64, f64, f64)>,
     pub memo_content_height: &'a mut f32,
@@ -144,7 +142,7 @@ pub fn draw(
         #[cfg(target_os = "windows")]
         {
             let max_w = sc(480.0) as u32;
-            let (w_actual, h_actual) = crate::ui_primitives::get_metrics_dw(&editing.memo, sc(14.0), max_w);
+            let (_, h_actual) = crate::ui_primitives::get_metrics_dw(&editing.memo, sc(14.0), max_w);
             *state.memo_content_height = h_actual;
             *state.memo_rect = Some((
                 s(240.0) as f64,
@@ -223,7 +221,6 @@ pub fn draw(
                 state.cursor_pos,
             );
             let draw_y_f = input_memo_y as f32 + sc(10.0) + py as f32 + (state.memo_scroll_offset * scale);
-            let draw_y_bottom = draw_y_f + ch as f32;
             let box_bottom = input_memo_y as f32 + sc(10.0) + memo_view_h;
             
             if draw_y_f >= (input_memo_y as f32 + sc(10.0) - ch as f32) && draw_y_f <= box_bottom {
@@ -295,7 +292,7 @@ pub fn draw(
     
     current_y += 70.0;
     
-    for (i, routine) in state.config.routines.iter().enumerate() {
+    for routine in state.config.routines.iter() {
         let card_w = 560.0;
         let card_h = 100.0;
         let active_color = if routine.is_active { COLOR_PRIMARY } else { COLOR_TEXT_SEC };

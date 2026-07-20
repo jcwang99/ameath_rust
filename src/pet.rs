@@ -254,7 +254,7 @@ impl Pet {
         let (w, h) = self.get_scaled_size();
         let (sw, sh) = self.screen_size;
 
-        let (mut min_x, mut min_y, mut max_x, mut max_y) = self.safe_bounds.unwrap_or((
+        let (min_x, min_y, mut max_x, mut max_y) = self.safe_bounds.unwrap_or((
             0.0,
             0.0,
             sw - w,
@@ -444,16 +444,4 @@ impl Pet {
         false
     }
 
-    pub fn hit_test_bubble(
-        &self,
-        mouse_x: f64,
-        mouse_y: f64,
-        bubble_rect: (i32, i32, i32, i32),
-    ) -> bool {
-        let (bx, by, bw, bh) = bubble_rect;
-        mouse_x >= bx as f64
-            && mouse_x <= (bx + bw) as f64
-            && mouse_y >= by as f64
-            && mouse_y <= (by + bh) as f64
-    }
 }

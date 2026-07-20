@@ -30,12 +30,11 @@ pub enum TodoStatus {
 }
 
 pub struct TodoSkill {
-    memory: Arc<MemoryManager>,
 }
 
 impl TodoSkill {
-    pub fn new(memory: Arc<MemoryManager>) -> Self {
-        Self { memory }
+    pub fn new(_memory: Arc<MemoryManager>) -> Self {
+        Self {}
     }
 
     fn get_todo_file() -> PathBuf {

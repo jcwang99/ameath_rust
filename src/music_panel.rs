@@ -12,8 +12,6 @@ pub fn get_max_scroll_offset(songs_len: usize) -> f32 {
     (content_h - visible_h).max(0.0)
 }
 
-pub const BASE_BUTTON_SIZE: i32 = 24;
-
 #[derive(Debug, Clone)]
 pub struct MusicRenderState {
     pub current_song_name: String,

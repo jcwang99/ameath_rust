@@ -34,7 +34,6 @@ pub fn draw(
     let available_monitors = state.available_monitors;
     let current_monitor_name = state.current_monitor_name;
     let s = |val: u32| -> u32 { (val as f32 * scale + off_x) as u32 };
-    let sy_val = |val: u32| -> u32 { (val as f32 * scale + off_y) as u32 };
     let sc = |val: f32| -> f32 { val * scale };
 
     let card_w = (560.0 * scale) as u32;

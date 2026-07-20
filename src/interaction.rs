@@ -1,5 +1,5 @@
 use arboard::Clipboard;
-use chrono::{DateTime, Local, NaiveDate, NaiveTime, Timelike, Datelike};
+use chrono::{DateTime, Datelike, Local, NaiveTime};
 use rand::Rng;
 use std::time::{Duration, Instant};
 use sysinfo::{Components, Disks, Networks, System};
@@ -465,26 +465,6 @@ impl Senses {
             "[{hardware}] Theme: {theme}, Displays: {monitors}, Active App: {app}, CPU: {cpu:.1}%, Temp: {temp}, RAM: {used_mem}/{total_mem}MB, Disk: {disk}, Net: {net}, Battery: {battery}, Uptime: {uptime}, User Idle: {idle_str}, Interesting Apps: {procs}, Clipboard: {clip}"
         )
     }
-}
-
-fn get_last_cleanup_date() -> Option<NaiveDate> {
-    let mut path = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    path.push("data");
-    path.push("last_factboard_cleanup.txt");
-    if let Ok(content) = std::fs::read_to_string(&path) {
-        if let Ok(date) = NaiveDate::parse_from_str(content.trim(), "%Y-%m-%d") {
-            return Some(date);
-        }
-    }
-    None
-}
-
-fn set_last_cleanup_date(date: NaiveDate) {
-    let mut path = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    path.push("data");
-    let _ = std::fs::create_dir_all(&path);
-    path.push("last_factboard_cleanup.txt");
-    let _ = std::fs::write(&path, date.format("%Y-%m-%d").to_string());
 }
 
 pub struct InteractionManager {

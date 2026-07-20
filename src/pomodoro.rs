@@ -278,7 +278,7 @@ impl Pomodoro {
                 
                 let res_rb = (b_rb * sa + d_rb * inv_a) >> 8;
                 let res_g = (b_g * sa + d_g * inv_a) >> 8;
-                let res_a = sa + (((d >> 24) & 0xFF) * inv_a >> 8);
+                let res_a = sa + ((((d >> 24) & 0xFF) * inv_a) >> 8);
                 
                 buffer_u32[i] = (res_a << 24) | (res_rb & 0x00FF00FF) | (res_g & 0x0000FF00);
             }

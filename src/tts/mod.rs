@@ -4,6 +4,7 @@ use rodio::{OutputStream, Sink};
 use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::Notify;
 
 struct TtsCommand {
@@ -37,7 +38,11 @@ impl TtsController {
         let sink_mutex = Arc::new(Mutex::new(None));
         let active_synthesis = Arc::new(Mutex::new(None));
 
-        let worker_client = Client::new();
+        let worker_client = Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(120))
+            .build()
+            .expect("TTS HTTP client configuration is valid");
         let worker_stream_handle = stream_handle.clone();
         let worker_sink_mutex = sink_mutex.clone();
         let worker_active_synthesis = active_synthesis.clone();

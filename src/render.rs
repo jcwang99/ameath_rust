@@ -12,7 +12,7 @@ use windows::Win32::Graphics::DirectWrite::{
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
     AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS,
-    HBITMAP, HDC,
+    HBITMAP, HDC, HGDIOBJ,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
@@ -37,6 +37,7 @@ pub struct RenderContext {
     hdc_screen: HDC,
     hdc_mem: HDC,
     h_bitmap: HBITMAP,
+    old_bitmap: HGDIOBJ,
     bits: *mut u8,
     width: i32,
     height: i32,
@@ -53,6 +54,7 @@ impl RenderContext {
                 hdc_screen,
                 hdc_mem,
                 h_bitmap: HBITMAP(0),
+                old_bitmap: HGDIOBJ(0),
                 bits: std::ptr::null_mut(),
                 width: 0,
                 height: 0,
@@ -68,7 +70,12 @@ impl RenderContext {
         // Resize DIB section if dimensions changed
         if self.width != width || self.height != height {
             if self.h_bitmap.0 != 0 {
+                if self.old_bitmap.0 != 0 {
+                    let _ = SelectObject(self.hdc_mem, self.old_bitmap);
+                }
                 let _ = DeleteObject(self.h_bitmap);
+                self.h_bitmap = HBITMAP(0);
+                self.old_bitmap = HGDIOBJ(0);
             }
 
             let bmi = BITMAPINFO {
@@ -89,7 +96,7 @@ impl RenderContext {
                 CreateDIBSection(self.hdc_screen, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
                     .expect("Failed to create DIB section");
 
-            SelectObject(self.hdc_mem, self.h_bitmap);
+            self.old_bitmap = SelectObject(self.hdc_mem, self.h_bitmap);
             self.bits = bits as *mut u8;
             self.width = width;
             self.height = height;
@@ -135,6 +142,9 @@ impl Drop for RenderContext {
     fn drop(&mut self) {
         unsafe {
             if self.h_bitmap.0 != 0 {
+                if self.old_bitmap.0 != 0 {
+                    let _ = SelectObject(self.hdc_mem, self.old_bitmap);
+                }
                 let _ = DeleteObject(self.h_bitmap);
             }
             let _ = DeleteDC(self.hdc_mem);

@@ -53,6 +53,19 @@ impl Clone for BubbleContent {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn acquire_recycled_buffer(rx: &Receiver<Vec<u8>>, len: usize) -> Vec<u8> {
+    let mut reusable = None;
+    while let Ok(buffer) = rx.try_recv() {
+        if reusable.is_none() && buffer.len() == len {
+            reusable = Some(buffer);
+        }
+    }
+    let mut buffer = reusable.unwrap_or_else(|| Vec::with_capacity(len));
+    buffer.resize(len, 0);
+    buffer
+}
+
 impl Clone for BubbleRenderRequest {
     fn clone(&self) -> Self {
         Self {
@@ -64,7 +77,7 @@ impl Clone for BubbleRenderRequest {
 }
 
 struct BubbleRenderResult {
-    frames: Vec<(Box<Vec<u8>>, Duration)>, 
+    frames: Vec<(Vec<u8>, Duration)>,
     width: i32,
     height: i32,
     render_hash: u64,
@@ -217,7 +230,10 @@ impl SpeechBubble {
 
     pub fn render_to_buffer(&mut self, buffer_ptr: *mut u8, _scale: f32) {
         while let Ok(res) = self.rx.try_recv() {
-            self.frames = res.frames.into_iter().map(|(b, d)| (*b, d)).collect();
+            for (frame, _) in std::mem::take(&mut self.frames) {
+                let _ = self.tx_recycle.send(frame);
+            }
+            self.frames = res.frames;
             self.current_width = res.width;
             self.current_height = res.height;
             self.last_rendered_hash = res.render_hash;
@@ -287,6 +303,8 @@ struct WorkerState {
     #[cfg(target_os = "windows")]
     h_bitmap: windows::Win32::Graphics::Gdi::HBITMAP,
     #[cfg(target_os = "windows")]
+    old_bitmap: windows::Win32::Graphics::Gdi::HGDIOBJ,
+    #[cfg(target_os = "windows")]
     bitmap_capacity: (i32, i32), 
     rx_recycle: Receiver<Vec<u8>>,
 }
@@ -306,6 +324,7 @@ fn worker_loop(
             hdc_mem,
             hdc_screen,
             h_bitmap: windows::Win32::Graphics::Gdi::HBITMAP(0),
+            old_bitmap: windows::Win32::Graphics::Gdi::HGDIOBJ(0),
             bitmap_capacity: (0, 0),
             rx_recycle,
         }
@@ -325,7 +344,12 @@ fn worker_loop(
 
     #[cfg(target_os = "windows")]
     unsafe {
-        if state.h_bitmap.0 != 0 { let _ = DeleteObject(state.h_bitmap); }
+        if state.h_bitmap.0 != 0 {
+            if state.old_bitmap.0 != 0 {
+                let _ = SelectObject(state.hdc_mem, state.old_bitmap);
+            }
+            let _ = DeleteObject(state.h_bitmap);
+        }
         let _ = DeleteDC(state.hdc_mem);
         ReleaseDC(HWND(0), state.hdc_screen);
     }
@@ -452,7 +476,13 @@ fn render_bubble_internal(
         let height = calc_h;
 
         if state.h_bitmap.0 == 0 || width > state.bitmap_capacity.0 || height > state.bitmap_capacity.1 {
-            if state.h_bitmap.0 != 0 { let _ = DeleteObject(state.h_bitmap); }
+            state.cached_rt = None;
+            if state.h_bitmap.0 != 0 {
+                if state.old_bitmap.0 != 0 {
+                    let _ = SelectObject(state.hdc_mem, state.old_bitmap);
+                }
+                let _ = DeleteObject(state.h_bitmap);
+            }
             let bmi = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -462,7 +492,7 @@ fn render_bubble_internal(
             let mut bits = std::ptr::null_mut();
             state.h_bitmap = CreateDIBSection(state.hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, HANDLE(0), 0).unwrap();
             state.bitmap_capacity = (width, height);
-            SelectObject(state.hdc_mem, state.h_bitmap);
+            state.old_bitmap = SelectObject(state.hdc_mem, state.h_bitmap);
         }
 
         let mut render_frames = Vec::new();
@@ -554,12 +584,13 @@ fn render_bubble_internal(
             windows::Win32::Graphics::Gdi::GetObjectW(state.h_bitmap, std::mem::size_of::<windows::Win32::Graphics::Gdi::BITMAP>() as i32, Some(&mut bitmap_info as *mut _ as *mut std::ffi::c_void));
             let pixel_ptr = bitmap_info.bmBits as *mut u8;
             let total_bytes = width as usize * height as usize * 4;
-            let mut frame_buffer = vec![0u8; total_bytes];
+            let mut frame_buffer = acquire_recycled_buffer(&state.rx_recycle, total_bytes);
+            frame_buffer.fill(0);
             if !pixel_ptr.is_null() {
                 std::ptr::copy_nonoverlapping(pixel_ptr, frame_buffer.as_mut_ptr(), total_bytes);
             }
             let delay = if frames_data.is_empty() { Duration::from_secs(1) } else { frames_data[i].3 };
-            render_frames.push((Box::new(frame_buffer), delay));
+            render_frames.push((frame_buffer, delay));
         }
 
         let mut hasher = DefaultHasher::new();

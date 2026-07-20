@@ -2,6 +2,19 @@ use crate::ai::skills::Skill;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::{json, Value};
+use std::sync::OnceLock;
+use std::time::Duration;
+
+fn http_client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+            .expect("browser HTTP client configuration is valid")
+    })
+}
 
 // --- Tavily Search Skill ---
 pub struct TavilySearchSkill {
@@ -33,8 +46,7 @@ impl Skill for TavilySearchSkill {
             return Err("Tavily API key not configured".to_string());
         }
 
-        let client = Client::new();
-        let response = client
+        let response = http_client()
             .post("https://api.tavily.com/search")
             .json(&json!({
                 "api_key": self.api_key,
@@ -130,8 +142,7 @@ impl Skill for BraveSearchSkill {
             return Err("Brave API key not configured".to_string());
         }
 
-        let client = Client::new();
-        let response = client
+        let response = http_client()
             .get("https://api.search.brave.com/res/v1/web/search")
             .header("X-Subscription-Token", &self.api_key)
             .query(&[("q", query), ("count", "5")])
@@ -221,10 +232,9 @@ impl Skill for WebScrapeSkill {
             return Err("Firecrawl URL not configured".to_string());
         }
 
-        let client = Client::new();
         let api_url = format!("{}/v2/scrape", self.url.trim_end_matches('/'));
 
-        let mut builder = client.post(&api_url).json(&json!({
+        let mut builder = http_client().post(&api_url).json(&json!({
             "url": target_url,
             "formats": ["markdown"]
         }));

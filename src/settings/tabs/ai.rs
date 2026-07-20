@@ -17,7 +17,6 @@ pub struct AiTabState<'a> {
     pub active_sys_prompt_content_height: &'a mut f32,
     pub active_sys_prompt_rect: &'a mut Option<(f64, f64, f64, f64)>,
     pub system_prompt_metrics_cache: &'a mut f32,
-    pub system_prompt_hash: u64,
     pub draw_cursor: bool,
     pub mouse_pos: (f32, f32), // DESIGN SPACE relative to window top (lx, ly)
     pub content_mouse_pos: (f32, f32), // DESIGN SPACE relative to scroll content (dlx, dly)
