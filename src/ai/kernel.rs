@@ -60,16 +60,6 @@ impl ChatKernel {
             log_msg.push_str(&format!(" (Images: {})", images.len()));
         }
         tracing::info!("{}", log_msg);
-        let client = match &self.client {
-            Some(c) => c,
-            None => {
-                let _ = tx.send(AiResponseEvent::Response(
-                    "Please configure your AI settings first!".to_string(),
-                ));
-                return;
-            }
-        };
-
         // 1. Initial User Message
         // --- #log FAST-TRACK ---
         if input.trim_start().starts_with("#log ") {
@@ -121,7 +111,7 @@ impl ChatKernel {
             if !memo_content.is_empty() {
                 match crate::ai::skills::memo_skill::MemoSkill::add_memo_local(memo_content) {
                     Ok(_) => {
-                        let confirmation = "记下来啦！我会帮你盯着的~ [IMG]assets/stickers/好的.gif";
+                        let confirmation = "记下来啦！我会帮你盯着的~ [IMG]assets/stickers/写笔记.gif";
                         
                         self.memory.add_conversation_item("user", &input, 1).ok();
                         self.memory.add_conversation_item("assistant", confirmation, 1).ok();
@@ -137,6 +127,17 @@ impl ChatKernel {
             }
         }
         // -----------------------
+
+        // Local shortcuts above do not require a configured remote AI client.
+        let client = match &self.client {
+            Some(c) => c,
+            None => {
+                let _ = tx.send(AiResponseEvent::Response(
+                    "Please configure your AI settings first!".to_string(),
+                ));
+                return;
+            }
+        };
 
         let is_system_event = input.find("\n\n[SYSTEM INSTRUCTION]").is_some();
         let (db_content, llm_content) = if let Some(idx) = input.find("\n\n[SYSTEM INSTRUCTION]") {

@@ -523,7 +523,47 @@ fn main() {
                                 needs_pet_redraw = true;
                             }
                             WindowEvent::MouseInput { state, button, .. } => {
-                                if button == MouseButton::Left {
+                                if button == MouseButton::Right {
+                                    // Right-clicking a bubble dismisses only the bubble under the cursor.
+                                    if state == ElementState::Released {
+                                        if let (Some(pos), Ok(win_pos)) = (last_cursor_pos, window.outer_position()) {
+                                            let monitor_mx = win_pos.x as f64 + pos.x - monitor_offset.0 as f64;
+                                            let monitor_my = win_pos.y as f64 + pos.y - monitor_offset.1 as f64;
+                                            let target_x = pet.position.0 - pet_off_x;
+                                            let target_y = pet.position.1 - pet_off_y;
+
+                                            let mut bubble_to_dismiss = None;
+                                            let mut dismiss_ai_recall = false;
+                                            for (index, bubble) in bubbles.iter().enumerate().rev() {
+                                                if let Some((bx, by, bw, bh)) = bubble.get_rect() {
+                                                    let bubble_x = target_x + bx as f64;
+                                                    let bubble_y = target_y + by as f64;
+                                                    if monitor_mx >= bubble_x
+                                                        && monitor_mx <= bubble_x + bw as f64
+                                                        && monitor_my >= bubble_y
+                                                        && monitor_my <= bubble_y + bh as f64
+                                                    {
+                                                        bubble_to_dismiss = Some(index);
+                                                        dismiss_ai_recall = bubble.is_ai_response;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+
+                                            if let Some(index) = bubble_to_dismiss {
+                                                if let Some(bubble) = bubbles.get_mut(index) {
+                                                    bubble.dismiss();
+                                                }
+                                                bubbles.retain(|bubble| bubble.is_visible());
+                                                if dismiss_ai_recall {
+                                                    last_response_segments.clear();
+                                                }
+                                                needs_pet_redraw = true;
+                                                window.request_redraw();
+                                            }
+                                        }
+                                    }
+                                } else if button == MouseButton::Left {
                                     match state {
                                         ElementState::Pressed => {
                                             if let Some(pos) = last_cursor_pos {

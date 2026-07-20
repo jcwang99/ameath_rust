@@ -210,6 +210,11 @@ impl SpeechBubble {
         }
     }
 
+    /// Hide this bubble immediately. The main loop will remove it on its next tick.
+    pub fn dismiss(&mut self) {
+        self.show_until = Some(Instant::now());
+    }
+
     pub fn render_to_buffer(&mut self, buffer_ptr: *mut u8, _scale: f32) {
         while let Ok(res) = self.rx.try_recv() {
             self.frames = res.frames.into_iter().map(|(b, d)| (*b, d)).collect();
