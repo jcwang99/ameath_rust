@@ -1,4 +1,9 @@
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
+#[cfg(test)]
+use std::sync::Arc;
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -39,9 +44,11 @@ pub enum BubbleContent {
 }
 
 struct BubbleRenderRequest {
+    bubble_id: usize,
     content: BubbleContent,
     scale: f32,
     hide_tail: bool,
+    result_tx: Sender<BubbleRenderResult>,
 }
 
 impl Clone for BubbleContent {
@@ -54,13 +61,34 @@ impl Clone for BubbleContent {
 }
 
 #[cfg(target_os = "windows")]
-fn acquire_recycled_buffer(rx: &Receiver<Vec<u8>>, len: usize) -> Vec<u8> {
-    let mut reusable = None;
+#[derive(Default)]
+struct RecyclePool {
+    buffers: Vec<Vec<u8>>,
+}
+
+#[cfg(target_os = "windows")]
+const MAX_RECYCLED_BUFFERS: usize = 32;
+
+#[cfg(target_os = "windows")]
+fn acquire_recycled_buffer(
+    rx: &Receiver<Vec<u8>>,
+    pool: &mut RecyclePool,
+    len: usize,
+) -> Vec<u8> {
+    let mut reusable = pool
+        .buffers
+        .iter()
+        .position(|buffer| buffer.len() == len)
+        .map(|index| pool.buffers.swap_remove(index));
+
     while let Ok(buffer) = rx.try_recv() {
         if reusable.is_none() && buffer.len() == len {
             reusable = Some(buffer);
+        } else if pool.buffers.len() < MAX_RECYCLED_BUFFERS {
+            pool.buffers.push(buffer);
         }
     }
+
     let mut buffer = reusable.unwrap_or_else(|| Vec::with_capacity(len));
     buffer.resize(len, 0);
     buffer
@@ -69,11 +97,38 @@ fn acquire_recycled_buffer(rx: &Receiver<Vec<u8>>, len: usize) -> Vec<u8> {
 impl Clone for BubbleRenderRequest {
     fn clone(&self) -> Self {
         Self {
+            bubble_id: self.bubble_id,
             content: self.content.clone(),
             scale: self.scale,
             hide_tail: self.hide_tail,
+            result_tx: self.result_tx.clone(),
         }
     }
+}
+
+struct BubbleRenderDispatcher {
+    tx: Sender<BubbleRenderRequest>,
+    tx_recycle: Sender<Vec<u8>>,
+    #[cfg(test)]
+    identity: Arc<()>,
+}
+
+static BUBBLE_DISPATCHER: OnceLock<BubbleRenderDispatcher> = OnceLock::new();
+static NEXT_BUBBLE_ID: AtomicUsize = AtomicUsize::new(1);
+
+fn bubble_dispatcher() -> &'static BubbleRenderDispatcher {
+    BUBBLE_DISPATCHER.get_or_init(|| {
+        let (tx, rx) = channel::<BubbleRenderRequest>();
+        let (tx_recycle, rx_recycle) = channel::<Vec<u8>>();
+        thread::spawn(move || worker_loop(rx, rx_recycle));
+
+        BubbleRenderDispatcher {
+            tx,
+            tx_recycle,
+            #[cfg(test)]
+            identity: Arc::new(()),
+        }
+    })
 }
 
 fn render_hash(content: &BubbleContent, hide_tail: bool) -> u64 {
@@ -123,7 +178,11 @@ pub struct SpeechBubble {
     // Async Worker
     tx: Sender<BubbleRenderRequest>,
     rx: Receiver<BubbleRenderResult>,
+    result_tx: Sender<BubbleRenderResult>,
     tx_recycle: Sender<Vec<u8>>,
+    #[cfg(test)]
+    dispatcher_identity: Arc<()>,
+    bubble_id: usize,
 
     // Display State
     last_rendered_hash: u64,
@@ -143,22 +202,21 @@ pub struct SpeechBubble {
 
 impl SpeechBubble {
     pub fn new() -> Self {
-        let (tx, rx_worker) = channel::<BubbleRenderRequest>();
-        let (tx_worker, rx) = channel::<BubbleRenderResult>();
-        let (tx_recycle, rx_recycle) = channel::<Vec<u8>>();
-
-        thread::spawn(move || {
-            worker_loop(rx_worker, tx_worker, rx_recycle);
-        });
+        let dispatcher = bubble_dispatcher();
+        let (result_tx, rx) = channel::<BubbleRenderResult>();
 
         Self {
             text: String::new(),
             show_until: None,
             current_width: BASE_BUBBLE_WIDTH,
             current_height: BASE_BUBBLE_HEIGHT,
-            tx,
+            tx: dispatcher.tx.clone(),
             rx,
-            tx_recycle,
+            result_tx,
+            tx_recycle: dispatcher.tx_recycle.clone(),
+            #[cfg(test)]
+            dispatcher_identity: dispatcher.identity.clone(),
+            bubble_id: NEXT_BUBBLE_ID.fetch_add(1, Ordering::Relaxed),
             last_rendered_hash: 0,
             current_scale: 1.0,
             is_working: false,
@@ -204,9 +262,11 @@ impl SpeechBubble {
         }
 
         let req = BubbleRenderRequest {
+            bubble_id: self.bubble_id,
             content: self.content.clone(),
             scale,
             hide_tail: self.hide_tail,
+            result_tx: self.result_tx.clone(),
         };
 
         let _ = self.tx.send(req);
@@ -367,6 +427,32 @@ mod tests {
         assert_eq!(output, vec![255, 0, 0, 255]);
         assert_eq!(output.capacity(), capacity);
     }
+
+    #[test]
+    fn bubbles_share_one_render_dispatcher() {
+        let first = SpeechBubble::new();
+        let second = SpeechBubble::new();
+
+        assert!(std::sync::Arc::ptr_eq(
+            &first.dispatcher_identity,
+            &second.dispatcher_identity
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn recycled_buffers_for_other_sizes_are_preserved() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(vec![1; 4]).unwrap();
+        tx.send(vec![2; 8]).unwrap();
+        let mut pool = super::RecyclePool::default();
+
+        let first = super::acquire_recycled_buffer(&rx, &mut pool, 4);
+        assert_eq!(first, vec![1; 4]);
+
+        let second = super::acquire_recycled_buffer(&rx, &mut pool, 8);
+        assert_eq!(second, vec![2; 8]);
+    }
 }
 
 // --- Worker Thread Logic ---
@@ -388,12 +474,13 @@ struct WorkerState {
     bitmap_capacity: (i32, i32), 
     #[cfg(target_os = "windows")]
     bgra_scratch: Vec<u8>,
+    #[cfg(target_os = "windows")]
+    recycle_pool: RecyclePool,
     rx_recycle: Receiver<Vec<u8>>,
 }
 
 fn worker_loop(
     rx: Receiver<BubbleRenderRequest>,
-    tx: Sender<BubbleRenderResult>,
     rx_recycle: Receiver<Vec<u8>>,
 ) {
     #[cfg(target_os = "windows")]
@@ -409,19 +496,26 @@ fn worker_loop(
             old_bitmap: windows::Win32::Graphics::Gdi::HGDIOBJ(0),
             bitmap_capacity: (0, 0),
             bgra_scratch: Vec::new(),
+            recycle_pool: RecyclePool::default(),
             rx_recycle,
         }
     };
 
+    let mut pending = HashMap::new();
     while let Ok(req) = rx.recv() {
-        let mut final_req = req;
+        // Coalesce queued updates per bubble while preserving work for other bubbles.
+        pending.insert(req.bubble_id, req);
         while let Ok(next_req) = rx.try_recv() {
-            final_req = next_req;
+            pending.insert(next_req.bubble_id, next_req);
         }
 
-        #[cfg(target_os = "windows")]
-        if let Some(result) = render_bubble_internal(&mut state, &final_req) {
-            let _ = tx.send(result);
+        for (_, req) in pending.drain() {
+            #[cfg(target_os = "windows")]
+            if let Some(result) = render_bubble_internal(&mut state, &req) {
+                let _ = req.result_tx.send(result);
+            }
+            #[cfg(not(target_os = "windows"))]
+            let _ = req;
         }
     }
 
@@ -514,7 +608,7 @@ fn render_bubble_internal(
                     let img_result = if let Some(bytes) = embedded_bytes {
                         image::load_from_memory(bytes)
                     } else {
-                        image::open(&path)
+                        image::open(path)
                     };
 
                     match img_result {
@@ -617,7 +711,7 @@ fn render_bubble_internal(
                     rt.FillRoundedRectangle(&inner, &bg_brush);
 
                     if !req.hide_tail {
-                        let tail_w = (20.0 * scale) as f32;
+                        let tail_w = 20.0 * scale;
                         let tail_x = (width as f32 - tail_w) / 2.0;
                         let geometry = d2d_factory.CreatePathGeometry().unwrap();
                         let sink = geometry.Open().unwrap();
@@ -660,7 +754,11 @@ fn render_bubble_internal(
             windows::Win32::Graphics::Gdi::GetObjectW(state.h_bitmap, std::mem::size_of::<windows::Win32::Graphics::Gdi::BITMAP>() as i32, Some(&mut bitmap_info as *mut _ as *mut std::ffi::c_void));
             let pixel_ptr = bitmap_info.bmBits as *mut u8;
             let total_bytes = width as usize * height as usize * 4;
-            let mut frame_buffer = acquire_recycled_buffer(&state.rx_recycle, total_bytes);
+            let mut frame_buffer = acquire_recycled_buffer(
+                &state.rx_recycle,
+                &mut state.recycle_pool,
+                total_bytes,
+            );
             frame_buffer.fill(0);
             if !pixel_ptr.is_null() {
                 std::ptr::copy_nonoverlapping(pixel_ptr, frame_buffer.as_mut_ptr(), total_bytes);

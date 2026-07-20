@@ -87,6 +87,42 @@ fn is_mouse_over_bubble(
 
 type FrameCacheKey = (PetState, usize, usize);
 
+#[derive(Debug, PartialEq, Eq)]
+enum AiRequestPriority {
+    User,
+    System,
+}
+
+async fn receive_prioritized_ai_request<T>(
+    user_rx: &mut tokio::sync::mpsc::Receiver<T>,
+    system_rx: &mut tokio::sync::mpsc::Receiver<T>,
+) -> Option<(AiRequestPriority, T)> {
+    let mut user_closed = false;
+    let mut system_closed = false;
+
+    loop {
+        if user_closed && system_closed {
+            return None;
+        }
+
+        tokio::select! {
+            biased;
+            request = user_rx.recv(), if !user_closed => {
+                match request {
+                    Some(request) => return Some((AiRequestPriority::User, request)),
+                    None => user_closed = true,
+                }
+            }
+            request = system_rx.recv(), if !system_closed => {
+                match request {
+                    Some(request) => return Some((AiRequestPriority::System, request)),
+                    None => system_closed = true,
+                }
+            }
+        }
+    }
+}
+
 fn get_frame_pixels<'a>(
     frame_cache: &'a mut lru::LruCache<FrameCacheKey, Vec<u8>>,
     cache_key: FrameCacheKey,
@@ -193,7 +229,7 @@ fn main() {
     // Calculate dynamic "envelope" size based on max GIF dimensions
     let mut max_pw = 0;
     let mut max_ph = 0;
-    for (_, variants) in &animation_map {
+    for variants in animation_map.values() {
         for variant in variants {
             for frame in variant {
                 max_pw = max_pw.max(frame.width);
@@ -372,12 +408,14 @@ fn main() {
     {
         let consumer_tx = ai_tx.clone();
         tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    Some((input, kernel)) = user_req_rx.recv() => {
+            while let Some((priority, (input, kernel))) =
+                receive_prioritized_ai_request(&mut user_req_rx, &mut sys_req_rx).await
+            {
+                match priority {
+                    AiRequestPriority::User => {
                         kernel.handle(input, consumer_tx.clone()).await;
                     }
-                    Some((input, kernel)) = sys_req_rx.recv() => {
+                    AiRequestPriority::System => {
                         kernel.handle_system_event(input, consumer_tx.clone()).await;
                     }
                 }
@@ -1261,7 +1299,7 @@ fn main() {
 
                     // Check for TTS audio readiness signals (deprecated sequential queueing logic inside here can be simplified out next as we show instantly)
                     if let Some(rx) = &tts_rx {
-                        while let Ok(_) = rx.try_recv() {
+                    while rx.try_recv().is_ok() {
                            // Keep drain alive to prevent blocking
                         }
                     }
@@ -2188,6 +2226,34 @@ mod tests {
         let result = super::get_frame_pixels(&mut cache, key, &frame, &mut scratch);
 
         assert_eq!(result, &[0, 0, 0, 0]);
+    }
+
+    #[tokio::test]
+    async fn user_ai_requests_are_selected_before_system_requests() {
+        let (user_tx, mut user_rx) = tokio::sync::mpsc::channel(2);
+        let (system_tx, mut system_rx) = tokio::sync::mpsc::channel(2);
+        user_tx.send("user").await.unwrap();
+        system_tx.send("system").await.unwrap();
+
+        let selected = super::receive_prioritized_ai_request(&mut user_rx, &mut system_rx)
+            .await
+            .unwrap();
+
+        assert_eq!(selected, (super::AiRequestPriority::User, "user"));
+    }
+
+    #[tokio::test]
+    async fn closed_user_queue_does_not_drop_system_requests() {
+        let (user_tx, mut user_rx) = tokio::sync::mpsc::channel::<&str>(1);
+        let (system_tx, mut system_rx) = tokio::sync::mpsc::channel(1);
+        drop(user_tx);
+        system_tx.send("system").await.unwrap();
+
+        let selected = super::receive_prioritized_ai_request(&mut user_rx, &mut system_rx)
+            .await
+            .unwrap();
+
+        assert_eq!(selected, (super::AiRequestPriority::System, "system"));
     }
 }
 

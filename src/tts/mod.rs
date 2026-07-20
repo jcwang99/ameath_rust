@@ -25,9 +25,21 @@ fn enqueue_command(queue: &mut VecDeque<TtsCommand>, command: TtsCommand) {
 pub struct TtsController {
     _stream: OutputStream,
     current_sink: Arc<Mutex<Option<Sink>>>,
-    active_synthesis: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    active_synthesis: Arc<Mutex<Option<tokio::task::AbortHandle>>>,
     queue: Arc<Mutex<VecDeque<TtsCommand>>>,
     notifier: Arc<Notify>,
+}
+
+fn abort_active_synthesis(
+    active_synthesis: &Arc<Mutex<Option<tokio::task::AbortHandle>>>,
+) -> bool {
+    if let Ok(mut guard) = active_synthesis.lock() {
+        if let Some(handle) = guard.take() {
+            handle.abort();
+            return true;
+        }
+    }
+    false
 }
 
 impl TtsController {
@@ -161,7 +173,7 @@ impl TtsController {
                                         loop {
                                             let finished = {
                                                 let guard = sink_mutex.lock().unwrap();
-                                                guard.as_ref().map_or(true, |s| s.empty())
+                                                guard.as_ref().is_none_or(|s| s.empty())
                                             };
 
                                             if finished {
@@ -181,20 +193,18 @@ impl TtsController {
                         }
                     });
 
-                    // Store current active synthesis task
+                    // Keep a separate abort handle while the worker awaits completion.
+                    let abort_handle = synthesis_task.abort_handle();
                     {
                         let mut guard = worker_active_synthesis.lock().unwrap();
-                        *guard = Some(synthesis_task);
+                        *guard = Some(abort_handle);
                     }
 
-                    // Wait for synthesis task (safe await without holding lock)
-                    let handle = {
+                    // Wait for synthesis task without holding the shared cancellation lock.
+                    let _ = synthesis_task.await;
+                    {
                         let mut guard = worker_active_synthesis.lock().unwrap();
-                        guard.take()
-                    };
-
-                    if let Some(h) = handle {
-                        let _ = h.await;
+                        guard.take();
                     }
                 } else {
                     // Wait for new items
@@ -247,11 +257,7 @@ impl TtsController {
         }
 
         // 2. Abort active synthesis task
-        if let Ok(mut guard) = self.active_synthesis.lock() {
-            if let Some(handle) = guard.take() {
-                handle.abort();
-            }
-        }
+        abort_active_synthesis(&self.active_synthesis);
 
         // 3. Stop audio playback immediately
         if let Ok(mut guard) = self.current_sink.lock() {
@@ -266,6 +272,7 @@ impl TtsController {
 mod tests {
     use super::{enqueue_command, TtsCommand, MAX_TTS_QUEUE};
     use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
 
     fn command(text: &str) -> TtsCommand {
         TtsCommand {
@@ -285,5 +292,19 @@ mod tests {
         assert_eq!(queue.len(), MAX_TTS_QUEUE);
         assert_eq!(queue.front().map(|item| item.text.as_str()), Some("1"));
         assert_eq!(queue.back().map(|item| item.text.as_str()), Some("32"));
+    }
+
+    #[tokio::test]
+    async fn stop_aborts_the_active_synthesis_task() {
+        let active = Arc::new(Mutex::new(None));
+        let task = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+        let abort_handle = task.abort_handle();
+        *active.lock().unwrap() = Some(abort_handle);
+
+        assert!(super::abort_active_synthesis(&active));
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(active.lock().unwrap().is_none());
     }
 }
