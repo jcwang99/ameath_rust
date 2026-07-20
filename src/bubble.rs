@@ -76,6 +76,25 @@ impl Clone for BubbleRenderRequest {
     }
 }
 
+fn render_hash(content: &BubbleContent, hide_tail: bool) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    match content {
+        BubbleContent::Text(text) => {
+            hasher.write_u8(0);
+            text.hash(&mut hasher);
+        }
+        BubbleContent::Image(path) => {
+            hasher.write_u8(1);
+            path.hash(&mut hasher);
+        }
+    }
+    hide_tail.hash(&mut hasher);
+    hasher.finish()
+}
+
 struct BubbleRenderResult {
     frames: Vec<(Vec<u8>, Duration)>,
     width: i32,
@@ -144,36 +163,29 @@ impl SpeechBubble {
 
     pub fn show(&mut self, text: &str, _duration: Duration, scale: f32) {
         let clean_text = Self::clean_markdown(text);
-        if self.text != clean_text {
+        let content_changed = !matches!(&self.content, BubbleContent::Text(current) if current == &clean_text);
+        if content_changed {
             self.text = clean_text.clone();
             self.content = BubbleContent::Text(clean_text);
-            let chars = self.text.chars().count();
-            let dyn_duration = Duration::from_secs(2) + Duration::from_millis((chars * 100) as u64);
-            self.show_until = Some(Instant::now() + dyn_duration);
-            self.request_render(scale);
         }
+        let chars = self.text.chars().count();
+        let dyn_duration = Duration::from_secs(2) + Duration::from_millis((chars * 100) as u64);
+        self.show_until = Some(Instant::now() + dyn_duration);
+        self.request_render(scale);
     }
 
     pub fn show_image(&mut self, path: &str, scale: f32) {
-        if self.text != path {
+        let content_changed = !matches!(&self.content, BubbleContent::Image(current) if current == path);
+        if content_changed {
             self.text = path.to_string(); 
             self.content = BubbleContent::Image(path.to_string());
-            self.show_until = Some(Instant::now() + Duration::from_secs(4));
-            self.request_render(scale);
         }
+        self.show_until = Some(Instant::now() + Duration::from_secs(4));
+        self.request_render(scale);
     }
 
     fn request_render(&mut self, scale: f32) {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = DefaultHasher::new();
-        match &self.content {
-            BubbleContent::Text(t) => { hasher.write_u8(0); t.hash(&mut hasher); }
-            BubbleContent::Image(p) => { hasher.write_u8(1); p.hash(&mut hasher); }
-        }
-        self.hide_tail.hash(&mut hasher);
-        let hash = hasher.finish();
+        let hash = render_hash(&self.content, self.hide_tail);
 
         if hash == self.last_rendered_hash && (scale - self.current_scale).abs() < 0.001 {
             return;
@@ -289,6 +301,50 @@ impl SpeechBubble {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{render_hash, BubbleContent, SpeechBubble};
+    use std::time::Duration;
+
+    #[test]
+    fn showing_same_text_after_dismiss_reopens_bubble() {
+        let mut bubble = SpeechBubble::new();
+        bubble.show("hello", Duration::from_secs(1), 1.0);
+        bubble.dismiss();
+        assert!(!bubble.is_visible());
+
+        bubble.show("hello", Duration::from_secs(1), 1.0);
+        assert!(bubble.is_visible());
+    }
+
+    #[test]
+    fn showing_same_text_at_new_scale_requeues_rendering() {
+        let mut bubble = SpeechBubble::new();
+        bubble.show("hello", Duration::from_secs(1), 1.0);
+        bubble.is_working = false;
+
+        bubble.show("hello", Duration::from_secs(1), 1.5);
+        assert_eq!(bubble.current_scale, 1.5);
+        assert!(bubble.is_working);
+    }
+
+    #[test]
+    fn repeated_render_request_hits_hash_cache() {
+        let content = BubbleContent::Text("hello".to_string());
+        let mut bubble = SpeechBubble::new();
+        bubble.content = content;
+        bubble.text = "hello".to_string();
+        bubble.current_scale = 1.0;
+        bubble.last_rendered_hash = render_hash(&bubble.content, false);
+        bubble.is_working = false;
+
+        bubble.show("hello", Duration::from_secs(1), 1.0);
+        assert!(!bubble.is_working);
+
+        assert_ne!(render_hash(&bubble.content, false), render_hash(&bubble.content, true));
+    }
+}
+
 // --- Worker Thread Logic ---
 
 struct WorkerState {
@@ -361,9 +417,6 @@ fn render_bubble_internal(
     req: &BubbleRenderRequest,
 ) -> Option<BubbleRenderResult> {
     unsafe {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
         let scale = req.scale;
         let font_size = 18.0 * scale;
         let font_family = "Segoe UI Emoji";
@@ -593,12 +646,7 @@ fn render_bubble_internal(
             render_frames.push((frame_buffer, delay));
         }
 
-        let mut hasher = DefaultHasher::new();
-        match &req.content {
-            BubbleContent::Text(t) => { hasher.write_u8(0); t.hash(&mut hasher); }
-            BubbleContent::Image(p) => { hasher.write_u8(1); p.hash(&mut hasher); }
-        }
-        let render_hash = hasher.finish();
+        let render_hash = render_hash(&req.content, req.hide_tail);
 
         Some(BubbleRenderResult { frames: render_frames, width, height, render_hash })
     }

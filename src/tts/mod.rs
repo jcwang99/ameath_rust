@@ -13,6 +13,15 @@ struct TtsCommand {
     prompt_text: String,
 }
 
+const MAX_TTS_QUEUE: usize = 32;
+
+fn enqueue_command(queue: &mut VecDeque<TtsCommand>, command: TtsCommand) {
+    if queue.len() >= MAX_TTS_QUEUE {
+        queue.pop_front();
+    }
+    queue.push_back(command);
+}
+
 pub struct TtsController {
     _stream: OutputStream,
     current_sink: Arc<Mutex<Option<Sink>>>,
@@ -223,8 +232,9 @@ impl TtsController {
         };
 
         if let Ok(mut q) = self.queue.lock() {
-            tracing::info!("[TTS] speak: {} chars, queue_len={}", cmd.text.len(), q.len() + 1);
-            q.push_back(cmd);
+            let was_full = q.len() >= MAX_TTS_QUEUE;
+            enqueue_command(&mut q, cmd);
+            tracing::info!("[TTS] speak: queue_len={}, dropped_oldest={}", q.len(), was_full);
             self.notifier.notify_one();
         }
     }
@@ -249,5 +259,31 @@ impl TtsController {
                 sink.stop();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{enqueue_command, TtsCommand, MAX_TTS_QUEUE};
+    use std::collections::VecDeque;
+
+    fn command(text: &str) -> TtsCommand {
+        TtsCommand {
+            text: text.to_string(),
+            ref_audio: String::new(),
+            prompt_text: String::new(),
+        }
+    }
+
+    #[test]
+    fn tts_queue_keeps_a_bounded_latest_window() {
+        let mut queue = VecDeque::new();
+        for index in 0..=MAX_TTS_QUEUE {
+            enqueue_command(&mut queue, command(&index.to_string()));
+        }
+
+        assert_eq!(queue.len(), MAX_TTS_QUEUE);
+        assert_eq!(queue.front().map(|item| item.text.as_str()), Some("1"));
+        assert_eq!(queue.back().map(|item| item.text.as_str()), Some("32"));
     }
 }
