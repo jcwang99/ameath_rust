@@ -13,6 +13,17 @@ use std::sync::{Arc, Mutex};
 use winit::event_loop::{EventLoopProxy, EventLoopWindowTarget};
 use winit::window::Window;
 
+fn normalize_text_selection(
+    cursor_pos: usize,
+    selection_start: Option<usize>,
+    text_len: usize,
+) -> (usize, Option<usize>) {
+    (
+        cursor_pos.min(text_len),
+        selection_start.filter(|start| *start <= text_len),
+    )
+}
+
 pub struct SettingsRenderInput {
     pub w: u32,
     pub h: u32,
@@ -2018,9 +2029,11 @@ impl SettingsWindow {
         let text = self.get_field_text(field_idx, ai_config);
         let mut chars: Vec<char> = text.chars().collect();
 
-        if self.cursor_pos > chars.len() {
-            self.cursor_pos = chars.len();
-        }
+        (self.cursor_pos, self.selection_start) = normalize_text_selection(
+            self.cursor_pos,
+            self.selection_start,
+            chars.len(),
+        );
 
         // use windows::Win32::Graphics::Gdi::{GetDC, ReleaseDC};
         use winit::keyboard::{Key, NamedKey};
@@ -2298,9 +2311,11 @@ impl SettingsWindow {
             let val = self.get_field_text(idx, ai_config);
             let mut chars: Vec<char> = val.chars().collect();
 
-            if self.cursor_pos > chars.len() {
-                self.cursor_pos = chars.len();
-            }
+            (self.cursor_pos, self.selection_start) = normalize_text_selection(
+                self.cursor_pos,
+                self.selection_start,
+                chars.len(),
+            );
 
             let input_chars: Vec<char> = text.chars().collect();
 
@@ -2715,6 +2730,19 @@ impl SettingsWindow {
         self.pressed_btn = None;
         self.window.request_redraw();
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_text_selection;
+
+    #[test]
+    fn stale_selection_indices_are_clamped_to_current_text() {
+        let (cursor, selection_start) = normalize_text_selection(4, Some(47), 36);
+
+        assert_eq!(cursor, 4);
+        assert_eq!(selection_start, None);
     }
 }
 
