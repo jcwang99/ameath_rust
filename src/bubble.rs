@@ -95,6 +95,18 @@ fn render_hash(content: &BubbleContent, hide_tail: bool) -> u64 {
     hasher.finish()
 }
 
+fn rgba_to_premultiplied_bgra(raw_pixels: &[u8], output: &mut Vec<u8>) {
+    output.clear();
+    output.reserve(raw_pixels.len().saturating_sub(output.capacity()));
+    for chunk in raw_pixels.chunks_exact(4) {
+        let alpha = chunk[3] as u16;
+        output.push((chunk[2] as u16 * alpha / 255) as u8);
+        output.push((chunk[1] as u16 * alpha / 255) as u8);
+        output.push((chunk[0] as u16 * alpha / 255) as u8);
+        output.push(chunk[3]);
+    }
+}
+
 struct BubbleRenderResult {
     frames: Vec<(Vec<u8>, Duration)>,
     width: i32,
@@ -303,7 +315,7 @@ impl SpeechBubble {
 
 #[cfg(test)]
 mod tests {
-    use super::{render_hash, BubbleContent, SpeechBubble};
+    use super::{render_hash, rgba_to_premultiplied_bgra, BubbleContent, SpeechBubble};
     use std::time::Duration;
 
     #[test]
@@ -343,6 +355,18 @@ mod tests {
 
         assert_ne!(render_hash(&bubble.content, false), render_hash(&bubble.content, true));
     }
+
+    #[test]
+    fn rgba_conversion_reuses_output_and_preserves_premultiplied_alpha() {
+        let mut output = vec![99, 99, 99, 99, 99];
+        rgba_to_premultiplied_bgra(&[255, 0, 0, 128, 0, 255, 0, 255], &mut output);
+
+        assert_eq!(output, vec![0, 0, 128, 128, 0, 255, 0, 255]);
+        let capacity = output.capacity();
+        rgba_to_premultiplied_bgra(&[0, 0, 255, 255], &mut output);
+        assert_eq!(output, vec![255, 0, 0, 255]);
+        assert_eq!(output.capacity(), capacity);
+    }
 }
 
 // --- Worker Thread Logic ---
@@ -362,6 +386,8 @@ struct WorkerState {
     old_bitmap: windows::Win32::Graphics::Gdi::HGDIOBJ,
     #[cfg(target_os = "windows")]
     bitmap_capacity: (i32, i32), 
+    #[cfg(target_os = "windows")]
+    bgra_scratch: Vec<u8>,
     rx_recycle: Receiver<Vec<u8>>,
 }
 
@@ -382,6 +408,7 @@ fn worker_loop(
             h_bitmap: windows::Win32::Graphics::Gdi::HBITMAP(0),
             old_bitmap: windows::Win32::Graphics::Gdi::HGDIOBJ(0),
             bitmap_capacity: (0, 0),
+            bgra_scratch: Vec::new(),
             rx_recycle,
         }
     };
@@ -605,16 +632,12 @@ fn render_bubble_internal(
 
                     if !frames_data.is_empty() {
                         let (fw, fh, raw_pixels, _) = &frames_data[i];
-                        let mut bgra = Vec::with_capacity(raw_pixels.len());
-                        for chunk in raw_pixels.chunks_exact(4) {
-                            let r = chunk[0] as f32; let g = chunk[1] as f32; let b = chunk[2] as f32; let a = chunk[3] as f32 / 255.0;
-                            bgra.push((b * a) as u8); bgra.push((g * a) as u8); bgra.push((r * a) as u8); bgra.push(chunk[3]);
-                        }
+                        rgba_to_premultiplied_bgra(raw_pixels, &mut state.bgra_scratch);
                         let bmp_props = windows::Win32::Graphics::Direct2D::D2D1_BITMAP_PROPERTIES {
                             pixelFormat: D2D1_PIXEL_FORMAT { format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
                             dpiX: 96.0, dpiY: 96.0
                         };
-                        if let Ok(bmp) = rt.CreateBitmap(windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U { width: *fw, height: *fh }, Some(bgra.as_ptr() as *const _), *fw * 4, &bmp_props) {
+                        if let Ok(bmp) = rt.CreateBitmap(windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U { width: *fw, height: *fh }, Some(state.bgra_scratch.as_ptr() as *const _), *fw * 4, &bmp_props) {
                             let mut dw = *fw as f32 * scale;
                             let mut dh = *fh as f32 * scale;
                             if dw > (width - padding*2) as f32 { let r = (width-padding*2) as f32 / dw; dw = (width-padding*2) as f32; dh *= r; }
