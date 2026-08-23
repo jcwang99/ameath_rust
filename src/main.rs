@@ -1462,10 +1462,12 @@ fn main() {
                         if let Some(system_event) = interaction_manager.check_for_trigger() {
                             let capture_tx = interaction_capture_tx.clone();
                             std::thread::spawn(move || {
-                                let mut input_struct = system_event.into_chat_input(Vec::new());
-                                if system_event.capture_screenshots {
-                                    input_struct.images = crate::interaction::collect_screenshot_images();
-                                }
+                                let images = if system_event.capture_screenshots {
+                                    crate::interaction::collect_screenshot_images()
+                                } else {
+                                    Vec::new()
+                                };
+                                let input_struct = system_event.into_chat_input(images);
                                 let _ = capture_tx.send(input_struct);
                             });
                             thinking_state = ThinkingState::Standard;

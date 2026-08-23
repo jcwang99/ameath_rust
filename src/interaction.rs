@@ -1,37 +1,54 @@
 use arboard::Clipboard;
 use chrono::{DateTime, Datelike, Local, NaiveTime};
 use rand::Rng;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use sysinfo::{Components, Disks, Networks, System};
 
-use crate::types::{AiConfig, PersistentConfig, RemindersConfig, ScheduledItemDef, RoutinesConfig, RoutineStateConfig, ScheduleType};
-use std::sync::{Arc, Mutex};
+use crate::types::{
+    AiConfig, PersistentConfig, RemindersConfig, RoutineStateConfig, RoutinesConfig, ScheduleType,
+    ScheduledItemDef,
+};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InteractionKind {
+    DirectText(String),
+    ActiveRoutineCheck,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingInteractionRequest {
-    pub text: String,
+    pub kind: InteractionKind,
     pub capture_screenshots: bool,
 }
 
 impl PendingInteractionRequest {
-    pub fn into_chat_input(&self, images: Vec<crate::types::ImageData>) -> crate::types::ChatInput {
-        crate::types::ChatInput {
-            text: self.text.clone(),
-            images,
+    pub fn direct(text: String, capture_screenshots: bool) -> Self {
+        Self {
+            kind: InteractionKind::DirectText(text),
+            capture_screenshots,
         }
     }
-}
 
-fn build_active_interaction_request(
-    context: String,
-    capture_screenshots: bool,
-) -> PendingInteractionRequest {
-    PendingInteractionRequest {
-        text: format!(
-            "[SYSTEM_EVENT] Routine Check. Context: {}. Observe current activities and decide if you need to use tools or send a system notification for important findings.",
-            context
-        ),
-        capture_screenshots,
+    pub fn active_routine_check(capture_screenshots: bool) -> Self {
+        Self {
+            kind: InteractionKind::ActiveRoutineCheck,
+            capture_screenshots,
+        }
+    }
+
+    pub fn into_chat_input(self, images: Vec<crate::types::ImageData>) -> crate::types::ChatInput {
+        let text = match self.kind {
+            InteractionKind::DirectText(t) => t,
+            InteractionKind::ActiveRoutineCheck => {
+                let context = Senses::collect_context_snapshot();
+                format!(
+                    "[SYSTEM_EVENT] Routine Check. Context: {}. Observe current activities and decide if you need to use tools or send a system notification for important findings.",
+                    context
+                )
+            }
+        };
+        crate::types::ChatInput { text, images }
     }
 }
 
@@ -173,36 +190,6 @@ impl Senses {
         }
     }
 
-    pub fn refresh(&mut self) {
-        self.sys.refresh_cpu_all();
-        self.sys.refresh_memory();
-        self.disks.refresh(false);
-        self.networks.refresh(false);
-        self.components.refresh(false);
-
-        // Update net rates
-        let now = Instant::now();
-        let delta = now.duration_since(self.last_net_time).as_secs_f64();
-        if delta > 0.5 {
-            let mut total_tx = 0;
-            let mut total_rx = 0;
-            for (_, data) in &self.networks {
-                total_tx += data.transmitted();
-                total_rx += data.received();
-            }
-
-            let tx_diff = total_tx.saturating_sub(self.last_tx_total);
-            let rx_diff = total_rx.saturating_sub(self.last_rx_total);
-
-            self.net_up_kbps = (tx_diff as f64 / 1024.0) / delta;
-            self.net_down_kbps = (rx_diff as f64 / 1024.0) / delta;
-
-            self.last_tx_total = total_tx;
-            self.last_rx_total = total_rx;
-            self.last_net_time = now;
-        }
-    }
-
     pub fn get_cpu_usage(&self) -> f32 {
         self.sys.global_cpu_usage()
     }
@@ -264,9 +251,7 @@ impl Senses {
                 dwTime: 0,
             };
             let res = GetLastInputInfo(&mut lii);
-            // GetLastInputInfo returns BOOL (struct with .0)
             if res.as_bool() {
-                // Changed from res.0 != 0 to res.as_bool()
                 let tick = windows::Win32::System::SystemInformation::GetTickCount();
                 let diff = tick.wrapping_sub(lii.dwTime);
                 return Duration::from_millis(diff as u64);
@@ -414,10 +399,6 @@ impl Senses {
 
     pub fn get_clipboard_preview(&mut self) -> String {
         if let Some(cb) = self.clipboard.as_mut() {
-            // Changed from ref mut cb to cb = self.clipboard.as_mut()
-            // Arboard doesn't have a stable way to check type without getting.
-            // We just try to get text.
-            // CLIPBOARD can be slow/blocking, so we use a small timeout or just skip if it fails.
             if let Ok(text) = cb.get_text() {
                 let trimmed = text.trim();
                 if trimmed.is_empty() {
@@ -434,32 +415,66 @@ impl Senses {
         "None/Binary".to_string()
     }
 
-    pub fn get_context_snapshot(&mut self) -> String {
-        self.refresh();
+    /// Background sampling of system snapshot with double CPU refresh for accurate delta calculation.
+    pub fn collect_context_snapshot() -> String {
+        let mut senses = Self::new();
+        // 1. Initial CPU refresh & baseline networking
+        senses.sys.refresh_cpu_usage();
+        senses.sys.refresh_memory();
+        let sample_start = Instant::now();
 
-        let cpu = self.get_cpu_usage();
-        let hardware = self.get_hardware_info();
-        let monitors = self.get_monitor_info();
+        // 2. Perform other I/O queries during the sample window
+        senses.disks.refresh(false);
+        senses.components.refresh(false);
 
-        let used_mem = self.get_memory_usage();
-        let total_mem = self.get_total_memory();
-        let app = self.get_active_window_title();
+        let hardware = senses.get_hardware_info();
+        let monitors = senses.get_monitor_info();
+        let app = senses.get_active_window_title();
+        let battery = senses.get_battery_info();
+        let uptime = senses.get_uptime();
+        let idle = senses.get_idle_time();
+        let theme = senses.get_theme();
+        let disk = senses.get_disk_info();
+        let temp = senses.get_temps();
+        let procs = senses.get_interesting_apps();
+        let clip = senses.get_clipboard_preview();
+        let used_mem = senses.get_memory_usage();
+        let total_mem = senses.get_total_memory();
 
-        let battery = self.get_battery_info();
-        let uptime = self.get_uptime();
-        let idle = self.get_idle_time();
+        // 3. Ensure at least MINIMUM_CPU_UPDATE_INTERVAL has elapsed for accurate differential CPU measurement
+        let elapsed = sample_start.elapsed();
+        let min_interval = sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.max(Duration::from_millis(200));
+        if elapsed < min_interval {
+            std::thread::sleep(min_interval - elapsed);
+        }
+
+        // 4. Second CPU & Network refresh
+        senses.sys.refresh_cpu_usage();
+        senses.networks.refresh(false);
+
+        let now = Instant::now();
+        let delta = now.duration_since(senses.last_net_time).as_secs_f64();
+        if delta > 0.05 {
+            let mut total_tx = 0;
+            let mut total_rx = 0;
+            for (_, data) in &senses.networks {
+                total_tx += data.transmitted();
+                total_rx += data.received();
+            }
+            let tx_diff = total_tx.saturating_sub(senses.last_tx_total);
+            let rx_diff = total_rx.saturating_sub(senses.last_rx_total);
+            senses.net_up_kbps = (tx_diff as f64 / 1024.0) / delta;
+            senses.net_down_kbps = (rx_diff as f64 / 1024.0) / delta;
+        }
+
+        let cpu = senses.get_cpu_usage();
+        let net = senses.get_network_rates();
+
         let idle_str = if idle.as_secs() > 60 {
             format!("{}m", idle.as_secs() / 60)
         } else {
             format!("{}s", idle.as_secs())
         };
-
-        let theme = self.get_theme();
-        let disk = self.get_disk_info();
-        let net = self.get_network_rates();
-        let temp = self.get_temps();
-        let procs = self.get_interesting_apps();
-        let clip = self.get_clipboard_preview();
 
         format!(
             "[{hardware}] Theme: {theme}, Displays: {monitors}, Active App: {app}, CPU: {cpu:.1}%, Temp: {temp}, RAM: {used_mem}/{total_mem}MB, Disk: {disk}, Net: {net}, Battery: {battery}, Uptime: {uptime}, User Idle: {idle_str}, Interesting Apps: {procs}, Clipboard: {clip}"
@@ -468,7 +483,6 @@ impl Senses {
 }
 
 pub struct InteractionManager {
-    senses: Senses,
     last_interaction: Instant,
     config: AiConfig,
     base_interval: Duration,
@@ -479,11 +493,14 @@ pub struct InteractionManager {
 }
 
 impl InteractionManager {
-    pub fn new(config: AiConfig, scheduler: ActionScheduler, shared_routines: std::sync::Arc<std::sync::Mutex<RoutinesConfig>>) -> Self {
+    pub fn new(
+        config: AiConfig,
+        scheduler: ActionScheduler,
+        shared_routines: std::sync::Arc<std::sync::Mutex<RoutinesConfig>>,
+    ) -> Self {
         let base_interval = Duration::from_secs(config.interaction_frequency * 60);
 
         Self {
-            senses: Senses::new(),
             last_interaction: Instant::now(),
             config,
             base_interval,
@@ -521,13 +538,13 @@ impl InteractionManager {
                 .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
                 .unwrap_or(scheduled_time);
             let now_fmt = now_local.format("%Y-%m-%d %H:%M").to_string();
-            return Some(PendingInteractionRequest {
-                text: format!(
+            return Some(PendingInteractionRequest::direct(
+                format!(
                     "[SYSTEM_EVENT] Scheduled Reminder triggered. Originally scheduled for: {}. Current time: {}. Content: '{}'. If you deem this reminder critical or the user won't notice your speech bubble, use 'send_notification' to alert them.",
                     scheduled_fmt, now_fmt, memo
                 ),
-                capture_screenshots: false,
-            });
+                false,
+            ));
         }
 
         // 0.5 Poll Routines
@@ -545,7 +562,6 @@ impl InteractionManager {
 
             let should_run = match routine.schedule_type {
                 ScheduleType::Daily => {
-                    // Run if last_run is before today, OR if time_of_day is set and passed today but not run today yet
                     if let Some(lr) = last_run {
                         if lr.date_naive() < now_local.date_naive() {
                             if let Some(ref t) = routine.time_of_day {
@@ -561,7 +577,6 @@ impl InteractionManager {
                             false
                         }
                     } else {
-                        // Never run before
                         if let Some(ref t) = routine.time_of_day {
                             if let Ok(time) = NaiveTime::parse_from_str(t, "%H:%M") {
                                 now_local.time() >= time
@@ -672,17 +687,19 @@ impl InteractionManager {
                 if let Some(expiry_min) = routine.expiry_minutes {
                     let is_expired = match routine.schedule_type {
                         ScheduleType::Daily | ScheduleType::Weekly | ScheduleType::Monthly => {
-                            // For time-based routines, check scheduled_time + expiry < now
                             if let Some(ref t) = routine.time_of_day {
                                 if let Ok(time) = NaiveTime::parse_from_str(t, "%H:%M") {
                                     let scheduled = now_local.date_naive().and_time(time);
                                     let deadline = scheduled + chrono::Duration::minutes(expiry_min as i64);
                                     now_local.naive_local() > deadline
-                                } else { false }
-                            } else { false }
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
                         }
                         _ => {
-                            // For interval routines, check last_run + interval + expiry < now
                             if let Some(lr) = last_run {
                                 let interval_secs = match routine.schedule_type {
                                     ScheduleType::IntervalDays => routine.interval.unwrap_or(1) as i64 * 86400,
@@ -693,12 +710,13 @@ impl InteractionManager {
                                 let deadline = lr + chrono::Duration::seconds(interval_secs)
                                     + chrono::Duration::minutes(expiry_min as i64);
                                 now_local > deadline
-                            } else { false } // First run never expires
+                            } else {
+                                false
+                            }
                         }
                     };
 
                     if is_expired {
-                        // Mark as executed but skip actual trigger
                         self.routine_states.last_executions.insert(routine.id.clone(), now_local.to_rfc3339());
                         self.routine_states.save();
                         tracing::info!("Routine '{}' expired (past {}min window), skipping.", routine.title, expiry_min);
@@ -717,13 +735,13 @@ impl InteractionManager {
                     _ => "interval-based".to_string(),
                 };
                 let now_fmt = now_local.format("%Y-%m-%d %H:%M").to_string();
-                return Some(PendingInteractionRequest {
-                    text: format!(
+                return Some(PendingInteractionRequest::direct(
+                    format!(
                         "[Routine '{}'] Scheduled time: {}. Current time: {}.\n{}",
                         routine.title, scheduled_time_hint, now_fmt, routine.memo
                     ),
-                    capture_screenshots: false,
-                });
+                    false,
+                ));
             }
         }
 
@@ -746,9 +764,7 @@ impl InteractionManager {
         if is_triggered {
             self.first_run = false;
             self.last_interaction = now;
-            let context = self.senses.get_context_snapshot();
-            return Some(build_active_interaction_request(
-                context,
+            return Some(PendingInteractionRequest::active_routine_check(
                 self.config.active_interaction_screenshots_enabled,
             ));
         }
@@ -759,14 +775,27 @@ impl InteractionManager {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn active_interaction_request_defers_screenshot_capture() {
-        let pending = super::build_active_interaction_request("cpu=20%".to_string(), true);
+        let pending = PendingInteractionRequest::active_routine_check(true);
 
         assert!(pending.capture_screenshots);
 
         let input = pending.into_chat_input(Vec::new());
         assert!(input.images.is_empty());
-        assert!(input.text.contains("cpu=20%"));
+        assert!(input.text.contains("Routine Check. Context:"));
+        assert!(input.text.contains("CPU:"));
+    }
+
+    #[test]
+    fn test_collect_context_snapshot_structure() {
+        let snapshot = Senses::collect_context_snapshot();
+        assert!(snapshot.contains("CPU:"));
+        assert!(snapshot.contains("RAM:"));
+        assert!(snapshot.contains("Disk:"));
+        assert!(snapshot.contains("Net:"));
+        assert!(snapshot.contains("Theme:"));
     }
 }
