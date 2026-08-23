@@ -1,9 +1,14 @@
 use rodio::{Decoder, OutputStream, Sink, Source};
+use std::collections::HashMap;
 use std::fs;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use rand::Rng;
+use image::RgbaImage;
+use lofty::file::TaggedFileExt;
+use lofty::tag::Accessor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlayMode {
@@ -12,12 +17,22 @@ pub enum PlayMode {
     Random,
 }
 
+#[derive(Debug, Clone)]
+pub struct SongMetadata {
+    pub title: String,
+    #[allow(dead_code)]
+    pub artist: Option<String>,
+    pub cover: Option<Arc<RgbaImage>>,
+}
+
 pub struct MusicPlayer {
     _stream: Option<OutputStream>,
     _stream_handle: Option<rodio::OutputStreamHandle>,
     sink: Option<Sink>,
     songs: Vec<PathBuf>,
+    metadata_cache: HashMap<PathBuf, SongMetadata>,
     current_song_idx: usize,
+    pub current_cover: Option<Arc<RgbaImage>>,
     pub music_path: Option<PathBuf>,
     pub current_duration: Option<Duration>,
     pub panel_enabled: bool,
@@ -44,7 +59,9 @@ impl MusicPlayer {
             _stream_handle: stream_handle,
             sink,
             songs: Vec::new(),
+            metadata_cache: HashMap::new(),
             current_song_idx: 0,
+            current_cover: None,
             music_path: None,
             current_duration: None,
             panel_enabled: false,
@@ -67,6 +84,8 @@ impl MusicPlayer {
 
     fn load_songs(&mut self, path: &Path) {
         self.songs.clear();
+        self.metadata_cache.clear();
+        self.current_cover = None;
         if let Ok(entries) = fs::read_dir(path) {
             for entry in entries.flatten() {
                 let p = entry.path();
@@ -83,6 +102,11 @@ impl MusicPlayer {
         self.songs.sort(); // Sequential order
         self.current_song_idx = 0;
         tracing::info!("[MusicPlayer] Loaded {} songs from {:?}", self.songs.len(), path);
+        if !self.songs.is_empty() {
+            let first_song = self.songs[0].clone();
+            let meta = self.get_metadata(&first_song).clone();
+            self.current_cover = meta.cover;
+        }
     }
 
     pub fn next(&mut self) {
@@ -185,35 +209,46 @@ impl MusicPlayer {
         self.current_song_idx
     }
 
-    pub fn current_song_name(&self) -> Option<String> {
+    pub fn get_metadata(&mut self, path: &Path) -> &SongMetadata {
+        if !self.metadata_cache.contains_key(path) {
+            let meta = extract_metadata(path);
+            self.metadata_cache.insert(path.to_path_buf(), meta);
+        }
+        self.metadata_cache.get(path).unwrap()
+    }
+
+    pub fn current_song_name(&mut self) -> Option<String> {
         if self.songs.is_empty() { return None; }
-        self.songs[self.current_song_idx]
-            .file_name()?
-            .to_str()
-            .map(|s| {
-                if let Some(idx) = s.rfind('.') {
-                    s[..idx].to_string()
-                } else {
-                    s.to_string()
-                }
-            })
+        let path = self.songs[self.current_song_idx].clone();
+        let meta = self.get_metadata(&path);
+        Some(meta.title.clone())
+    }
+
+    pub fn song_display_name(&mut self, idx: usize) -> Option<String> {
+        if idx >= self.songs.len() { return None; }
+        let path = self.songs[idx].clone();
+        let meta = self.get_metadata(&path);
+        Some(meta.title.clone())
     }
 
     fn play_current(&mut self) {
-        let Some(sink) = &self.sink else { return };
-        if self.songs.is_empty() {
+        if self.sink.is_none() || self.songs.is_empty() {
             return;
         }
 
-        let song_path = &self.songs[self.current_song_idx];
-        if let Ok(file) = fs::File::open(song_path) {
+        let song_path = self.songs[self.current_song_idx].clone();
+        let meta = self.get_metadata(&song_path).clone();
+        self.current_cover = meta.cover;
+
+        let Some(sink) = &self.sink else { return };
+        if let Ok(file) = fs::File::open(&song_path) {
             let source = Decoder::new(BufReader::new(file)).ok();
             if let Some(source) = source {
                 self.current_duration = source.total_duration();
                 sink.stop();
                 sink.append(source);
                 sink.play();
-                tracing::debug!("[MusicPlayer] Playing: {:?}", song_path.file_name().unwrap_or_default());
+                tracing::debug!("[MusicPlayer] Playing: {:?}", meta.title);
             } else {
                 tracing::warn!("[MusicPlayer] Failed to decode: {:?}", song_path);
             }
@@ -252,5 +287,75 @@ impl MusicPlayer {
             return Some(format!("Now Playing: {}", name));
         }
         None
+    }
+}
+
+fn extract_metadata(path: &Path) -> SongMetadata {
+    let default_title = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| {
+            if let Some(idx) = s.rfind('.') {
+                s[..idx].to_string()
+            } else {
+                s.to_string()
+            }
+        })
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    let mut title = default_title;
+    let mut artist = None;
+    let mut cover = None;
+
+    if let Ok(tagged_file) = lofty::read_from_path(path) {
+        if let Some(tag) = tagged_file.primary_tag().or_else(|| tagged_file.first_tag()) {
+            if let Some(t) = tag.title() {
+                let t_trim = t.trim();
+                if !t_trim.is_empty() {
+                    title = t_trim.to_string();
+                }
+            }
+            if let Some(a) = tag.artist() {
+                let a_trim = a.trim();
+                if !a_trim.is_empty() {
+                    artist = Some(a_trim.to_string());
+                }
+            }
+            for picture in tag.pictures() {
+                if let Ok(img) = image::load_from_memory(picture.data()) {
+                    cover = Some(Arc::new(img.to_rgba8()));
+                    break;
+                }
+            }
+        }
+    }
+
+    SongMetadata {
+        title,
+        artist,
+        cover,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_metadata_fallback() {
+        let fake_path = Path::new("assets/music/Test Song.mp3");
+        let meta = extract_metadata(fake_path);
+        assert_eq!(meta.title, "Test Song");
+        assert!(meta.artist.is_none());
+        assert!(meta.cover.is_none());
+    }
+
+    #[test]
+    fn test_music_player_initial_state() {
+        let player = MusicPlayer::new();
+        assert_eq!(player.current_idx(), 0);
+        assert!(player.songs().is_empty());
+        assert_eq!(player.play_mode, PlayMode::Sequential);
+        assert!(player.current_cover.is_none());
     }
 }

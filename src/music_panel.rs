@@ -29,20 +29,26 @@ pub struct MusicRenderState {
     pub mx: f64,
     pub my: f64,
     pub timestamp: f64, // For synced animation if needed
+    pub cover_image: Option<std::sync::Arc<image::RgbaImage>>,
 }
 
 impl MusicRenderState {
-    pub fn new(player: &MusicPlayer, scale: f32, opacity: f32, mx: f64, my: f64) -> Self {
+    pub fn new(player: &mut MusicPlayer, scale: f32, opacity: f32, mx: f64, my: f64) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as f64;
         
         let (_, current_dur, total_dur) = player.get_progress();
+        let song_count = player.songs().len();
+        let mut song_names = Vec::with_capacity(song_count);
+        for i in 0..song_count {
+            song_names.push(player.song_display_name(i).unwrap_or_default());
+        }
         
         Self {
             current_song_name: player.current_song_name().unwrap_or_else(|| "No Music".to_string()),
-            songs: player.songs().iter().map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()).collect(),
+            songs: song_names,
             is_playing: player.is_playing(),
             list_visible: player.list_visible,
             list_scroll_offset: player.list_scroll_offset,
@@ -56,6 +62,7 @@ impl MusicRenderState {
             mx,
             my,
             timestamp: now,
+            cover_image: player.current_cover.clone(),
         }
     }
 }
@@ -121,60 +128,23 @@ pub fn render_music_panel(
         win_h,
     );
 
-    // 2. Cover Art (Rotating Disc)
+    // 2. Cover Art (Rotating Vinyl Disc with Album Cover)
     let cover_size = (45.0 * scale) as u32;
     let cover_x = panel_x + (12.0 * scale) as i32;
     let cover_y = panel_y + (12.0 * scale) as i32;
     
-    ui_primitives::draw_rounded_rect(
+    draw_vinyl_disc(
         buffer,
         win_w,
+        win_h,
         cover_x,
         cover_y,
         cover_size,
-        cover_size,
-        cover_size / 2,
-        ui_primitives::apply_opacity(0x0A0A0A, opacity),
-        win_w,
-        win_h,
-    );
-
-    if state.is_playing {
-        let now = state.timestamp;
-        let angle = (now / 20.0) % 360.0;
-        let rad = angle.to_radians();
-        let cx = (cover_x as f64 + cover_size as f64 / 2.0) as i32;
-        let cy = (cover_y as f64 + cover_size as f64 / 2.0) as i32;
-        let r = (cover_size as f64 / 2.0 - 5.0 * scale as f64) as f64;
-        
-        let tx = cx + (r * rad.cos()) as i32;
-        let ty = cy + (r * rad.sin()) as i32;
-        
-        ui_primitives::draw_rounded_rect(
-            buffer,
-            win_w,
-            tx - (2.0 * scale) as i32,
-            ty - (2.0 * scale) as i32,
-            (4.0 * scale) as u32,
-            (4.0 * scale) as u32,
-            (2.0 * scale) as u32,
-            ui_primitives::apply_opacity(0xFB7299, opacity),
-            win_w,
-            win_h,
-        );
-    }
-    
-    ui_primitives::draw_rounded_rect(
-        buffer,
-        win_w,
-        (cover_x as f64 + cover_size as f64 / 2.0 - 4.0 * scale as f64) as i32,
-        (cover_y as f64 + cover_size as f64 / 2.0 - 4.0 * scale as f64) as i32,
-        (8.0 * scale) as u32,
-        (8.0 * scale) as u32,
-        (4.0 * scale) as u32,
-        ui_primitives::apply_opacity(0x333333, opacity),
-        win_w,
-        win_h,
+        scale,
+        opacity,
+        state.is_playing,
+        state.timestamp,
+        state.cover_image.as_deref(),
     );
 
     // 3. Title with Marquee effect
@@ -531,14 +501,7 @@ pub fn render_music_panel(
             // Removed: background draw_rect for is_current/is_hovered
             // We now rely purely on text stylings based on visual cues
 
-            let song_path = std::path::Path::new(&songs[i]);
-            let song_name = song_path.file_name().and_then(|f| f.to_str()).unwrap_or("Unknown");
-            let display_name = if let Some(dot_idx) = song_name.rfind('.') {
-                &song_name[..dot_idx]
-            } else {
-                song_name
-            };
-            
+            let display_name = &songs[i];
             let _item_text = format!("{}. {}", i + 1, display_name);
             
             let _item_max_w = (w as i32 - (20.0 * scale) as i32).max(10) as u32;
@@ -789,4 +752,209 @@ pub fn check_music_panel_hit(
     }
 
     None
+}
+
+pub fn draw_vinyl_disc(
+    buffer: &mut [u32],
+    win_w: u32,
+    win_h: u32,
+    cover_x: i32,
+    cover_y: i32,
+    cover_size: u32,
+    scale: f32,
+    opacity: f32,
+    is_playing: bool,
+    timestamp: f64,
+    cover_image: Option<&image::RgbaImage>,
+) {
+    if let Some(img) = cover_image {
+        let cx = cover_x as f32 + cover_size as f32 / 2.0;
+        let cy = cover_y as f32 + cover_size as f32 / 2.0;
+        let outer_r = cover_size as f32 / 2.0;
+        let vinyl_border = (2.5 * scale).max(1.5);
+        let cover_r = (outer_r - vinyl_border).max(2.0);
+        let hole_r = (3.5 * scale).max(2.0);
+        let spindle_r = (1.5 * scale).max(1.0);
+
+        let angle = if is_playing {
+            ((timestamp / 20.0) % 360.0) as f32
+        } else {
+            0.0
+        };
+        let rad = angle.to_radians();
+        let cos_a = rad.cos();
+        let sin_a = rad.sin();
+
+        let img_w = img.width() as f32;
+        let img_h = img.height() as f32;
+        let img_raw = img.as_raw();
+        let img_stride = img.width() as usize * 4;
+
+        let start_x = cover_x.max(0) as u32;
+        let end_x = ((cover_x + cover_size as i32).min(win_w as i32).max(0)) as u32;
+        let start_y = cover_y.max(0) as u32;
+        let end_y = ((cover_y + cover_size as i32).min(win_h as i32).max(0)) as u32;
+
+        for py in start_y..end_y {
+            let dy = py as f32 + 0.5 - cy;
+            let row_offset = py as usize * win_w as usize;
+
+            for px in start_x..end_x {
+                let dx = px as f32 + 0.5 - cx;
+                let dist_sq = dx * dx + dy * dy;
+                let dist = dist_sq.sqrt();
+
+                if dist > outer_r {
+                    continue;
+                }
+
+                // Overall alpha with edge anti-aliasing
+                let edge_factor = (outer_r - dist).clamp(0.0, 1.0);
+                let pixel_opacity = opacity * edge_factor;
+                if pixel_opacity <= 0.0 {
+                    continue;
+                }
+
+                let (r, g, b) = if dist < spindle_r {
+                    // Center hole (pitch black)
+                    (8u8, 8u8, 8u8)
+                } else if dist < hole_r {
+                    // Spindle ring (metallic dark grey with small highlight)
+                    if dist > hole_r - 0.8 {
+                        (70u8, 70u8, 70u8) // highlight ring
+                    } else {
+                        (32u8, 32u8, 32u8)
+                    }
+                } else if dist <= cover_r {
+                    // Inside album cover artwork
+                    // Inverse rotate (dx, dy)
+                    let u = dx * cos_a + dy * sin_a;
+                    let v = -dx * sin_a + dy * cos_a;
+
+                    // Map [-cover_r, cover_r] to [0, 1]
+                    let norm_u = (u / (2.0 * cover_r)) + 0.5;
+                    let norm_v = (v / (2.0 * cover_r)) + 0.5;
+
+                    let src_x = (norm_u * (img_w - 1.0)).clamp(0.0, img_w - 1.0);
+                    let src_y = (norm_v * (img_h - 1.0)).clamp(0.0, img_h - 1.0);
+
+                    // Bilinear interpolation
+                    let x0 = src_x.floor() as usize;
+                    let y0 = src_y.floor() as usize;
+                    let x1 = (x0 + 1).min(img.width() as usize - 1);
+                    let y1 = (y0 + 1).min(img.height() as usize - 1);
+
+                    let fx = src_x - x0 as f32;
+                    let fy = src_y - y0 as f32;
+
+                    let idx00 = y0 * img_stride + x0 * 4;
+                    let idx10 = y0 * img_stride + x1 * 4;
+                    let idx01 = y1 * img_stride + x0 * 4;
+                    let idx11 = y1 * img_stride + x1 * 4;
+
+                    let c_r = (1.0 - fx) * (1.0 - fy) * img_raw[idx00] as f32
+                        + fx * (1.0 - fy) * img_raw[idx10] as f32
+                        + (1.0 - fx) * fy * img_raw[idx01] as f32
+                        + fx * fy * img_raw[idx11] as f32;
+
+                    let c_g = (1.0 - fx) * (1.0 - fy) * img_raw[idx00 + 1] as f32
+                        + fx * (1.0 - fy) * img_raw[idx10 + 1] as f32
+                        + (1.0 - fx) * fy * img_raw[idx01 + 1] as f32
+                        + fx * fy * img_raw[idx11 + 1] as f32;
+
+                    let c_b = (1.0 - fx) * (1.0 - fy) * img_raw[idx00 + 2] as f32
+                        + fx * (1.0 - fy) * img_raw[idx10 + 2] as f32
+                        + (1.0 - fx) * fy * img_raw[idx01 + 2] as f32
+                        + fx * fy * img_raw[idx11 + 2] as f32;
+
+                    // Subtle blend at cover border with vinyl groove
+                    if dist > cover_r - 1.0 {
+                        let blend = (cover_r - dist).clamp(0.0, 1.0);
+                        let vr = 14.0;
+                        let vg = 14.0;
+                        let vb = 14.0;
+                        (
+                            (c_r * blend + vr * (1.0 - blend)) as u8,
+                            (c_g * blend + vg * (1.0 - blend)) as u8,
+                            (c_b * blend + vb * (1.0 - blend)) as u8,
+                        )
+                    } else {
+                        (c_r as u8, c_g as u8, c_b as u8)
+                    }
+                } else {
+                    // Outer vinyl black groove
+                    (14u8, 14u8, 14u8)
+                };
+
+                let buf_idx = row_offset + px as usize;
+                let alpha_u8 = (pixel_opacity * 255.0).clamp(0.0, 255.0) as u32;
+
+                // Blend with existing buffer pixel
+                let dst = buffer[buf_idx];
+                let dst_a = (dst >> 24) & 0xFF;
+                let dst_r = (dst >> 16) & 0xFF;
+                let dst_g = (dst >> 8) & 0xFF;
+                let dst_b = dst & 0xFF;
+
+                let inv_a = 255 - alpha_u8;
+                let out_r = ((r as u32 * alpha_u8 + dst_r * inv_a) / 255).min(255);
+                let out_g = ((g as u32 * alpha_u8 + dst_g * inv_a) / 255).min(255);
+                let out_b = ((b as u32 * alpha_u8 + dst_b * inv_a) / 255).min(255);
+                let out_a = (alpha_u8 + (dst_a * inv_a) / 255).min(255);
+
+                buffer[buf_idx] = (out_a << 24) | (out_r << 16) | (out_g << 8) | out_b;
+            }
+        }
+    } else {
+        // Fallback to default vinyl disc with rotating pink dot
+        ui_primitives::draw_rounded_rect(
+            buffer,
+            win_w,
+            cover_x,
+            cover_y,
+            cover_size,
+            cover_size,
+            cover_size / 2,
+            ui_primitives::apply_opacity(0x0A0A0A, opacity),
+            win_w,
+            win_h,
+        );
+
+        if is_playing {
+            let angle = (timestamp / 20.0) % 360.0;
+            let rad = angle.to_radians();
+            let cx = (cover_x as f64 + cover_size as f64 / 2.0) as i32;
+            let cy = (cover_y as f64 + cover_size as f64 / 2.0) as i32;
+            let r = (cover_size as f64 / 2.0 - 5.0 * scale as f64) as f64;
+
+            let tx = cx + (r * rad.cos()) as i32;
+            let ty = cy + (r * rad.sin()) as i32;
+
+            ui_primitives::draw_rounded_rect(
+                buffer,
+                win_w,
+                tx - (2.0 * scale) as i32,
+                ty - (2.0 * scale) as i32,
+                (4.0 * scale) as u32,
+                (4.0 * scale) as u32,
+                (2.0 * scale) as u32,
+                ui_primitives::apply_opacity(0xFB7299, opacity),
+                win_w,
+                win_h,
+            );
+        }
+
+        ui_primitives::draw_rounded_rect(
+            buffer,
+            win_w,
+            (cover_x as f64 + cover_size as f64 / 2.0 - 4.0 * scale as f64) as i32,
+            (cover_y as f64 + cover_size as f64 / 2.0 - 4.0 * scale as f64) as i32,
+            (8.0 * scale) as u32,
+            (8.0 * scale) as u32,
+            (4.0 * scale) as u32,
+            ui_primitives::apply_opacity(0x333333, opacity),
+            win_w,
+            win_h,
+        );
+    }
 }

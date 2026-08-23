@@ -761,7 +761,17 @@ fn render_bubble_internal(
             );
             frame_buffer.fill(0);
             if !pixel_ptr.is_null() {
-                std::ptr::copy_nonoverlapping(pixel_ptr, frame_buffer.as_mut_ptr(), total_bytes);
+                let bmp_stride = if bitmap_info.bmWidthBytes > 0 {
+                    bitmap_info.bmWidthBytes as usize
+                } else {
+                    (bitmap_info.bmWidth as usize) * 4
+                };
+                let row_bytes = width as usize * 4;
+                for y in 0..height as usize {
+                    let src_row = pixel_ptr.add(y * bmp_stride);
+                    let dst_row = frame_buffer.as_mut_ptr().add(y * row_bytes);
+                    std::ptr::copy_nonoverlapping(src_row, dst_row, row_bytes);
+                }
             }
             let delay = if frames_data.is_empty() { Duration::from_secs(1) } else { frames_data[i].3 };
             render_frames.push((frame_buffer, delay));

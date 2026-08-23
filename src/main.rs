@@ -1736,7 +1736,7 @@ fn main() {
                     let win_mouse_y = current_mouse.1 as f64 - (pet.position.1 - pet_off_y);
                     
                     let music_state = music_panel::MusicRenderState::new(
-                        &music_player, 
+                        &mut music_player, 
                         pet.scale, 
                         menu_manager.opacity, 
                         win_mouse_x - m_panel_x as f64, 
