@@ -131,6 +131,67 @@ mod tests {
     }
 
     #[test]
+    fn test_token_limit_error_detection_is_specific() {
+        use crate::ai::kernel::is_token_limit_error;
+
+        assert!(is_token_limit_error("maximum context length exceeded"));
+        assert!(is_token_limit_error("prompt is too long for this model"));
+        assert!(is_token_limit_error("输入超出上下文长度限制"));
+        assert!(!is_token_limit_error("API Error (401 Unauthorized)"));
+    }
+
+    #[test]
+    fn test_image_message_is_downscaled_to_one_k_resolution() {
+        use crate::ai::kernel::compress_message_images;
+        use base64::Engine;
+        use image::{DynamicImage, ImageBuffer, Rgb};
+
+        let image = ImageBuffer::from_fn(2000, 1000, |x, y| {
+            Rgb([
+                ((x * 31 + y * 17) % 256) as u8,
+                ((x * 13 + y * 29) % 256) as u8,
+                ((x * 7 + y * 43) % 256) as u8,
+            ])
+        });
+        let encoded = crate::screen_capture::compress_to_jpeg(
+            &DynamicImage::ImageRgb8(image),
+            90,
+        )
+        .unwrap();
+        let mut messages = vec![Message {
+            role: "user".to_string(),
+            content: Some(Content::Multimodal(vec![
+                crate::ai::client::ContentPart::ImageUrl {
+                    image_url: crate::ai::client::ImageUrl {
+                        url: format!(
+                            "data:image/jpeg;base64,{}",
+                            base64::engine::general_purpose::STANDARD.encode(encoded)
+                        ),
+                    },
+                },
+            ])),
+            ..Default::default()
+        }];
+
+        assert_eq!(compress_message_images(&mut messages, 1024), 1);
+        let url = match messages[0].content.as_ref().unwrap() {
+            Content::Multimodal(parts) => match &parts[0] {
+                crate::ai::client::ContentPart::ImageUrl { image_url } => &image_url.url,
+                _ => panic!("expected image part"),
+            },
+            _ => panic!("expected multimodal content"),
+        };
+        let compressed = base64::engine::general_purpose::STANDARD
+            .decode(url.split_once(',').unwrap().1)
+            .unwrap();
+        let decoded = image::load_from_memory(&compressed).unwrap();
+        assert!(decoded.width() <= 1024);
+        assert!(decoded.height() <= 1024);
+        assert_eq!(decoded.width(), 1024);
+        assert_eq!(decoded.height(), 512);
+    }
+
+    #[test]
     fn test_convert_messages_with_tool_calls() {
         use crate::ai::client::convert_messages_to_responses_input;
 

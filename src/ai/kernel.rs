@@ -9,6 +9,92 @@ fn next_request_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+pub(crate) fn is_token_limit_error(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    let mentions_budget = normalized.contains("token")
+        || normalized.contains("context")
+        || normalized.contains("prompt")
+        || normalized.contains("上下文")
+        || normalized.contains("令牌");
+    let mentions_overflow = normalized.contains("exceed")
+        || normalized.contains("too long")
+        || normalized.contains("too large")
+        || normalized.contains("maximum")
+        || normalized.contains("limit")
+        || normalized.contains("length")
+        || normalized.contains("超出")
+        || normalized.contains("过长")
+        || normalized.contains("太大");
+    mentions_budget && mentions_overflow
+}
+
+fn contains_image_content(messages: &[Message]) -> bool {
+    messages.iter().any(|message| {
+        matches!(
+            &message.content,
+            Some(Content::Multimodal(parts))
+                if parts.iter().any(|part| matches!(part, ContentPart::ImageUrl { .. }))
+        )
+    })
+}
+
+/// Downscale data-URI images while preserving their aspect ratio.
+/// Returns the number of image parts that were rewritten.
+pub(crate) fn compress_message_images(messages: &mut [Message], max_dimension: u32) -> usize {
+    if max_dimension == 0 {
+        return 0;
+    }
+
+    let mut compressed_count = 0;
+    for message in messages {
+        let Some(Content::Multimodal(parts)) = message.content.as_mut() else {
+            continue;
+        };
+
+        for part in parts {
+            let ContentPart::ImageUrl { image_url } = part else {
+                continue;
+            };
+            let Some((header, payload)) = image_url.url.split_once(',') else {
+                continue;
+            };
+            if !header.starts_with("data:") || !header.contains(";base64") {
+                continue;
+            }
+
+            let Ok(encoded) = base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                payload,
+            ) else {
+                continue;
+            };
+            let Ok(image) = image::load_from_memory(&encoded) else {
+                continue;
+            };
+            if image.width() <= max_dimension && image.height() <= max_dimension {
+                continue;
+            }
+
+            let resized = image.thumbnail(max_dimension, max_dimension);
+            let mut jpeg = Vec::new();
+            let mut cursor = std::io::Cursor::new(&mut jpeg);
+            let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 80);
+            if encoder.encode_image(&resized).is_err() {
+                continue;
+            }
+
+            let encoded = base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                jpeg,
+            );
+            image_url.url = format!("data:image/jpeg;base64,{}", encoded);
+            compressed_count += 1;
+        }
+    }
+
+    compressed_count
+}
+
 pub struct ChatKernel {
     config: AiConfig,
     client: Option<OpenAiClient>,
@@ -301,8 +387,23 @@ impl ChatKernel {
                 let mut retries = 0;
                 let max_retries = 3;
                 let mut response_result = client.chat(messages.clone(), tools_opt.clone()).await;
-                
-                while response_result.is_err() && retries < max_retries {
+
+                // A context overflow caused by screenshots/images is handled once by
+                // reducing their resolution. Do not retry the oversized request three
+                // more times, and stop after the reduced request still fails.
+                let image_token_retry = response_result.as_ref().err().is_some_and(|error| {
+                    is_token_limit_error(error) && contains_image_content(&messages)
+                });
+                if image_token_retry {
+                    let compressed = compress_message_images(&mut messages, 1024);
+                    tracing::warn!(
+                        "AI request exceeded token/context limit with image content; downscaled {} image(s) to a 1K maximum dimension and retrying once",
+                        compressed
+                    );
+                    response_result = client.chat(messages.clone(), tools_opt.clone()).await;
+                }
+
+                while response_result.is_err() && retries < max_retries && !image_token_retry {
                     retries += 1;
                     tracing::warn!("AI request failed, retrying {}/{}...", retries, max_retries);
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -741,8 +842,13 @@ impl ChatKernel {
                 }
 
                 // 2. Prune and Vacuum
-                self.memory.prune_layers(500).ok(); // Keep safety buffer of 500
-                self.memory.vacuum().ok();
+                // VACUUM is a full database rewrite; defer it until pruning
+                // actually removed a meaningful amount of data.
+                if let Ok(deleted_rows) = self.memory.prune_layers(500) {
+                    if deleted_rows >= 50 {
+                        self.memory.vacuum().ok();
+                    }
+                }
             }
         }
 

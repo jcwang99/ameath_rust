@@ -3,6 +3,7 @@ use crate::types::AiConfig;
 use rusqlite::{params, Connection, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 pub struct MemoryManager {
     conn: Mutex<Connection>,
@@ -23,7 +24,9 @@ impl MemoryManager {
     pub fn new() -> Self {
         let mut db_path = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         db_path.push("data");
-        std::fs::create_dir_all(&db_path).ok();
+        if let Err(error) = std::fs::create_dir_all(&db_path) {
+            tracing::error!("[Memory] Failed to create database directory {:?}: {}", db_path, error);
+        }
         db_path.push("ameath_memory.db");
 
         let conn = Connection::open(&db_path).expect("Failed to open database");
@@ -40,6 +43,14 @@ impl MemoryManager {
     }
 
     fn from_connection(conn: Connection) -> Self {
+        conn.busy_timeout(Duration::from_secs(5))
+            .expect("Failed to configure SQLite busy timeout");
+        if let Err(error) = conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;",
+        ) {
+            tracing::warn!("[Memory] WAL mode unavailable, continuing with SQLite defaults: {}", error);
+        }
         Self::initialize_schema(&conn);
 
         Self {
@@ -79,13 +90,34 @@ impl MemoryManager {
         )
         .expect("Failed to create tool_traces table");
         
-        // Migration: ensure tool_calls column exists
-        let _ = conn.execute("ALTER TABLE tool_traces ADD COLUMN tool_calls TEXT", []);
-        let _ = conn.execute("ALTER TABLE tool_traces ADD COLUMN request_id TEXT", []);
-        
+        // Migrations are idempotent, but real errors must be surfaced instead of
+        // being deferred until a later INSERT/SELECT fails.
+        Self::ensure_column(conn, "conversations", "layer", "INTEGER DEFAULT 1")
+            .expect("Failed to migrate conversations.layer");
+        Self::ensure_column(
+            conn,
+            "conversations",
+            "summarized",
+            "INTEGER DEFAULT 0",
+        )
+        .expect("Failed to migrate conversations.summarized");
+        Self::ensure_column(
+            conn,
+            "conversations",
+            "compacted",
+            "INTEGER DEFAULT 0",
+        )
+        .expect("Failed to migrate conversations.compacted");
+        Self::ensure_column(conn, "tool_traces", "tool_calls", "TEXT")
+            .expect("Failed to migrate tool_traces.tool_calls");
+        Self::ensure_column(conn, "tool_traces", "request_id", "TEXT")
+            .expect("Failed to migrate tool_traces.request_id");
+
         // Migration: ensure multi-modal columns exist
-        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN images_json TEXT", []);
-        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN images_desc TEXT", []);
+        Self::ensure_column(conn, "conversations", "images_json", "TEXT")
+            .expect("Failed to migrate conversations.images_json");
+        Self::ensure_column(conn, "conversations", "images_desc", "TEXT")
+            .expect("Failed to migrate conversations.images_desc");
 
         // Layer 3: Long-term Summaries (Condensed Knowledge)
         conn.execute(
@@ -136,6 +168,58 @@ impl MemoryManager {
             [],
         )
         .expect("Failed to create index on entity_graph(target)");
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tool_traces_request_id_id
+             ON tool_traces(request_id, id)",
+            [],
+        )
+        .expect("Failed to create index on tool_traces(request_id, id)");
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conversations_layer_id
+             ON conversations(layer, id)",
+            [],
+        )
+        .expect("Failed to create index on conversations(layer, id)");
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conversations_layer_summarized_id
+             ON conversations(layer, summarized, id)",
+            [],
+        )
+        .expect("Failed to create index on conversations(layer, summarized, id)");
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conversations_layer_compacted_id
+             ON conversations(layer, compacted, id)",
+            [],
+        )
+        .expect("Failed to create index on conversations(layer, compacted, id)");
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conversations_images_id
+             ON conversations(id DESC) WHERE images_json IS NOT NULL",
+            [],
+        )
+        .expect("Failed to create index on conversations(images_json)");
+    }
+
+    fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str) -> Result<()> {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let existing: String = row.get(1)?;
+            if existing == column {
+                return Ok(());
+            }
+        }
+
+        conn.execute(
+            &format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, definition),
+            [],
+        )?;
+        Ok(())
     }
 
     pub fn check_thresholds(&self, config: &AiConfig) -> Result<(bool, bool)> {
@@ -814,7 +898,7 @@ impl MemoryManager {
         Ok(grouped.into_iter().flatten().collect())
     }
 
-    pub fn prune_layers(&self, keep_count: usize) -> Result<()> {
+    pub fn prune_layers(&self, keep_count: usize) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
 
         // Prune Layer 1 (Dialogue) -> Delete if summarized AND not in the last N
@@ -847,7 +931,7 @@ impl MemoryManager {
                 l1_deleted, l2_deleted, l3_deleted, keep_count);
         }
 
-        Ok(())
+        Ok(l1_deleted + l2_deleted + l3_deleted)
     }
 }
 
@@ -959,5 +1043,104 @@ mod tests {
 
         drop(guard);
         assert!(memory.try_start_summarization().is_some());
+    }
+
+    #[test]
+    fn legacy_schema_is_migrated_and_query_indexes_are_created() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE TABLE tool_traces (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                tool_call_id TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )
+        .unwrap();
+
+        MemoryManager::initialize_schema(&conn);
+
+        let conversation_columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(conversations)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .map(|column| column.unwrap())
+            .collect();
+        assert!(conversation_columns.iter().any(|name| name == "images_json"));
+        assert!(conversation_columns.iter().any(|name| name == "images_desc"));
+        assert!(conversation_columns.iter().any(|name| name == "layer"));
+        assert!(conversation_columns.iter().any(|name| name == "summarized"));
+        assert!(conversation_columns.iter().any(|name| name == "compacted"));
+
+        let trace_columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(tool_traces)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .map(|column| column.unwrap())
+            .collect();
+        assert!(trace_columns.iter().any(|name| name == "request_id"));
+        assert!(trace_columns.iter().any(|name| name == "tool_calls"));
+
+        let index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_tool_traces_request_id_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 1);
+
+        let image_index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_conversations_images_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(image_index_count, 1);
+    }
+
+    #[test]
+    fn sqlite_busy_timeout_is_configured_for_memory_connections() {
+        let memory = MemoryManager::new_in_memory();
+        let conn = memory.conn.lock().unwrap();
+        let timeout_ms: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(timeout_ms, 5_000);
+    }
+
+    #[test]
+    fn pruning_reports_deleted_rows_for_deferred_vacuum() {
+        let memory = MemoryManager::new_in_memory();
+        for text in ["old-1", "old-2", "latest"] {
+            memory.add_message(&text_message("user", text)).unwrap();
+        }
+
+        let summarized_ids: Vec<i64> = memory
+            .get_l1_unsummarized_batch(2)
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        memory.mark_l1_summarized(&summarized_ids).unwrap();
+
+        assert_eq!(memory.prune_layers(1).unwrap(), 2);
     }
 }
