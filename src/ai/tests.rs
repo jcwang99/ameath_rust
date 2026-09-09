@@ -79,16 +79,55 @@ mod tests {
 
         let (instructions, items) = convert_messages_to_responses_input(&messages);
         
-        // First system message becomes instructions
-        assert_eq!(instructions, Some("You are a helpful assistant.".to_string()));
-        
-        // Second system + user = 2 items
-        assert_eq!(items.len(), 2);
+        // All system context is merged into the top-level instructions.
+        assert_eq!(
+            instructions,
+            Some("You are a helpful assistant.\n\nExtra context info.".to_string())
+        );
+        assert_eq!(items.len(), 1);
         
         // Verify serialization works
         let json = serde_json::to_string(&items).unwrap();
-        assert!(json.contains("system"));
         assert!(json.contains("Hello!"));
+    }
+
+    #[test]
+    fn test_responses_input_merges_system_messages_at_the_beginning() {
+        use crate::ai::client::convert_messages_to_responses_input;
+
+        let messages = vec![
+            Message {
+                role: "system".to_string(),
+                content: Some(Content::Simple("Base instructions".to_string())),
+                ..Default::default()
+            },
+            Message {
+                role: "user".to_string(),
+                content: Some(Content::Simple("User question".to_string())),
+                ..Default::default()
+            },
+            Message {
+                role: "system".to_string(),
+                content: Some(Content::Simple("Dynamic context".to_string())),
+                ..Default::default()
+            },
+        ];
+
+        let (instructions, items) = convert_messages_to_responses_input(&messages);
+        let serialized = serde_json::to_value(&items).unwrap();
+        let item_roles: Vec<&str> = serialized
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item.get("role").and_then(|role| role.as_str()))
+            .collect();
+
+        // Strict OpenAI-compatible providers reject a system item after user/assistant input.
+        assert_eq!(
+            instructions.as_deref(),
+            Some("Base instructions\n\nDynamic context")
+        );
+        assert_eq!(item_roles, vec!["user"]);
     }
 
     #[test]

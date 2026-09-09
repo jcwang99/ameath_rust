@@ -274,6 +274,47 @@ pub(crate) fn parse_responses_api_output(body: &str) -> Result<Vec<ResponsesOutp
 
 // ===== Conversion helpers =====
 
+/// Normalize the message order expected by strict OpenAI-compatible templates.
+///
+/// The kernel can add system context while assembling a conversation, so a
+/// system message may otherwise appear after user/assistant/tool messages.
+/// Some providers reject that shape (and some only allow one system message),
+/// therefore all system messages are merged into one leading message.
+pub(crate) fn normalize_system_messages(messages: &[Message]) -> Vec<Message> {
+    let mut system_messages = Vec::new();
+    let mut conversation = Vec::with_capacity(messages.len());
+
+    for message in messages {
+        if message.role == "system" {
+            system_messages.push(message);
+        } else {
+            conversation.push(message.clone());
+        }
+    }
+
+    if system_messages.is_empty() {
+        return conversation;
+    }
+
+    let mut system_message = system_messages[0].clone();
+    if system_messages.len() > 1 {
+        let combined = system_messages
+            .iter()
+            .map(|message| message.content_as_str())
+            .filter(|content| !content.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        system_message.content = Some(Content::Simple(combined));
+        system_message.tool_calls = None;
+        system_message.tool_call_id = None;
+        system_message.reasoning_text = None;
+        system_message.encrypted_reasoning = None;
+    }
+
+    conversation.insert(0, system_message);
+    conversation
+}
+
 /// Convert internal `Message` list to Responses API `input` items + top-level `instructions`.
 pub(crate) fn convert_messages_to_responses_input(
     messages: &[Message],
@@ -281,10 +322,11 @@ pub(crate) fn convert_messages_to_responses_input(
     let mut instructions: Option<String> = None;
     let mut items = Vec::new();
 
-    for msg in messages {
+    let normalized_messages = normalize_system_messages(messages);
+    for msg in &normalized_messages {
         match msg.role.as_str() {
             "system" => {
-                // First system message becomes top-level `instructions`, rest become `system` role items
+                // Normalization above guarantees this is the leading system message.
                 if instructions.is_none() {
                     instructions = Some(msg.content_as_str().to_string());
                 } else {
@@ -505,7 +547,7 @@ impl OpenAiClient {
 
         let request = ChatRequest {
             model: self.model.clone(),
-            messages,
+            messages: normalize_system_messages(&messages),
             stream: false,
             tools,
         };
