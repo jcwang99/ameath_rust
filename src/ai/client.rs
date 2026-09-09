@@ -281,14 +281,21 @@ pub(crate) fn parse_responses_api_output(body: &str) -> Result<Vec<ResponsesOutp
 /// Some providers reject that shape (and some only allow one system message),
 /// therefore all system messages are merged into one leading message.
 pub(crate) fn normalize_system_messages(messages: &[Message]) -> Vec<Message> {
+    normalize_system_messages_owned(messages.iter().cloned())
+}
+
+fn normalize_system_messages_owned<I>(messages: I) -> Vec<Message>
+where
+    I: IntoIterator<Item = Message>,
+{
     let mut system_messages = Vec::new();
-    let mut conversation = Vec::with_capacity(messages.len());
+    let mut conversation = Vec::new();
 
     for message in messages {
         if message.role == "system" {
             system_messages.push(message);
         } else {
-            conversation.push(message.clone());
+            conversation.push(message);
         }
     }
 
@@ -547,7 +554,7 @@ impl OpenAiClient {
 
         let request = ChatRequest {
             model: self.model.clone(),
-            messages: normalize_system_messages(&messages),
+            messages: normalize_system_messages_owned(messages),
             stream: false,
             tools,
         };
