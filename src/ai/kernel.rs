@@ -225,8 +225,9 @@ impl ChatKernel {
             }
         };
 
-        let is_system_event = input.find("\n\n[SYSTEM INSTRUCTION]").is_some();
-        let (db_content, llm_content) = if let Some(idx) = input.find("\n\n[SYSTEM INSTRUCTION]") {
+        let system_event_index = input.find("\n\n[SYSTEM INSTRUCTION]");
+        let is_system_event = system_event_index.is_some();
+        let (db_content, llm_content) = if let Some(idx) = system_event_index {
             (input[..idx].to_string(), input.clone())
         } else {
             (input.clone(), input.clone())
@@ -438,7 +439,10 @@ impl ChatKernel {
                             }
                         }
 
-                        let has_actual_tool_calls = response_msg.tool_calls.as_ref().map_or(false, |tc| !tc.is_empty());
+                        let has_actual_tool_calls = response_msg
+                            .tool_calls
+                            .as_ref()
+                            .is_some_and(|tc| !tc.is_empty());
 
                         // Verification Logic
                         // Case 1 (HALLUCINATION): Declared YES but no tool_calls emitted.
@@ -704,7 +708,9 @@ impl ChatKernel {
                     skills: self.skills.clone(),
                 });
                 tokio::spawn(async move {
-                    kernel_clone.orchestrate_summarization().await.ok();
+                    if let Err(error) = kernel_clone.orchestrate_summarization().await {
+                        tracing::error!("[Kernel] Background summarization failed: {}", error);
+                    }
                 });
                 let _ = tx.send(AiResponseEvent::Status(ThinkingState::None));
                 return;
@@ -799,68 +805,128 @@ impl ChatKernel {
         self.handle(input, tx).await
     }
 
+    async fn run_memory_blocking<T, F>(
+        &self,
+        operation: &'static str,
+        f: F,
+    ) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce(&MemoryManager) -> rusqlite::Result<T> + Send + 'static,
+    {
+        let memory = Arc::clone(&self.memory);
+        tokio::task::spawn_blocking(move || f(&memory))
+            .await
+            .map_err(|error| format!("Memory operation '{operation}' panicked: {error}"))?
+            .map_err(|error| format!("Memory operation '{operation}' failed: {error}"))
+    }
+
     async fn orchestrate_summarization(&self) -> Result<(), String> {
-        let _guard = match self.memory.try_start_summarization() {
-            Some(guard) => guard,
-            None => {
-                tracing::debug!("[Kernel] Summarization skipped: another task is already running");
+        // A request can arrive while the model is summarizing. Run one extra
+        // pass when that happens so newly accumulated rows are not stranded
+        // until a future user request.
+        loop {
+            let guard = match self.memory.try_start_summarization() {
+                Some(guard) => guard,
+                None => {
+                    tracing::debug!("[Kernel] Summarization skipped: another task is already running");
+                    return Ok(());
+                }
+            };
+
+            let result = self.run_summarization_pass().await;
+            let pending = self.memory.take_summarization_pending();
+            drop(guard);
+            result?;
+
+            if !pending {
                 return Ok(());
             }
-        };
+            tracing::debug!("[Kernel] Running an additional summarization pass for rows added during compression");
+        }
+    }
 
+    async fn run_summarization_pass(&self) -> Result<(), String> {
+        let config = self.config.clone();
         let (l1_hit, l2_hit) = self
-            .memory
-            .check_thresholds(&self.config)
-            .map_err(|e| e.to_string())?;
+            .run_memory_blocking("threshold check", move |memory| {
+                memory.check_thresholds(&config)
+            })
+            .await?;
         let client = self.client.as_ref().ok_or("No AI client")?;
 
         if l1_hit {
             // 1. Summarize L1 -> L2
+            let l1_limit = self.config.l1_summary_threshold;
             let l1_batch = self
-                .memory
-                .get_l1_unsummarized_batch(self.config.l1_summary_threshold)
-                .map_err(|e| e.to_string())?;
-            let context: Vec<Message> = l1_batch.iter().map(|(_, msg)| msg.clone()).collect();
-            let mut prompt = context.clone();
-            prompt.push(Message {
-                role: "system".to_string(),
-                content: Some(Content::Simple("Summarize the above conversation into a concise cognitive trace for long-term memory. Focus on key facts, user preferences, and important outcomes.".to_string())),
-                ..Default::default()
-            });
+                .run_memory_blocking("load L1 batch", move |memory| {
+                    memory.get_l1_unsummarized_batch(l1_limit)
+                })
+                .await?;
 
-            if let Ok(summary) = client.chat(prompt, None).await {
-                let summary_text = summary.content_as_str();
-                tracing::info!("[Kernel] L1->L2 summary generated: {} chars", summary_text.len());
-                self.memory
-                    .add_conversation_item("assistant", summary_text, 2)
-                    .ok();
+            if l1_batch.is_empty() {
+                tracing::warn!("[Kernel] L1 threshold was reached but no messages were available to summarize");
+            } else {
+                let context: Vec<Message> = l1_batch.iter().map(|(_, msg)| msg.clone()).collect();
+                let mut prompt = context.clone();
+                prompt.push(Message {
+                    role: "system".to_string(),
+                    content: Some(Content::Simple("Summarize the above conversation into a concise cognitive trace for long-term memory. Focus on key facts, user preferences, and important outcomes.".to_string())),
+                    ..Default::default()
+                });
 
-                // 1. Mark L1 messages as summarized
-                let processed_ids: Vec<i64> = l1_batch.iter().map(|(id, _)| *id).collect();
-                if !processed_ids.is_empty() {
-                    self.memory.mark_l1_summarized(&processed_ids).ok();
-                }
-
-                // 2. Prune and Vacuum
-                // VACUUM is a full database rewrite; defer it until pruning
-                // actually removed a meaningful amount of data.
-                if let Ok(deleted_rows) = self.memory.prune_layers(500) {
-                    if deleted_rows >= 50 {
-                        self.memory.vacuum().ok();
+                match client.chat(prompt, None).await {
+                    Ok(summary) => {
+                        let summary_text = summary.content_as_str().trim().to_owned();
+                        if summary_text.is_empty() {
+                            tracing::warn!("[Kernel] L1->L2 model response was empty; source messages remain unsummarized");
+                        } else {
+                            let processed_ids: Vec<i64> =
+                                l1_batch.iter().map(|(id, _)| *id).collect();
+                            let summary_for_commit = summary_text.clone();
+                            let committed = self
+                                .run_memory_blocking("commit L1 summary", move |memory| {
+                                    memory.save_l1_summary_and_mark(&processed_ids, &summary_for_commit)
+                                })
+                                .await?;
+                            if committed {
+                                tracing::info!(
+                                    "[Kernel] L1->L2 summary generated: {} chars",
+                                    summary_text.chars().count()
+                                );
+                            } else {
+                                tracing::warn!("[Kernel] L1->L2 summary was not committed");
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!("[Kernel] L1->L2 summarization request failed: {}", error);
                     }
                 }
+
+                // VACUUM is a full database rewrite; keep all maintenance off
+                // Tokio workers and only run it after meaningful pruning.
+                self.run_memory_blocking("memory maintenance", |memory| {
+                    let deleted_rows = memory.prune_layers(500)?;
+                    if deleted_rows >= 50 {
+                        memory.vacuum()?;
+                    }
+                    Ok(deleted_rows)
+                })
+                .await?;
             }
         }
 
         if l2_hit {
             // 2. Compact L2 -> L3
             let l2_items = self
-                .memory
-                .get_l2_uncompacted(10) // Process 10 at a time
-                .map_err(|e| e.to_string())?;
+                .run_memory_blocking("load L2 batch", |memory| memory.get_l2_uncompacted(10))
+                .await?;
 
             if !l2_items.is_empty() {
-                let latest_l3 = self.memory.get_latest_l3().unwrap_or(None);
+                let latest_l3 = self
+                    .run_memory_blocking("load latest L3 summary", |memory| memory.get_latest_l3())
+                    .await?;
                 let l3_context = latest_l3
                     .map(|s| format!("[Previous Long-term Memory]:\n{}\n\n", s))
                     .unwrap_or_default();
@@ -881,39 +947,50 @@ impl ChatKernel {
                     combined_text
                 );
 
-                let mut attempts = 0;
-                while attempts < 3 {
+                for attempt in 1..=3 {
                     let prompt = vec![Message {
                         role: "user".to_string(),
                         content: Some(Content::Simple(prompt_content.clone())),
                         ..Default::default()
                     }];
 
-                    if let Ok(summary) = client.chat(prompt, None).await {
-                        let summary_text = summary.content_as_str();
-                        if summary_text.chars().count() <= 3000 {
-                            // Success! Save to Layer 3
-                            tracing::info!("[Kernel] L2->L3 summary generated: {} chars, {} items compacted", summary_text.chars().count(), l2_items.len());
-                            self.memory.add_summary(summary_text, 3).ok();
-
-                            // Mark L2 items as compacted
-                            let ids: Vec<i64> = l2_items.iter().map(|(id, _)| *id).collect();
-                            self.memory.mark_l2_compacted(&ids).ok();
-                            break;
-                        } else {
-                            // Too long, retry with stricter instruction
-                            prompt_content = format!(
-                                "The previous summary was too long ({} chars). \
-                                 Please condense it strictly to under 3000 characters while retaining key facts.\n\n\
-                                 [Reference Content]:\n{}",
-                                summary_text.chars().count(),
-                                summary_text
-                            );
+                    match client.chat(prompt, None).await {
+                        Ok(summary) => {
+                            let summary_text = summary.content_as_str().trim().to_owned();
+                            if !summary_text.is_empty() && summary_text.chars().count() <= 3000 {
+                                // Success! Save to Layer 3
+                                let ids: Vec<i64> = l2_items.iter().map(|(id, _)| *id).collect();
+                                let summary_for_commit = summary_text.clone();
+                                let committed = self
+                                    .run_memory_blocking("commit L2 summary", move |memory| {
+                                        memory.save_l2_summary_and_mark(&ids, &summary_for_commit)
+                                    })
+                                    .await?;
+                                if committed {
+                                    tracing::info!("[Kernel] L2->L3 summary generated: {} chars, {} items compacted", summary_text.chars().count(), l2_items.len());
+                                } else {
+                                    tracing::warn!("[Kernel] L2->L3 summary was not committed");
+                                }
+                                break;
+                            } else if summary_text.is_empty() {
+                                tracing::warn!("[Kernel] L2->L3 model response was empty; source summaries remain uncompacted");
+                                break;
+                            } else {
+                                // Too long, retry with stricter instruction
+                                prompt_content = format!(
+                                    "The previous summary was too long ({} chars). \
+                                     Please condense it strictly to under 3000 characters while retaining key facts.\n\n\
+                                     [Reference Content]:\n{}",
+                                    summary_text.chars().count(),
+                                    summary_text
+                                );
+                            }
                         }
-                    } else {
-                        break; // AI Error
+                        Err(error) => {
+                            tracing::warn!("[Kernel] L2->L3 summarization request failed on attempt {}: {}", attempt, error);
+                            break;
+                        }
                     }
-                    attempts += 1;
                 }
             }
         }

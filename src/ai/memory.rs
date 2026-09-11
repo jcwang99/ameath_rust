@@ -1,20 +1,24 @@
 use crate::ai::client::{Content, Message};
 use crate::types::AiConfig;
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Connection, OptionalExtension, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
+// Summarization may outlive a ChatKernel (for example after a configuration
+// reload), so this guard must cover all MemoryManager instances in the process.
+static SUMMARIZATION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+static SUMMARIZATION_PENDING: AtomicBool = AtomicBool::new(false);
+
 pub struct MemoryManager {
     conn: Mutex<Connection>,
-    summarization_in_progress: AtomicBool,
 }
 
-pub struct SummarizationGuard<'a> {
-    flag: &'a AtomicBool,
+pub struct SummarizationGuard {
+    flag: &'static AtomicBool,
 }
 
-impl Drop for SummarizationGuard<'_> {
+impl Drop for SummarizationGuard {
     fn drop(&mut self) {
         self.flag.store(false, Ordering::Release);
     }
@@ -53,10 +57,7 @@ impl MemoryManager {
         }
         Self::initialize_schema(&conn);
 
-        Self {
-            conn: Mutex::new(conn),
-            summarization_in_progress: AtomicBool::new(false),
-        }
+        Self { conn: Mutex::new(conn) }
     }
 
     fn initialize_schema(conn: &Connection) {
@@ -239,8 +240,12 @@ impl MemoryManager {
             |r| r.get(0),
         )?;
 
-        let l1_hit = l1_count >= config.l1_summary_threshold as i64;
-        let l2_hit = l2_count >= config.l2_merge_threshold as i64;
+        // A zero threshold is used by the settings UI to represent disabled
+        // summarization. It must not make every count satisfy the threshold.
+        let l1_hit = config.l1_summary_threshold > 0
+            && l1_count >= config.l1_summary_threshold as i64;
+        let l2_hit = config.l2_merge_threshold > 0
+            && l2_count >= config.l2_merge_threshold as i64;
         if l1_hit || l2_hit {
             tracing::info!("[Memory] Threshold check: L1={}/{} (hit={}), L2={}/{} (hit={})",
                 l1_count, config.l1_summary_threshold, l1_hit, l2_count, config.l2_merge_threshold, l2_hit);
@@ -336,15 +341,6 @@ impl MemoryManager {
         conn.execute(
             "INSERT INTO tool_traces (request_id, role, content, tool_call_id, tool_calls) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![request_id, msg.role, content, msg.tool_call_id, tool_calls_json],
-        )?;
-        Ok(())
-    }
-
-    pub fn add_summary(&self, content: &str, layer: i32) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO summaries (content, layer) VALUES (?1, ?2)",
-            params![content, layer],
         )?;
         Ok(())
     }
@@ -447,9 +443,7 @@ impl MemoryManager {
             )?;
             let l2_rows = stmt.query_map([], |row| row.get(0))?;
             for row in l2_rows {
-                if let Ok(s) = row {
-                    l2_summaries.push(s);
-                }
+                l2_summaries.push(row?);
             }
         }
         if !l2_summaries.is_empty() {
@@ -710,35 +704,68 @@ impl MemoryManager {
         Ok(batch)
     }
 
-    pub fn mark_l1_summarized(&self, ids: &[i64]) -> Result<()> {
-        if ids.is_empty() {
-            return Ok(());
+    /// Atomically persist an L1 summary and mark its source messages as
+    /// summarized. A false result means the input was intentionally ignored
+    /// (empty ids or empty content), while database errors leave the
+    /// transaction rolled back.
+    pub fn save_l1_summary_and_mark(&self, ids: &[i64], content: &str) -> Result<bool> {
+        let content = content.trim();
+        if ids.is_empty() || content.is_empty() {
+            return Ok(false);
         }
 
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO conversations (role, content, layer) VALUES ('assistant', ?1, 2)",
+            params![content],
+        )?;
+
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let query = format!(
             "UPDATE conversations SET summarized = 1 WHERE layer = 1 AND id IN ({})",
             placeholders
         );
-        conn.execute(&query, rusqlite::params_from_iter(ids.iter()))?;
-        Ok(())
+        let updated = tx.execute(&query, rusqlite::params_from_iter(ids.iter()))?;
+        if updated != ids.len() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "L1 source messages changed before summary commit".to_string(),
+            ));
+        }
+
+        tx.commit()?;
+        Ok(true)
     }
 
-    pub fn try_start_summarization(&self) -> Option<SummarizationGuard<'_>> {
-        self.summarization_in_progress
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .ok()
-            .map(|_| SummarizationGuard {
-                flag: &self.summarization_in_progress,
-            })
+    pub fn try_start_summarization(&self) -> Option<SummarizationGuard> {
+        match SUMMARIZATION_IN_PROGRESS.compare_exchange(
+            false,
+            true,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                SUMMARIZATION_PENDING.store(false, Ordering::Release);
+                Some(SummarizationGuard {
+                    flag: &SUMMARIZATION_IN_PROGRESS,
+                })
+            }
+            Err(_) => {
+                SUMMARIZATION_PENDING.store(true, Ordering::Release);
+                None
+            }
+        }
+    }
+
+    pub fn take_summarization_pending(&self) -> bool {
+        SUMMARIZATION_PENDING.swap(false, Ordering::AcqRel)
     }
 
     pub fn get_latest_l3(&self) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare("SELECT content FROM summaries WHERE layer >= 3 ORDER BY id DESC LIMIT 1")?;
-        let l3_opt: Option<String> = stmt.query_row([], |r| r.get(0)).ok();
+        let l3_opt: Option<String> = stmt.query_row([], |r| r.get(0)).optional()?;
         Ok(l3_opt)
     }
 
@@ -839,18 +866,36 @@ impl MemoryManager {
         Ok(items)
     }
 
-    pub fn mark_l2_compacted(&self, ids: &[i64]) -> Result<()> {
+    /// Atomically persist an L2 compaction and mark all source summaries as
+    /// compacted. This prevents a partial write from losing source summaries.
+    pub fn save_l2_summary_and_mark(&self, ids: &[i64], content: &str) -> Result<bool> {
+        let content = content.trim();
+        if ids.is_empty() || content.is_empty() {
+            return Ok(false);
+        }
+
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO summaries (content, layer) VALUES (?1, 3)",
+            params![content],
+        )?;
+
+        let mut updated = 0;
         for id in ids {
-            tx.execute(
-                "UPDATE conversations SET compacted = 1 WHERE id = ?1",
+            updated += tx.execute(
+                "UPDATE conversations SET compacted = 1 WHERE layer = 2 AND id = ?1 AND compacted = 0",
                 params![id],
             )?;
         }
+        if updated != ids.len() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "L2 source summaries changed before compaction commit".to_string(),
+            ));
+        }
+
         tx.commit()?;
-        tracing::info!("[Memory] Marked {} L2 items as compacted", ids.len());
-        Ok(())
+        Ok(true)
     }
 
     pub fn vacuum(&self) -> Result<()> {
@@ -1024,7 +1069,9 @@ mod tests {
         assert_eq!(batch_texts, vec!["oldest".to_string(), "middle".to_string()]);
 
         let processed_ids: Vec<i64> = batch.iter().map(|(id, _)| *id).collect();
-        memory.mark_l1_summarized(&processed_ids).unwrap();
+        memory
+            .save_l1_summary_and_mark(&processed_ids, "middle summary")
+            .unwrap();
 
         let remaining = memory.get_l1_unsummarized_batch(10).unwrap();
         let remaining_texts: Vec<String> = remaining
@@ -1037,9 +1084,13 @@ mod tests {
     #[test]
     fn summarization_guard_is_exclusive() {
         let memory = MemoryManager::new_in_memory();
+        let other_memory = MemoryManager::new_in_memory();
 
         let guard = memory.try_start_summarization().unwrap();
         assert!(memory.try_start_summarization().is_none());
+        assert!(other_memory.try_start_summarization().is_none());
+        assert!(other_memory.take_summarization_pending());
+        assert!(!other_memory.take_summarization_pending());
 
         drop(guard);
         assert!(memory.try_start_summarization().is_some());
@@ -1139,8 +1190,109 @@ mod tests {
             .into_iter()
             .map(|(id, _)| id)
             .collect();
-        memory.mark_l1_summarized(&summarized_ids).unwrap();
+        memory
+            .save_l1_summary_and_mark(&summarized_ids, "old summary")
+            .unwrap();
 
         assert_eq!(memory.prune_layers(1).unwrap(), 2);
+    }
+
+    #[test]
+    fn empty_l1_summary_does_not_write_or_mark_messages() {
+        let memory = MemoryManager::new_in_memory();
+        let id = memory
+            .add_message_returning_id(&text_message("user", "keep this"))
+            .unwrap();
+
+        assert!(!memory.save_l1_summary_and_mark(&[id], " \n\t").unwrap());
+        assert_eq!(memory.get_l1_unsummarized_batch(10).unwrap().len(), 1);
+
+        let conn = memory.conn.lock().unwrap();
+        let l2_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM conversations WHERE layer = 2",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(l2_count, 0);
+    }
+
+    #[test]
+    fn empty_l2_summary_does_not_write_or_mark_items() {
+        let memory = MemoryManager::new_in_memory();
+        memory
+            .add_conversation_item("assistant", "intermediate", 2)
+            .unwrap();
+        let id = memory.get_l2_uncompacted(1).unwrap()[0].0;
+
+        assert!(!memory.save_l2_summary_and_mark(&[id], "  ").unwrap());
+        assert_eq!(memory.get_l2_uncompacted(10).unwrap().len(), 1);
+
+        let conn = memory.conn.lock().unwrap();
+        let l3_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM summaries WHERE layer >= 3", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(l3_count, 0);
+    }
+
+    #[test]
+    fn summary_commit_rolls_back_when_source_rows_changed() {
+        let memory = MemoryManager::new_in_memory();
+        let id = memory
+            .add_message_returning_id(&text_message("user", "keep this"))
+            .unwrap();
+
+        assert!(memory
+            .save_l1_summary_and_mark(&[id + 1000], "summary")
+            .is_err());
+        assert_eq!(memory.get_l1_unsummarized_batch(10).unwrap().len(), 1);
+
+        let conn = memory.conn.lock().unwrap();
+        let l2_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM conversations WHERE layer = 2",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(l2_count, 0);
+    }
+
+    #[test]
+    fn l2_compaction_rolls_back_when_source_rows_changed() {
+        let memory = MemoryManager::new_in_memory();
+        memory
+            .add_conversation_item("assistant", "intermediate", 2)
+            .unwrap();
+        let id = memory.get_l2_uncompacted(1).unwrap()[0].0;
+
+        assert!(memory
+            .save_l2_summary_and_mark(&[id + 1000], "summary")
+            .is_err());
+        assert_eq!(memory.get_l2_uncompacted(10).unwrap().len(), 1);
+
+        let conn = memory.conn.lock().unwrap();
+        let l3_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM summaries WHERE layer >= 3", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(l3_count, 0);
+    }
+
+    #[test]
+    fn zero_thresholds_do_not_trigger_summarization() {
+        let memory = MemoryManager::new_in_memory();
+        let config = AiConfig {
+            l1_summary_threshold: 0,
+            l2_merge_threshold: 0,
+            ..AiConfig::default()
+        };
+
+        memory.add_message(&text_message("user", "message")).unwrap();
+        assert_eq!(memory.check_thresholds(&config).unwrap(), (false, false));
     }
 }
