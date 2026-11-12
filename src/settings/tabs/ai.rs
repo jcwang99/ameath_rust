@@ -23,7 +23,7 @@ pub struct AiTabState<'a> {
     pub pressed_btn: Option<usize>,
     pub show_delete_dialog: bool,
     pub notification: Option<(String, std::time::Instant)>,
-    pub field_scroll_offsets: [f32; 19],
+    pub field_scroll_offsets: [f32; 20],
 }
 
 pub fn draw(
@@ -44,9 +44,9 @@ pub fn draw(
     let mut cursor_rect = None;
 
     let card_w = (560.0 * scale) as u32;
-    let card_h = (1950.0 * scale) as u32;
+    let card_h = (2000.0 * scale) as u32;
     let card_y_raw = (sy_val(120) as f32 + scroll_y * scale) as i32;
-    let fields_count = 19;
+    let fields_count = 20;
 
     // Viewport boundaries (for visibility check)
     let min_y_vis = sy_val(120) as i32;
@@ -89,31 +89,32 @@ pub fn draw(
             2 => ("API Key", 230.0, 130.0, 500.0, false),
             3 => ("Base URL", 230.0, 230.0, 500.0, false),
             4 => ("Model", 230.0, 330.0, 500.0, false),
-            5 => ("ReAct Steps", 230.0, 430.0, 150.0, false),
-            6 => ("L1 Summary", 405.0, 430.0, 150.0, false),
-            7 => ("L2 Merge", 580.0, 430.0, 150.0, false),
-            8 => ("Interact Interval (min)", 230.0, 530.0, 150.0, false),
-            9 => ("Tavily Key", 230.0, 630.0, 500.0, false),
-            10 => ("Brave Key", 230.0, 730.0, 500.0, false),
-            11 => ("Firecrawl URL", 230.0, 830.0, 500.0, false),
-            12 => ("Firecrawl Key", 230.0, 930.0, 500.0, false),
-            13 => ("System Prompt", 230.0, 1030.0, 500.0, true),
+            5 => ("ReAct Steps", 230.0, 480.0, 150.0, false),
+            6 => ("L1 Summary", 405.0, 480.0, 150.0, false),
+            7 => ("L2 Merge", 580.0, 480.0, 150.0, false),
+            8 => ("Interact Interval (min)", 230.0, 580.0, 150.0, false),
+            9 => ("Tavily Key", 230.0, 680.0, 500.0, false),
+            10 => ("Brave Key", 230.0, 780.0, 500.0, false),
+            11 => ("Firecrawl URL", 230.0, 880.0, 500.0, false),
+            12 => ("Firecrawl Key", 230.0, 980.0, 500.0, false),
+            13 => ("System Prompt", 230.0, 1080.0, 500.0, true),
             14 => (
                 "Allow Screen Capture (Routine Checks)",
                 405.0,
-                530.0,
+                580.0,
                 20.0,
                 false,
             ),
-            15 => ("TTS Enabled (CosyVoice 3)", 230.0, 1330.0, 20.0, false),
-            16 => ("TTS Ref Audio Path", 230.0, 1430.0, 500.0, false),
-            17 => ("TTS Prompt Text", 230.0, 1530.0, 500.0, false),
+            15 => ("TTS Enabled (CosyVoice 3)", 230.0, 1380.0, 20.0, false),
+            16 => ("TTS Ref Audio Path", 230.0, 1480.0, 500.0, false),
+            17 => ("TTS Prompt Text", 230.0, 1580.0, 500.0, false),
             18 => ("Responses API", 650.0, 30.0, 45.0, false),
+            19 => ("Thinking Effort", 230.0, 405.0, 500.0, false),
             _ => ("", 0.0, 0.0, 0.0, false),
         };
 
-        if i == 1 || i == 18 {
-            // Multimodal and Responses API toggles are handled specially below
+        if i == 1 || i == 18 || i == 19 {
+            // Toggles and thinking effort are drawn as dedicated controls.
             continue;
         }
 
@@ -778,9 +779,91 @@ pub fn draw(
         }
     }
 
+    // Per-profile reasoning effort selector.
+    {
+        let fx = 230.0;
+        let fy = 405.0;
+        let fx_abs = s(fx as u32) as i32;
+        let fy_abs = card_y_raw + sc(fy) as i32;
+        let control_y = fy_abs + sc(25.0) as i32;
+        let control_h = sc(45.0) as u32;
+        let control_w = sc(500.0) as u32;
+        let segment_w = control_w / 4;
+        let selected = match active_profile.reasoning_effort.as_deref() {
+            Some("low") => 1,
+            Some("medium") => 2,
+            Some("high") => 3,
+            _ => 0,
+        };
+        let labels = ["Auto", "Low", "Medium", "High"];
+
+        if fy_abs > min_y_vis && fy_abs < max_y_vis {
+            draw_text_dw_ex(
+                buffer,
+                w,
+                "Thinking Effort",
+                fx_abs,
+                fy_abs,
+                sc(14.0),
+                COLOR_TEXT_SEC,
+                control_w,
+                sc(20.0) as u32,
+                0.0,
+                0.0,
+                control_w,
+            );
+
+            for (index, label) in labels.iter().enumerate() {
+                let segment_x = fx_abs + (segment_w as i32 * index as i32);
+                let is_hover = state.content_mouse_pos.0 >= fx + 500.0 * index as f32 / 4.0
+                    && state.content_mouse_pos.0 <= fx + 500.0 * (index + 1) as f32 / 4.0
+                    && state.content_mouse_pos.1 >= 120.0 + fy + 25.0
+                    && state.content_mouse_pos.1 <= 120.0 + fy + 70.0;
+                let color = if selected == index {
+                    COLOR_PRIMARY
+                } else if is_hover {
+                    0x00444444
+                } else {
+                    COLOR_BG_LIGHT
+                };
+
+                draw_rounded_rect(
+                    buffer,
+                    w,
+                    segment_x,
+                    control_y,
+                    segment_w,
+                    control_h,
+                    6,
+                    color,
+                    w,
+                    h,
+                );
+                draw_text_dw_ex(
+                    buffer,
+                    w,
+                    label,
+                    segment_x + sc(14.0) as i32,
+                    control_y + sc(12.0) as i32,
+                    sc(14.0),
+                    if selected == index {
+                        0x00FFFFFF
+                    } else {
+                        COLOR_TEXT_SEC
+                    },
+                    segment_w.saturating_sub(sc(20.0) as u32),
+                    sc(20.0) as u32,
+                    0.0,
+                    0.0,
+                    segment_w.saturating_sub(sc(20.0) as u32),
+                );
+            }
+        }
+    }
+
     // Interaction State Restoration for System Prompt
     {
-        let fy = 1030.0;
+        let fy = 1080.0;
         let fy_scaled_raw = card_y_raw + sc(fy) as i32;
         let _input_y_raw = fy_scaled_raw + sc(25.0) as i32;
         let _input_h = sc(250.0);
@@ -815,20 +898,20 @@ pub fn draw(
             2 => ("API Key", 230.0, 130.0, 500.0, false),
             3 => ("Base URL", 230.0, 230.0, 500.0, false),
             4 => ("Model", 230.0, 330.0, 500.0, false),
-            5 => ("ReAct Steps", 230.0, 430.0, 150.0, false),
-            6 => ("L1 Summary", 405.0, 430.0, 150.0, false),
-            7 => ("L2 Merge", 580.0, 430.0, 150.0, false),
-            8 => ("Interact Interval (min)", 230.0, 530.0, 150.0, false),
-            9 => ("Tavily Key", 230.0, 630.0, 500.0, false),
-            10 => ("Brave Key", 230.0, 730.0, 500.0, false),
-            11 => ("Firecrawl URL", 230.0, 830.0, 500.0, false),
-            12 => ("Firecrawl Key", 230.0, 930.0, 500.0, false),
-            13 => ("System Prompt", 230.0, 1030.0, 500.0, true),
-            17 => ("TTS Prompt Text", 230.0, 1530.0, 500.0, false),
+            5 => ("ReAct Steps", 230.0, 480.0, 150.0, false),
+            6 => ("L1 Summary", 405.0, 480.0, 150.0, false),
+            7 => ("L2 Merge", 580.0, 480.0, 150.0, false),
+            8 => ("Interact Interval (min)", 230.0, 580.0, 150.0, false),
+            9 => ("Tavily Key", 230.0, 680.0, 500.0, false),
+            10 => ("Brave Key", 230.0, 780.0, 500.0, false),
+            11 => ("Firecrawl URL", 230.0, 880.0, 500.0, false),
+            12 => ("Firecrawl Key", 230.0, 980.0, 500.0, false),
+            13 => ("System Prompt", 230.0, 1080.0, 500.0, true),
+            17 => ("TTS Prompt Text", 230.0, 1580.0, 500.0, false),
             _ => ("", 0.0, 0.0, 0.0, false),
         };
 
-        if i != 1 && i != 18 {
+        if i != 1 && i != 18 && i != 19 {
             let fy_scaled_raw = card_y_raw + sc(fy) as i32;
             let input_y_raw = fy_scaled_raw + sc(25.0) as i32;
             let input_h = if is_multiline {
@@ -1016,7 +1099,7 @@ pub fn draw(
     // DYNAMIC CONTENT OVERLAY (System Prompt)
     {
         let fx = 230.0;
-        let fy = 1030.0;
+        let fy = 1080.0;
         let fy_scaled_raw = card_y_raw + sc(fy) as i32;
         let input_y_raw = fy_scaled_raw + sc(25.0) as i32;
         let input_h = sc(250.0) as u32;

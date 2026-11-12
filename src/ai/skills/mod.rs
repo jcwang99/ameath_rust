@@ -81,6 +81,7 @@ impl SkillManager {
                 profile.base_url.clone(),
                 profile.model.clone(),
                 profile.use_responses_api,
+                profile.reasoning_effort.clone(),
             ))
         } else {
             None

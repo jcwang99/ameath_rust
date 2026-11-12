@@ -57,6 +57,8 @@ pub struct AiProfile {
     pub is_multimodal: bool,
     #[serde(default)]
     pub use_responses_api: bool,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 impl Default for AiProfile {
@@ -68,7 +70,22 @@ impl Default for AiProfile {
             model: "deepseek-chat".to_string(),
             is_multimodal: false,
             use_responses_api: false,
+            reasoning_effort: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod ai_profile_tests {
+    use super::AiProfile;
+
+    #[test]
+    fn older_profiles_without_reasoning_effort_remain_loadable() {
+        let profile: AiProfile = serde_json::from_str(
+            r#"{"name":"Legacy","api_key":"key","base_url":"https://example.com","model":"model","is_multimodal":false}"#,
+        )
+        .unwrap();
+        assert_eq!(profile.reasoning_effort, None);
     }
 }
 
@@ -129,6 +146,7 @@ impl AiConfig {
                 model: String::new(),
                 is_multimodal: false,
                 use_responses_api: false,
+                reasoning_effort: None,
             };
             &FALLBACK
         } else {
@@ -156,6 +174,7 @@ impl AiConfig {
                     model: self.model.clone(),
                     is_multimodal: false,
                     use_responses_api: false,
+                    reasoning_effort: None,
                 });
                 self.api_key.clear();
                 self.base_url.clear();

@@ -51,7 +51,7 @@ pub struct SettingsRenderInput {
     pub pressed_btn: Option<usize>, // 0-4 for profile buttons, 100+ for fields
     pub show_delete_dialog: bool,
     pub notification: Option<(String, std::time::Instant)>,
-    pub field_scroll_offsets: [f32; 19],
+    pub field_scroll_offsets: [f32; 20],
     pub available_monitors: Vec<(String, String)>,
     pub current_monitor_name: Option<String>,
     pub routines_config: crate::types::RoutinesConfig,
@@ -375,7 +375,7 @@ pub struct SettingsWindow {
     pub pressed_btn: Option<usize>,
     pub show_delete_dialog: bool,
     pub notification: Option<(String, std::time::Instant)>,
-    pub field_scroll_offsets: [f32; 19],
+    pub field_scroll_offsets: [f32; 20],
 
     // Layered Rendering Caches (Removed for memory savings)
     pub cursor_cache: Option<(i32, i32, u32, u32)>,
@@ -522,7 +522,7 @@ impl SettingsWindow {
             pressed_btn: None,
             show_delete_dialog: false,
             notification: None,
-            field_scroll_offsets: [0.0; 19],
+            field_scroll_offsets: [0.0; 20],
             cursor_cache: None,
             cursor_save_under: Vec::new(),
             last_base_state_hash: 0,
@@ -695,6 +695,7 @@ impl SettingsWindow {
                 profile.model.hash(&mut config_hasher);
                 profile.is_multimodal.hash(&mut config_hasher);
                 profile.use_responses_api.hash(&mut config_hasher);
+                profile.reasoning_effort.hash(&mut config_hasher);
             }
 
             if self.system_prompt_hash == 0 {
@@ -1206,7 +1207,7 @@ impl SettingsWindow {
                 // Note: dly already includes scroll_offset adjustment (dly = ly - scroll_offset)
                 // So we need to compare with design-space coordinates directly
                 if lx >= 230.0 + 480.0 && lx <= 230.0 + 480.0 + 8.0 {
-                    let input_y = design_card_y + 930.0 + 25.0; // Design-space Y
+                    let input_y = design_card_y + 1080.0 + 25.0; // Design-space Y
                     let track_h = 250.0;
                     if dly >= input_y && dly <= input_y + track_h {
                         self.dragging_sys_prompt = true;
@@ -1226,20 +1227,21 @@ impl SettingsWindow {
                     (230.0, 130.0, 500.0),  // 2: Key
                     (230.0, 230.0, 500.0),  // 3: URL
                     (230.0, 330.0, 500.0),  // 4: Model
-                    (230.0, 430.0, 150.0),  // 5: Steps
-                    (405.0, 430.0, 150.0),  // 6: L1
-                    (580.0, 430.0, 150.0),  // 7: L2
-                    (230.0, 530.0, 150.0),  // 8: Interval
-                    (230.0, 630.0, 500.0),  // 9: Tavily
-                    (230.0, 730.0, 500.0),  // 10: Brave
-                    (230.0, 830.0, 500.0),  // 11: FC URL
-                    (230.0, 930.0, 500.0),  // 12: FC Key
-                    (230.0, 1030.0, 500.0), // 13: System
-                    (405.0, 542.5, 350.0),  // 14: Screen Capture (530 + 12.5 offset)
-                    (230.0, 1330.0, 45.0),  // 15: TTS Toggle
-                    (230.0, 1430.0, 500.0), // 16: TTS Ref Path
-                    (230.0, 1530.0, 500.0), // 17: TTS Prompt Text
+                    (230.0, 480.0, 150.0),  // 5: Steps
+                    (405.0, 480.0, 150.0),  // 6: L1
+                    (580.0, 480.0, 150.0),  // 7: L2
+                    (230.0, 580.0, 150.0),  // 8: Interval
+                    (230.0, 680.0, 500.0),  // 9: Tavily
+                    (230.0, 780.0, 500.0),  // 10: Brave
+                    (230.0, 880.0, 500.0),  // 11: FC URL
+                    (230.0, 980.0, 500.0),  // 12: FC Key
+                    (230.0, 1080.0, 500.0), // 13: System
+                    (405.0, 592.5, 350.0),  // 14: Screen Capture (580 + 12.5 offset)
+                    (230.0, 1380.0, 45.0),  // 15: TTS Toggle
+                    (230.0, 1480.0, 500.0), // 16: TTS Ref Path
+                    (230.0, 1580.0, 500.0), // 17: TTS Prompt Text
                     (650.0, 30.0, 45.0),    // 18: Responses API Toggle
+                    (230.0, 405.0, 500.0),  // 19: Thinking Effort
                 ];
 
                 // Profile Management Buttons (Standardized Row)
@@ -1361,6 +1363,17 @@ impl SettingsWindow {
                             let mut config = ai_config.clone();
                             let profile = config.active_profile_mut();
                             profile.use_responses_api = !profile.use_responses_api;
+                            self.config_dirty = true;
+                            self.window.request_redraw();
+                            return SettingsAction::UpdateAiConfig(config);
+                        }
+                        if i == 19 {
+                            let mut config = ai_config.clone();
+                            let profile = config.active_profile_mut();
+                            let option = (((dlx - *fx) / *fw * 4.0).floor() as usize).min(3);
+                            profile.reasoning_effort = [None, Some("low"), Some("medium"), Some("high")]
+                                [option]
+                                .map(str::to_string);
                             self.config_dirty = true;
                             self.window.request_redraw();
                             return SettingsAction::UpdateAiConfig(config);
@@ -1729,6 +1742,10 @@ impl SettingsWindow {
             16 => ai_config.tts_reference_audio.to_string_lossy().into_owned(),
             17 => ai_config.tts_prompt_text.clone(),
             14 | 15 | 18 => String::new(), // Toggles handled via click
+            19 => active_profile
+                .reasoning_effort
+                .clone()
+                .unwrap_or_else(|| "auto".to_string()),
             501 => {
                 if let Some(r) = &self.editing_routine { r.title.clone() } else { "".to_string() }
             }
@@ -1898,20 +1915,21 @@ impl SettingsWindow {
             (230.0, 130.0, 500.0),  // 2: Key
             (230.0, 230.0, 500.0),  // 3: URL
             (230.0, 330.0, 500.0),  // 4: Model
-            (230.0, 430.0, 150.0),  // 5: Steps
-            (405.0, 430.0, 150.0),  // 6: L1
-            (580.0, 430.0, 150.0),  // 7: L2
-            (230.0, 530.0, 150.0),  // 8: Int Freq
-            (230.0, 630.0, 500.0),  // 9: Tavily Key
-            (230.0, 730.0, 500.0),  // 10: Brave Key
-            (230.0, 830.0, 500.0),  // 11: FC URL
-            (230.0, 930.0, 500.0),  // 12: FC Key
-            (230.0, 1030.0, 500.0), // 13: System
-            (405.0, 530.0, 20.0),   // 14: Screen Capture (Toggles don't scroll but index exists)
-            (230.0, 1330.0, 20.0),  // 15: TTS Toggle
-            (230.0, 1430.0, 500.0), // 16: Ref Path
-            (230.0, 1530.0, 500.0), // 17: TTS Prompt Text
+            (230.0, 480.0, 150.0),  // 5: Steps
+            (405.0, 480.0, 150.0),  // 6: L1
+            (580.0, 480.0, 150.0),  // 7: L2
+            (230.0, 580.0, 150.0),  // 8: Int Freq
+            (230.0, 680.0, 500.0),  // 9: Tavily Key
+            (230.0, 780.0, 500.0),  // 10: Brave Key
+            (230.0, 880.0, 500.0),  // 11: FC URL
+            (230.0, 980.0, 500.0),  // 12: FC Key
+            (230.0, 1080.0, 500.0), // 13: System
+            (405.0, 580.0, 20.0),   // 14: Screen Capture (Toggles don't scroll but index exists)
+            (230.0, 1380.0, 20.0),  // 15: TTS Toggle
+            (230.0, 1480.0, 500.0), // 16: Ref Path
+            (230.0, 1580.0, 500.0), // 17: TTS Prompt Text
             (650.0, 30.0, 45.0),    // 18: Responses API Toggle
+            (230.0, 405.0, 500.0),  // 19: Thinking Effort
         ];
 
         if field_idx >= fields.len() {
@@ -2573,7 +2591,7 @@ impl SettingsWindow {
             } else {
                 // Fallback to hardcoded if rect not set yet
                 let track_h = 250.0;
-                let track_y_start = 120.0 + 930.0 + 25.0;
+                let track_y_start = 120.0 + 1080.0 + 25.0;
                 let progress = ((dly - track_y_start) / track_h).clamp(0.0, 1.0);
                 let view_h = 250.0f32;
                 let content_h = self.active_sys_prompt_content_height;
@@ -2631,19 +2649,20 @@ impl SettingsWindow {
             (230.0, 130.0),  // 2: Key
             (230.0, 230.0),  // 3: URL
             (230.0, 330.0),  // 4: Model
-            (230.0, 430.0),  // 5: Steps
-            (405.0, 430.0),  // 6: L1
-            (580.0, 430.0),  // 7: L2
-            (230.0, 530.0),  // 8: Interval
-            (230.0, 630.0),  // 9: Tavily
-            (230.0, 730.0),  // 10: Brave
-            (230.0, 830.0),  // 11: FC URL
-            (230.0, 930.0),  // 12: FC Key
-            (230.0, 1030.0), // 13: System
-            (405.0, 530.0),  // 14: Screen Capture
-            (230.0, 1330.0), // 15: TTS Toggle
-            (230.0, 1430.0), // 16: Ref Path
-            (230.0, 1530.0), // 17: TTS Prompt Text
+            (230.0, 480.0),  // 5: Steps
+            (405.0, 480.0),  // 6: L1
+            (580.0, 480.0),  // 7: L2
+            (230.0, 580.0),  // 8: Interval
+            (230.0, 680.0),  // 9: Tavily
+            (230.0, 780.0),  // 10: Brave
+            (230.0, 880.0),  // 11: FC URL
+            (230.0, 980.0),  // 12: FC Key
+            (230.0, 1080.0), // 13: System
+            (405.0, 580.0),  // 14: Screen Capture
+            (230.0, 1380.0), // 15: TTS Toggle
+            (230.0, 1480.0), // 16: Ref Path
+            (230.0, 1580.0), // 17: TTS Prompt Text
+            (230.0, 405.0),  // 19: Thinking Effort
         ];
 
         if field_idx >= 501 {

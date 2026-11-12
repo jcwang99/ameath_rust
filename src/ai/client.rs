@@ -2,6 +2,31 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
+fn normalize_reasoning_effort(effort: String) -> Option<String> {
+    let effort = effort.trim().to_ascii_lowercase();
+    match effort.as_str() {
+        "low" | "medium" | "high" => Some(effort),
+        _ => None,
+    }
+}
+
+fn rejects_reasoning_effort(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    let mentions_field = error.contains("reasoning_effort") || error.contains("reasoning.effort");
+    let rejects_field = [
+        "unsupported",
+        "not supported",
+        "unknown",
+        "unrecognized",
+        "not allowed",
+        "invalid parameter",
+        "extra inputs",
+    ]
+    .iter()
+    .any(|phrase| error.contains(phrase));
+    mentions_field && rejects_field
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Message {
     pub role: String,
@@ -98,6 +123,7 @@ pub struct OpenAiClient {
     base_url: String,
     model: String,
     use_responses_api: bool,
+    reasoning_effort: Option<String>,
     http_client: reqwest::Client,
 }
 
@@ -110,6 +136,8 @@ pub struct ChatRequest {
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -132,6 +160,13 @@ struct ResponsesRequest {
     input: Vec<ResponsesInputItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<ResponsesReasoningConfig>,
+}
+
+#[derive(Debug, Serialize)]
+struct ResponsesReasoningConfig {
+    effort: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -509,12 +544,14 @@ impl OpenAiClient {
         base_url: String,
         model: String,
         use_responses_api: bool,
+        reasoning_effort: Option<String>,
     ) -> Self {
         Self {
             api_key: api_key.trim().to_string(),
             base_url: base_url.trim().to_string(),
             model: model.trim().to_string(),
             use_responses_api,
+            reasoning_effort: reasoning_effort.and_then(normalize_reasoning_effort),
             http_client: reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(10))
                 .timeout(Duration::from_secs(180))
@@ -528,10 +565,34 @@ impl OpenAiClient {
         messages: Vec<Message>,
         tools: Option<Vec<Value>>,
     ) -> Result<Message, String> {
+        let Some(effort) = self.reasoning_effort.clone() else {
+            return self.chat_with_effort(messages, tools, None).await;
+        };
+
+        let result = self
+            .chat_with_effort(messages.clone(), tools.clone(), Some(effort))
+            .await;
+        match result {
+            Err(error) if rejects_reasoning_effort(&error) => {
+                tracing::warn!(
+                    "Model endpoint rejected the configured reasoning effort; retrying without it"
+                );
+                self.chat_with_effort(messages, tools, None).await
+            }
+            result => result,
+        }
+    }
+
+    async fn chat_with_effort(
+        &self,
+        messages: Vec<Message>,
+        tools: Option<Vec<Value>>,
+        reasoning_effort: Option<String>,
+    ) -> Result<Message, String> {
         if self.use_responses_api {
-            self.chat_responses_api(messages, tools).await
+            self.chat_responses_api(messages, tools, reasoning_effort).await
         } else {
-            self.chat_completions_api(messages, tools).await
+            self.chat_completions_api(messages, tools, reasoning_effort).await
         }
     }
 
@@ -540,6 +601,7 @@ impl OpenAiClient {
         &self,
         messages: Vec<Message>,
         tools: Option<Vec<Value>>,
+        reasoning_effort: Option<String>,
     ) -> Result<Message, String> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         
@@ -557,6 +619,7 @@ impl OpenAiClient {
             messages: normalize_system_messages_owned(messages),
             stream: false,
             tools,
+            reasoning_effort,
         };
 
         let body_text = self.send_request(&url, &request).await?;
@@ -589,6 +652,7 @@ impl OpenAiClient {
         &self,
         messages: Vec<Message>,
         tools: Option<Vec<Value>>,
+        reasoning_effort: Option<String>,
     ) -> Result<Message, String> {
         let url = format!("{}/responses", self.base_url.trim_end_matches('/'));
 
@@ -625,6 +689,7 @@ impl OpenAiClient {
             instructions,
             input,
             tools: tools_for_responses,
+            reasoning: reasoning_effort.map(|effort| ResponsesReasoningConfig { effort }),
         };
 
         // Summary of payload for logs
@@ -716,5 +781,79 @@ impl OpenAiClient {
         tracing::debug!("AI Raw Response: {}", body_text);
 
         Ok(body_text)
+    }
+}
+
+#[cfg(test)]
+mod reasoning_effort_tests {
+    use super::*;
+
+    #[test]
+    fn chat_completions_effort_is_optional_and_serialized_when_set() {
+        let request = ChatRequest {
+            model: "example-model".to_string(),
+            messages: vec![],
+            stream: false,
+            tools: None,
+            reasoning_effort: Some("high".to_string()),
+        };
+        let value = serde_json::to_value(request).unwrap();
+        assert_eq!(value["reasoning_effort"], "high");
+
+        let request = ChatRequest {
+            model: "example-model".to_string(),
+            messages: vec![],
+            stream: false,
+            tools: None,
+            reasoning_effort: None,
+        };
+        let value = serde_json::to_value(request).unwrap();
+        assert!(value.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn responses_effort_uses_nested_reasoning_object_and_is_optional() {
+        let request = ResponsesRequest {
+            model: "example-model".to_string(),
+            instructions: None,
+            input: vec![],
+            tools: None,
+            reasoning: Some(ResponsesReasoningConfig {
+                effort: "medium".to_string(),
+            }),
+        };
+        let value = serde_json::to_value(request).unwrap();
+        assert_eq!(value["reasoning"]["effort"], "medium");
+
+        let request = ResponsesRequest {
+            model: "example-model".to_string(),
+            instructions: None,
+            input: vec![],
+            tools: None,
+            reasoning: None,
+        };
+        let value = serde_json::to_value(request).unwrap();
+        assert!(value.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn only_explicit_reasoning_effort_rejection_triggers_compatibility_fallback() {
+        assert!(rejects_reasoning_effort(
+            "API Error (400): unknown parameter 'reasoning_effort'"
+        ));
+        assert!(rejects_reasoning_effort(
+            "Invalid request: reasoning.effort is not supported"
+        ));
+        assert!(!rejects_reasoning_effort("API Error (500): internal server error"));
+        assert!(!rejects_reasoning_effort(
+            "API Error (400): invalid value for temperature"
+        ));
+    }
+
+    #[test]
+    fn invalid_effort_values_are_not_sent() {
+        assert_eq!(normalize_reasoning_effort(" HIGH ".to_string()).as_deref(), Some("high"));
+        assert_eq!(normalize_reasoning_effort("xhigh".to_string()), None);
+        assert_eq!(normalize_reasoning_effort("".to_string()), None);
     }
 }
