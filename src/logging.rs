@@ -1,3 +1,5 @@
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::time::FormatTime;
@@ -74,6 +76,111 @@ pub fn init_logging() {
     }));
 
     tracing::info!("Logging initialized. Logs are stored in {}", log_dir);
+}
+
+/// Returns the newest bounded application log lines first.
+///
+/// The active file and rotated `ameath.log.*` files are considered. Each file
+/// is read from its tail so a large historical log cannot block the settings UI.
+pub fn read_recent_log_lines(max_lines: usize, max_bytes: usize) -> String {
+    read_recent_log_lines_from_dir(Path::new("logs"), max_lines, max_bytes)
+}
+
+fn read_recent_log_lines_from_dir(dir: &Path, max_lines: usize, max_bytes: usize) -> String {
+    if max_lines == 0 || max_bytes == 0 {
+        return String::new();
+    }
+
+    let mut files: Vec<(bool, String, PathBuf)> = std::fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let file_type = entry.file_type().ok()?;
+            if !file_type.is_file() {
+                return None;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name != "ameath.log" && !name.starts_with("ameath.log.") {
+                return None;
+            }
+            let is_active = name == "ameath.log";
+            Some((is_active, name.into_owned(), entry.path()))
+        })
+        .collect();
+
+    // Rotated files contain an ISO date in their name, so lexical ordering is
+    // chronological and remains deterministic even when filesystem timestamps
+    // have coarse resolution. The active file is always the newest segment.
+    files.sort_by(|(active_a, name_a, _), (active_b, name_b, _)| {
+        active_a.cmp(active_b).then_with(|| name_a.cmp(name_b))
+    });
+    let mut combined = Vec::new();
+    for (_, _, path) in files {
+        let Ok(mut file) = std::fs::File::open(path) else {
+            continue;
+        };
+        let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
+            continue;
+        };
+        let start = length.saturating_sub(max_bytes as u64);
+        if file.seek(SeekFrom::Start(start)).is_err() {
+            continue;
+        }
+        let mut bytes = Vec::with_capacity((length - start) as usize);
+        if file.read_to_end(&mut bytes).is_ok() {
+            if !combined.is_empty() && !combined.ends_with(b"\n") {
+                combined.push(b'\n');
+            }
+            combined.extend_from_slice(&bytes);
+        }
+    }
+
+    if combined.len() > max_bytes {
+        let start = combined.len() - max_bytes;
+        combined.drain(..start);
+    }
+
+    let text = String::from_utf8_lossy(&combined);
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(max_lines);
+    lines[start..]
+        .iter()
+        .rev()
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_recent_log_lines_from_dir;
+    use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn recent_logs_are_bounded_and_ignore_unrelated_files() {
+        let dir = std::env::temp_dir().join(format!("ameath-log-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("ameath.log.2026-11-15"), "old-1\nold-2\n").unwrap();
+        fs::write(dir.join("ameath.log"), "new-1\nnew-2\nnew-3\n").unwrap();
+        fs::write(dir.join("other.log"), "ignore-me\n").unwrap();
+
+        let text = read_recent_log_lines_from_dir(&dir, 3, 1024);
+        assert_eq!(text, "new-3\nnew-2\nnew-1");
+
+        let _ = fs::remove_dir_all(PathBuf::from(dir));
+    }
+
+    #[test]
+    fn missing_directory_and_zero_limits_are_safe() {
+        let missing = std::env::temp_dir().join(format!("ameath-missing-{}", uuid::Uuid::new_v4()));
+        assert!(read_recent_log_lines_from_dir(&missing, 100, 1024).is_empty());
+        assert!(read_recent_log_lines_from_dir(&missing, 0, 1024).is_empty());
+        assert!(read_recent_log_lines_from_dir(&missing, 100, 0).is_empty());
+    }
 }
 
 fn cleanup_old_logs(dir: &str, keep_days: i64) {

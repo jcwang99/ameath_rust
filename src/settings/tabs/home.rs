@@ -89,9 +89,9 @@ pub fn draw(
         btn_w,
         btn_h,
         8,
-        COLOR_BG_APP,    // Button background
-        COLOR_PRIMARY,   // Border color
-        2,               // Border thickness
+        COLOR_BG_APP,  // Button background
+        COLOR_PRIMARY, // Border color
+        2,             // Border thickness
         w,
         h,
     );
@@ -100,7 +100,7 @@ pub fn draw(
     let font_size = sc(14.0);
     // 获取文本度量信息以进行精确居中
     let (tw_text, th_text) = get_metrics_dw(btn_text, font_size, btn_w);
-    
+
     draw_text(
         buffer,
         w,

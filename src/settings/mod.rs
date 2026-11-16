@@ -24,6 +24,77 @@ fn normalize_text_selection(
     )
 }
 
+const SETTINGS_TAB_COUNT: usize = 7;
+const LOGS_TAB_INDEX: usize = 6;
+
+fn field_requires_ascii_digits(field_idx: usize) -> bool {
+    matches!(field_idx, 5 | 6 | 7 | 8 | 502 | 505)
+}
+
+fn normalize_routine_numeric(
+    schedule_type: &crate::types::ScheduleType,
+    field_idx: usize,
+    value: u32,
+) -> u32 {
+    match field_idx {
+        502 => match schedule_type {
+            crate::types::ScheduleType::Weekly => value.min(6),
+            crate::types::ScheduleType::Monthly => value.clamp(1, 31),
+            _ => value.max(1),
+        },
+        505 => value.max(1),
+        _ => value,
+    }
+}
+
+fn focus_order(current_tab: usize, editing: Option<&crate::types::RoutineDef>) -> Vec<usize> {
+    if current_tab == 2 {
+        vec![0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17]
+    } else if current_tab == 5 {
+        let Some(routine) = editing else {
+            return Vec::new();
+        };
+        let mut fields = vec![501];
+        if !matches!(routine.schedule_type, crate::types::ScheduleType::Daily) {
+            fields.push(502);
+        }
+        if matches!(
+            routine.schedule_type,
+            crate::types::ScheduleType::Daily
+                | crate::types::ScheduleType::Weekly
+                | crate::types::ScheduleType::Monthly
+        ) {
+            fields.push(503);
+        }
+        fields.push(504);
+        if routine.expiry_minutes.is_some() {
+            fields.push(505);
+        }
+        fields
+    } else {
+        Vec::new()
+    }
+}
+
+fn next_focus_field(
+    current_tab: usize,
+    current_field: usize,
+    reverse: bool,
+    editing: Option<&crate::types::RoutineDef>,
+) -> Option<usize> {
+    let fields = focus_order(current_tab, editing);
+    if fields.is_empty() {
+        return None;
+    }
+    let current_index = fields.iter().position(|field| *field == current_field)?;
+    let next_index = if reverse {
+        (current_index + fields.len() - 1) % fields.len()
+    } else {
+        (current_index + 1) % fields.len()
+    };
+    Some(fields[next_index])
+}
+
 pub struct SettingsRenderInput {
     pub w: u32,
     pub h: u32,
@@ -57,6 +128,7 @@ pub struct SettingsRenderInput {
     pub routines_config: crate::types::RoutinesConfig,
     pub editing_routine: Option<crate::types::RoutineDef>,
     pub routine_memo_scroll_offset: f32,
+    pub recent_logs: std::sync::Arc<String>,
 }
 
 pub struct RenderResult {
@@ -104,8 +176,17 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
 
     // Sidebar
     draw_rect(buffer, w, 0, 0, s(180), h, COLOR_BG_SIDEBAR, w, h);
-    let icons = ["🏠", "🎨", "🧠", "📜", "ℹ️", "⏰"];
-    for i in 0..6 {
+    let icons = ["🏠", "🎨", "🧠", "📜", "ℹ️", "⏰", "🧾"];
+    let sidebar_labels = [
+        "Home",
+        "Appearance",
+        "AI Brain",
+        "History",
+        "About",
+        "Routines",
+        "Logs",
+    ];
+    for i in 0..SETTINGS_TAB_COUNT {
         let color = if input.current_tab == i {
             COLOR_PRIMARY
         } else {
@@ -116,9 +197,19 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
             w,
             &[],
             icons[i],
-            s(75) as i32,
+            s(24) as i32,
             sy_val(60 + i as u32 * 80) as i32,
             sc(32.0),
+            color,
+        );
+        draw_text(
+            buffer,
+            w,
+            &[],
+            sidebar_labels[i],
+            s(66) as i32,
+            sy_val(68 + i as u32 * 80) as i32,
+            sc(12.0),
             color,
         );
     }
@@ -131,6 +222,7 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
         3 => ("History", "Recent Local Memory (Last 50)"),
         4 => ("About", "Ameath v0.1.0"),
         5 => ("Routines", "Manage your scheduled tasks"),
+        6 => ("Logs", "Live application log (refreshes every 2 seconds)"),
         _ => ("", ""),
     };
     let header_h = sy_val(120);
@@ -266,10 +358,20 @@ fn render_internal(buffer: &mut [u32], input: SettingsRenderInput, hash: u64) ->
                 memo_content_height: &mut routine_memo_content_height,
                 selection_start: input.selection_start,
             };
-            let (v, c, rect) = tabs::routines::draw(buffer, w, h, scale, off_x, off_y, &mut routines_state);
+            let (v, c, rect) =
+                tabs::routines::draw(buffer, w, h, scale, off_x, off_y, &mut routines_state);
             vh = v;
             ch = c;
             cursor_rect = rect;
+        }
+        6 => {
+            let logs_state = tabs::logs::LogsTabState {
+                content: input.recent_logs.as_str(),
+                scroll_offset: input.scroll_offset,
+            };
+            let (v, c, _) = tabs::logs::draw(buffer, w, h, scale, off_x, off_y, &logs_state);
+            vh = v;
+            ch = c;
         }
         _ => {}
     }
@@ -359,6 +461,8 @@ pub struct SettingsWindow {
     pub routine_memo_scroll_offset: f32,
     pub routine_memo_rect: Option<(f64, f64, f64, f64)>,
     pub routine_memo_content_height: f32,
+    pub recent_logs: std::sync::Arc<String>,
+    pub last_log_refresh: std::time::Instant,
 
     // Layout
     pub is_dragging_scrollbar: bool,
@@ -390,7 +494,7 @@ pub struct SettingsWindow {
     pub last_background_pixels: std::sync::Arc<Vec<u32>>,
     pub render_tx: Sender<RenderRequest>,
     pub _proxy: EventLoopProxy<()>,
-    
+
     pub routines_config: crate::types::RoutinesConfig,
     pub editing_routine: Option<crate::types::RoutineDef>,
 }
@@ -509,6 +613,8 @@ impl SettingsWindow {
             routine_memo_scroll_offset: 0.0,
             routine_memo_rect: None,
             routine_memo_content_height: 0.0,
+            recent_logs: std::sync::Arc::new(String::new()),
+            last_log_refresh: std::time::Instant::now() - std::time::Duration::from_secs(3),
             is_dragging_scrollbar: false,
             available_monitors,
             current_monitor_name: None,
@@ -546,8 +652,10 @@ impl SettingsWindow {
         #[cfg(target_os = "windows")]
         {
             use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
-            use windows::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, ShowWindow, SW_RESTORE};
             use windows::Win32::Foundation::HWND;
+            use windows::Win32::UI::WindowsAndMessaging::{
+                SetForegroundWindow, ShowWindow, SW_RESTORE,
+            };
 
             if let RawWindowHandle::Win32(handle) = self.window.raw_window_handle() {
                 let hwnd = HWND(handle.hwnd as isize);
@@ -568,6 +676,26 @@ impl SettingsWindow {
 
     pub fn request_redraw_actual(&self) {
         self.window.request_redraw();
+    }
+
+    fn refresh_recent_logs_now(&mut self) -> bool {
+        let logs = crate::logging::read_recent_log_lines(300, 96 * 1024);
+        if logs == *self.recent_logs {
+            return false;
+        }
+        self.recent_logs = std::sync::Arc::new(logs);
+        self.is_dirty = true;
+        true
+    }
+
+    pub fn poll_recent_logs(&mut self) -> bool {
+        if self.current_tab != LOGS_TAB_INDEX
+            || self.last_log_refresh.elapsed() < std::time::Duration::from_secs(2)
+        {
+            return false;
+        }
+        self.last_log_refresh = std::time::Instant::now();
+        self.refresh_recent_logs_now()
     }
 
     pub fn next_blink_at(&self) -> std::time::Instant {
@@ -628,6 +756,7 @@ impl SettingsWindow {
             routines_config: self.routines_config.clone(),
             editing_routine: self.editing_routine.clone(),
             routine_memo_scroll_offset: self.routine_memo_scroll_offset,
+            recent_logs: self.recent_logs.clone(),
         }
     }
 
@@ -742,6 +871,7 @@ impl SettingsWindow {
         self.scroll_offset.to_bits().hash(&mut base_hasher);
         self.mouse_pos.0.to_bits().hash(&mut base_hasher);
         self.mouse_pos.1.to_bits().hash(&mut base_hasher);
+        self.recent_logs.hash(&mut base_hasher);
         self.pressed_btn.hash(&mut base_hasher);
         self.show_delete_dialog.hash(&mut base_hasher);
         if let Some((text, time)) = &self.notification {
@@ -852,7 +982,11 @@ impl SettingsWindow {
             let mut pixels = {
                 let mut idle = self.idle_buffers.lock().unwrap();
                 idle.pop().unwrap_or_else(|| {
-                    tracing::debug!("Creating new pixel buffer for settings window ({}x{})", w, h);
+                    tracing::debug!(
+                        "Creating new pixel buffer for settings window ({}x{})",
+                        w,
+                        h
+                    );
                     vec![0u32; (w * h) as usize]
                 })
             };
@@ -870,7 +1004,10 @@ impl SettingsWindow {
         let mut buffer = match self.surface.buffer_mut() {
             Ok(b) => b,
             Err(e) => {
-                tracing::error!("Failed to get surface buffer for composition: {}. Skipping frame.", e);
+                tracing::error!(
+                    "Failed to get surface buffer for composition: {}. Skipping frame.",
+                    e
+                );
                 return;
             }
         };
@@ -1064,7 +1201,7 @@ impl SettingsWindow {
 
         // Sidebar
         if lx >= 0.0 && lx <= 180.0 {
-            for i in 0..6 {
+            for i in 0..SETTINGS_TAB_COUNT {
                 let ty = 60.0 + i as f64 * 80.0;
                 if ly >= ty - 15.0 && ly <= ty + 45.0 {
                     self.current_tab = i;
@@ -1074,6 +1211,11 @@ impl SettingsWindow {
                     self.history_selection_start = None;
                     if i == 3 {
                         return SettingsAction::RequestHistory;
+                    }
+                    if i == LOGS_TAB_INDEX {
+                        self.last_log_refresh = std::time::Instant::now();
+                        self.scroll_offset = 0.0;
+                        self.refresh_recent_logs_now();
                     }
                     self.window.request_redraw();
                     return SettingsAction::RequestGc;
@@ -1371,9 +1513,9 @@ impl SettingsWindow {
                             let mut config = ai_config.clone();
                             let profile = config.active_profile_mut();
                             let option = (((dlx - *fx) / *fw * 4.0).floor() as usize).min(3);
-                            profile.reasoning_effort = [None, Some("low"), Some("medium"), Some("high")]
-                                [option]
-                                .map(str::to_string);
+                            profile.reasoning_effort =
+                                [None, Some("low"), Some("medium"), Some("high")][option]
+                                    .map(str::to_string);
                             self.config_dirty = true;
                             self.window.request_redraw();
                             return SettingsAction::UpdateAiConfig(config);
@@ -1410,6 +1552,9 @@ impl SettingsWindow {
                                     self.config_dirty = true;
                                     return SettingsAction::UpdateAiConfig(config);
                                 } else if i == 16 {
+                                    self.focused_field = None;
+                                    self.selection_start = None;
+                                    self.is_dragging_text = false;
                                     return SettingsAction::SelectTtsRefAudio;
                                 } else {
                                     let scale_f32 = scale as f32;
@@ -1463,26 +1608,39 @@ impl SettingsWindow {
                         }
                     }
                 }
-                
+
                 {
-                    for (i, (_, ry_start, _, ry_end)) in self.history_item_rects.iter().enumerate() {
+                    for (i, (_, ry_start, _, ry_end)) in self.history_item_rects.iter().enumerate()
+                    {
                         if dly >= *ry_start && dly <= *ry_end {
                             // Hit this item. Is it inside the text area?
                             let content_y_base = ry_start + 35.0;
                             let content_x_base = 240.0;
-                            
+
                             // Let's do a simple bounds check
-                            if lx >= content_x_base && lx <= content_x_base + 450.0 && dly >= content_y_base {
+                            if lx >= content_x_base
+                                && lx <= content_x_base + 450.0
+                                && dly >= content_y_base
+                            {
                                 if let Some((_, content_text)) = self.history.get(i) {
                                     self.history_selection_idx = Some(i);
                                     let scale_f32 = scale as f32;
-                                    let content_scroll = self.history_scroll_states.get(i).copied().unwrap_or(0.0);
+                                    let content_scroll =
+                                        self.history_scroll_states.get(i).copied().unwrap_or(0.0);
                                     let layout_x = (lx - content_x_base) as f32 * scale;
                                     // Y within the text block
-                                    let layout_y = ((ly - content_y_base) as f32 * scale) - (content_scroll * scale_f32);
-                                    self.history_cursor_pos = get_cursor_index_from_xy(content_text, 16.0 * scale_f32, (450.0 * scale_f32) as u32, layout_x, layout_y);
+                                    let layout_y = ((ly - content_y_base) as f32 * scale)
+                                        - (content_scroll * scale_f32);
+                                    self.history_cursor_pos = get_cursor_index_from_xy(
+                                        content_text,
+                                        16.0 * scale_f32,
+                                        (450.0 * scale_f32) as u32,
+                                        layout_x,
+                                        layout_y,
+                                    );
                                     if !_is_right_click {
-                                        self.history_selection_start = Some(self.history_cursor_pos);
+                                        self.history_selection_start =
+                                            Some(self.history_cursor_pos);
                                         self.is_dragging_text = true;
                                     }
                                     self.window.request_redraw();
@@ -1502,26 +1660,45 @@ impl SettingsWindow {
                     // Title
                     current_y += 60.0;
                     let input_title_y = current_y + 35.0;
-                    if dlx >= 230.0 && dlx <= 730.0 && dly >= input_title_y && dly <= input_title_y + 40.0 {
+                    if dlx >= 230.0
+                        && dlx <= 730.0
+                        && dly >= input_title_y
+                        && dly <= input_title_y + 40.0
+                    {
                         self.focused_field = Some(501);
                         let text = self.get_field_text(501, ai_config);
-                        self.cursor_pos = self.get_cursor_from_x(&text, ((lx - 240.0) * scale as f64) as f32, scale as f32);
+                        self.cursor_pos = self.get_cursor_from_x(
+                            &text,
+                            ((lx - 240.0) * scale as f64) as f32,
+                            scale as f32,
+                        );
                         self.selection_start = Some(self.cursor_pos);
                         self.is_dragging_text = true;
                         self.window.request_redraw();
                         return SettingsAction::None;
                     }
                     current_y += 90.0;
-                    
+
                     // Type Selection
                     current_y += 35.0;
-                    let types = [crate::types::ScheduleType::Daily, crate::types::ScheduleType::Weekly, crate::types::ScheduleType::Monthly, crate::types::ScheduleType::IntervalDays, crate::types::ScheduleType::IntervalHours, crate::types::ScheduleType::IntervalMinutes];
+                    let types = [
+                        crate::types::ScheduleType::Daily,
+                        crate::types::ScheduleType::Weekly,
+                        crate::types::ScheduleType::Monthly,
+                        crate::types::ScheduleType::IntervalDays,
+                        crate::types::ScheduleType::IntervalHours,
+                        crate::types::ScheduleType::IntervalMinutes,
+                    ];
                     for (i, t) in types.iter().enumerate() {
                         let row = i / 3;
                         let col = i % 3;
                         let btn_x = 230.0 + col as f64 * 110.0;
                         let btn_y = current_y + row as f64 * 50.0;
-                        if dlx >= btn_x && dlx <= btn_x + 100.0 && dly >= btn_y && dly <= btn_y + 40.0 {
+                        if dlx >= btn_x
+                            && dlx <= btn_x + 100.0
+                            && dly >= btn_y
+                            && dly <= btn_y + 40.0
+                        {
                             if let Some(mut r) = self.editing_routine.clone() {
                                 r.schedule_type = t.clone();
                                 self.editing_routine = Some(r);
@@ -1531,26 +1708,50 @@ impl SettingsWindow {
                         }
                     }
                     current_y += 110.0;
-                    
+
                     // Dynamic value
-                    if !matches!(self.editing_routine.as_ref().unwrap().schedule_type, crate::types::ScheduleType::Daily) {
+                    if !matches!(
+                        self.editing_routine.as_ref().unwrap().schedule_type,
+                        crate::types::ScheduleType::Daily
+                    ) {
                         let input_val_y = current_y + 35.0;
-                        if dlx >= 230.0 && dlx <= 430.0 && dly >= input_val_y && dly <= input_val_y + 40.0 {
+                        if dlx >= 230.0
+                            && dlx <= 430.0
+                            && dly >= input_val_y
+                            && dly <= input_val_y + 40.0
+                        {
                             self.focused_field = Some(502);
                             let text = self.get_field_text(502, ai_config);
-                            self.cursor_pos = self.get_cursor_from_x(&text, ((lx - 240.0) * scale as f64) as f32, scale as f32);
+                            self.cursor_pos = self.get_cursor_from_x(
+                                &text,
+                                ((lx - 240.0) * scale as f64) as f32,
+                                scale as f32,
+                            );
                             self.selection_start = Some(self.cursor_pos);
                             self.is_dragging_text = true;
                             self.window.request_redraw();
                             return SettingsAction::None;
                         }
                     }
-                    if matches!(self.editing_routine.as_ref().unwrap().schedule_type, crate::types::ScheduleType::Daily | crate::types::ScheduleType::Weekly | crate::types::ScheduleType::Monthly) {
+                    if matches!(
+                        self.editing_routine.as_ref().unwrap().schedule_type,
+                        crate::types::ScheduleType::Daily
+                            | crate::types::ScheduleType::Weekly
+                            | crate::types::ScheduleType::Monthly
+                    ) {
                         let input_time_y = current_y + 35.0;
-                        if dlx >= 450.0 && dlx <= 650.0 && dly >= input_time_y && dly <= input_time_y + 40.0 {
+                        if dlx >= 450.0
+                            && dlx <= 650.0
+                            && dly >= input_time_y
+                            && dly <= input_time_y + 40.0
+                        {
                             self.focused_field = Some(503);
                             let text = self.get_field_text(503, ai_config);
-                            self.cursor_pos = self.get_cursor_from_x(&text, ((lx - 460.0) * scale as f64) as f32, scale as f32);
+                            self.cursor_pos = self.get_cursor_from_x(
+                                &text,
+                                ((lx - 460.0) * scale as f64) as f32,
+                                scale as f32,
+                            );
                             self.selection_start = Some(self.cursor_pos);
                             self.is_dragging_text = true;
                             self.window.request_redraw();
@@ -1558,29 +1759,39 @@ impl SettingsWindow {
                         }
                     }
                     current_y += 90.0;
-                    
+
                     // Memo
                     let input_memo_y = current_y + 35.0;
-                    if dlx >= 230.0 && dlx <= 730.0 && dly >= input_memo_y && dly <= input_memo_y + 100.0 {
+                    if dlx >= 230.0
+                        && dlx <= 730.0
+                        && dly >= input_memo_y
+                        && dly <= input_memo_y + 100.0
+                    {
                         self.focused_field = Some(504);
                         let text = self.get_field_text(504, ai_config);
                         let scale_f32 = scale as f32;
                         let layout_x = ((lx - 240.0) * scale as f64) as f32;
                         // Use scroll_offset correctly for click hit testing inside text
                         let scroll_y = self.routine_memo_scroll_offset * scale_f32;
-                        let layout_y = ((dly - input_memo_y - 10.0) * scale as f64) as f32 - scroll_y;
-                        self.cursor_pos = self.get_cursor_from_xy(&text, layout_x, layout_y, scale_f32);
+                        let layout_y =
+                            ((dly - input_memo_y - 10.0) * scale as f64) as f32 - scroll_y;
+                        self.cursor_pos =
+                            self.get_cursor_from_xy(&text, layout_x, layout_y, scale_f32);
                         self.selection_start = Some(self.cursor_pos);
                         self.is_dragging_text = true;
                         self.window.request_redraw();
                         return SettingsAction::None;
                     }
                     current_y += 150.0;
-                    
+
                     // Expiry Mode buttons
                     let expiry_btn_y = current_y + 35.0;
                     // Always Run button
-                    if dlx >= 230.0 && dlx <= 370.0 && dly >= expiry_btn_y && dly <= expiry_btn_y + 40.0 {
+                    if dlx >= 230.0
+                        && dlx <= 370.0
+                        && dly >= expiry_btn_y
+                        && dly <= expiry_btn_y + 40.0
+                    {
                         if let Some(mut r) = self.editing_routine.clone() {
                             r.expiry_minutes = None;
                             self.editing_routine = Some(r);
@@ -1590,7 +1801,11 @@ impl SettingsWindow {
                         return SettingsAction::None;
                     }
                     // Expire After button
-                    if dlx >= 380.0 && dlx <= 520.0 && dly >= expiry_btn_y && dly <= expiry_btn_y + 40.0 {
+                    if dlx >= 380.0
+                        && dlx <= 520.0
+                        && dly >= expiry_btn_y
+                        && dly <= expiry_btn_y + 40.0
+                    {
                         if let Some(mut r) = self.editing_routine.clone() {
                             if r.expiry_minutes.is_none() {
                                 r.expiry_minutes = Some(60); // Default 60 min
@@ -1601,11 +1816,23 @@ impl SettingsWindow {
                         return SettingsAction::None;
                     }
                     // Minutes input (Field 505)
-                    if self.editing_routine.as_ref().map_or(false, |r| r.expiry_minutes.is_some()) {
-                        if dlx >= 540.0 && dlx <= 660.0 && dly >= expiry_btn_y && dly <= expiry_btn_y + 40.0 {
+                    if self
+                        .editing_routine
+                        .as_ref()
+                        .map_or(false, |r| r.expiry_minutes.is_some())
+                    {
+                        if dlx >= 540.0
+                            && dlx <= 660.0
+                            && dly >= expiry_btn_y
+                            && dly <= expiry_btn_y + 40.0
+                        {
                             self.focused_field = Some(505);
                             let text = self.get_field_text(505, ai_config);
-                            self.cursor_pos = self.get_cursor_from_x(&text, ((lx - 550.0) * scale as f64) as f32, scale as f32);
+                            self.cursor_pos = self.get_cursor_from_x(
+                                &text,
+                                ((lx - 550.0) * scale as f64) as f32,
+                                scale as f32,
+                            );
                             self.selection_start = Some(self.cursor_pos);
                             self.is_dragging_text = true;
                             self.window.request_redraw();
@@ -1613,7 +1840,7 @@ impl SettingsWindow {
                         }
                     }
                     current_y += 90.0;
-                    
+
                     // Cancel
                     if dlx >= 480.0 && dlx <= 580.0 && dly >= current_y && dly <= current_y + 40.0 {
                         self.editing_routine = None;
@@ -1636,7 +1863,7 @@ impl SettingsWindow {
                             return SettingsAction::UpdateRoutinesConfig(cfg);
                         }
                     }
-                    
+
                     self.focused_field = None;
                     self.window.request_redraw();
                     return SettingsAction::None;
@@ -1660,11 +1887,15 @@ impl SettingsWindow {
                         return SettingsAction::None;
                     }
                     current_y += 70.0;
-                    
+
                     let mut action = SettingsAction::None;
                     for (i, r) in self.routines_config.routines.iter().enumerate() {
                         let card_y = current_y;
-                        if dlx >= 550.0 && dlx <= 620.0 && dly >= card_y + 30.0 && dly <= card_y + 60.0 {
+                        if dlx >= 550.0
+                            && dlx <= 620.0
+                            && dly >= card_y + 30.0
+                            && dly <= card_y + 60.0
+                        {
                             let mut cfg = self.routines_config.clone();
                             cfg.routines[i].is_active = !cfg.routines[i].is_active;
                             self.routines_config = cfg.clone();
@@ -1672,12 +1903,20 @@ impl SettingsWindow {
                             action = SettingsAction::UpdateRoutinesConfig(cfg);
                             break;
                         }
-                        if dlx >= 630.0 && dlx <= 680.0 && dly >= card_y + 30.0 && dly <= card_y + 60.0 {
+                        if dlx >= 630.0
+                            && dlx <= 680.0
+                            && dly >= card_y + 30.0
+                            && dly <= card_y + 60.0
+                        {
                             self.editing_routine = Some(r.clone());
                             self.window.request_redraw();
                             break;
                         }
-                        if dlx >= 690.0 && dlx <= 760.0 && dly >= card_y + 30.0 && dly <= card_y + 60.0 {
+                        if dlx >= 690.0
+                            && dlx <= 760.0
+                            && dly >= card_y + 30.0
+                            && dly <= card_y + 60.0
+                        {
                             let mut cfg = self.routines_config.clone();
                             cfg.routines.remove(i);
                             self.routines_config = cfg.clone();
@@ -1747,25 +1986,47 @@ impl SettingsWindow {
                 .clone()
                 .unwrap_or_else(|| "auto".to_string()),
             501 => {
-                if let Some(r) = &self.editing_routine { r.title.clone() } else { "".to_string() }
+                if let Some(r) = &self.editing_routine {
+                    r.title.clone()
+                } else {
+                    "".to_string()
+                }
             }
             502 => {
                 if let Some(r) = &self.editing_routine {
                     match r.schedule_type {
-                        crate::types::ScheduleType::Weekly => r.day_of_week.unwrap_or(0).to_string(),
-                        crate::types::ScheduleType::Monthly => r.day_of_month.unwrap_or(1).to_string(),
+                        crate::types::ScheduleType::Weekly => {
+                            r.day_of_week.unwrap_or(0).to_string()
+                        }
+                        crate::types::ScheduleType::Monthly => {
+                            r.day_of_month.unwrap_or(1).to_string()
+                        }
                         _ => r.interval.unwrap_or(1).to_string(),
                     }
-                } else { "".to_string() }
+                } else {
+                    "".to_string()
+                }
             }
             503 => {
-                if let Some(r) = &self.editing_routine { r.time_of_day.clone().unwrap_or("00:00".to_string()) } else { "".to_string() }
+                if let Some(r) = &self.editing_routine {
+                    r.time_of_day.clone().unwrap_or("00:00".to_string())
+                } else {
+                    "".to_string()
+                }
             }
             504 => {
-                if let Some(r) = &self.editing_routine { r.memo.clone() } else { "".to_string() }
+                if let Some(r) = &self.editing_routine {
+                    r.memo.clone()
+                } else {
+                    "".to_string()
+                }
             }
             505 => {
-                if let Some(r) = &self.editing_routine { r.expiry_minutes.unwrap_or(60).to_string() } else { "".to_string() }
+                if let Some(r) = &self.editing_routine {
+                    r.expiry_minutes.unwrap_or(60).to_string()
+                } else {
+                    "".to_string()
+                }
             }
             _ => String::new(),
         }
@@ -1832,7 +2093,11 @@ impl SettingsWindow {
                     match idx {
                         501 => r.title = text,
                         502 => {
-                            let v: u32 = text.parse().unwrap_or(1);
+                            let v = normalize_routine_numeric(
+                                &r.schedule_type,
+                                idx,
+                                text.parse().unwrap_or(1),
+                            );
                             match r.schedule_type {
                                 crate::types::ScheduleType::Weekly => r.day_of_week = Some(v),
                                 crate::types::ScheduleType::Monthly => r.day_of_month = Some(v),
@@ -1842,7 +2107,11 @@ impl SettingsWindow {
                         503 => r.time_of_day = Some(text),
                         504 => r.memo = text,
                         505 => {
-                            let v: u32 = text.parse().unwrap_or(60).max(1);
+                            let v = normalize_routine_numeric(
+                                &r.schedule_type,
+                                idx,
+                                text.parse().unwrap_or(60),
+                            );
                             r.expiry_minutes = Some(v);
                         }
                         _ => {}
@@ -1874,8 +2143,16 @@ impl SettingsWindow {
             let ch_scaled = ch as f32; // Line height (scaled)
 
             // Text viewport is smaller than box
-            let viewport_h_scaled = if field_idx == 13 { (250.0 - 24.0) * scale } else { 80.0 * scale };
-            let mut current_scroll = if field_idx == 13 { self.system_prompt_scroll_offset * scale } else { self.routine_memo_scroll_offset * scale };
+            let viewport_h_scaled = if field_idx == 13 {
+                (250.0 - 24.0) * scale
+            } else {
+                80.0 * scale
+            };
+            let mut current_scroll = if field_idx == 13 {
+                self.system_prompt_scroll_offset * scale
+            } else {
+                self.routine_memo_scroll_offset * scale
+            };
 
             let top_y = py_logical + current_scroll;
             let bottom_y = top_y + ch_scaled;
@@ -1890,9 +2167,17 @@ impl SettingsWindow {
 
             // Content-aware clamping
             let max_w_design = if field_idx == 13 { 460.0 } else { 480.0 };
-            let (_, mh): (f32, f32) =
-                get_metrics_dw(&measurement_text, 14.0 * scale, (max_w_design * scale) as u32);
-            let content_h = mh + if field_idx == 13 { 24.0 * scale } else { 20.0 * scale };
+            let (_, mh): (f32, f32) = get_metrics_dw(
+                &measurement_text,
+                14.0 * scale,
+                (max_w_design * scale) as u32,
+            );
+            let content_h = mh
+                + if field_idx == 13 {
+                    24.0 * scale
+                } else {
+                    20.0 * scale
+                };
             let min_scroll = (viewport_h_scaled - content_h).min(0.0f32);
             current_scroll = current_scroll.max(min_scroll).min(0.0);
 
@@ -2047,11 +2332,8 @@ impl SettingsWindow {
         let text = self.get_field_text(field_idx, ai_config);
         let mut chars: Vec<char> = text.chars().collect();
 
-        (self.cursor_pos, self.selection_start) = normalize_text_selection(
-            self.cursor_pos,
-            self.selection_start,
-            chars.len(),
-        );
+        (self.cursor_pos, self.selection_start) =
+            normalize_text_selection(self.cursor_pos, self.selection_start, chars.len());
 
         // use windows::Win32::Graphics::Gdi::{GetDC, ReleaseDC};
         use winit::keyboard::{Key, NamedKey};
@@ -2257,7 +2539,11 @@ impl SettingsWindow {
                         if let Ok(mut cb) = Clipboard::new() {
                             if let Ok(pasted) = cb.get_text() {
                                 let trimmed = pasted.trim();
-                                let p_chars: Vec<char> = trimmed.chars().collect();
+                                let p_chars: Vec<char> = if field_requires_ascii_digits(field_idx) {
+                                    trimmed.chars().filter(|ch| ch.is_ascii_digit()).collect()
+                                } else {
+                                    trimmed.chars().collect()
+                                };
                                 if let Some(start) = self.selection_start {
                                     let min = start.min(self.cursor_pos);
                                     let max = start.max(self.cursor_pos);
@@ -2283,7 +2569,7 @@ impl SettingsWindow {
 
                 if !c.chars().any(|ch| ch.is_control()) {
                     let input_chars: Vec<char> = c.chars().collect();
-                    if (field_idx == 5 || field_idx == 6 || field_idx == 7 || field_idx == 8)
+                    if field_requires_ascii_digits(field_idx)
                         && !input_chars.iter().all(|ch| ch.is_ascii_digit())
                     {
                         return true;
@@ -2310,7 +2596,14 @@ impl SettingsWindow {
                 }
             }
             Key::Named(NamedKey::Tab) => {
-                self.focused_field = Some((field_idx + 1) % 18);
+                if let Some(next_field) = next_focus_field(
+                    self.current_tab,
+                    field_idx,
+                    has_shift,
+                    self.editing_routine.as_ref(),
+                ) {
+                    self.focused_field = Some(next_field);
+                }
                 self.cursor_pos = 0;
                 self.selection_start = None;
                 self.window.request_redraw();
@@ -2329,13 +2622,14 @@ impl SettingsWindow {
             let val = self.get_field_text(idx, ai_config);
             let mut chars: Vec<char> = val.chars().collect();
 
-            (self.cursor_pos, self.selection_start) = normalize_text_selection(
-                self.cursor_pos,
-                self.selection_start,
-                chars.len(),
-            );
+            (self.cursor_pos, self.selection_start) =
+                normalize_text_selection(self.cursor_pos, self.selection_start, chars.len());
 
-            let input_chars: Vec<char> = text.chars().collect();
+            let input_chars: Vec<char> = if field_requires_ascii_digits(idx) {
+                text.chars().filter(|ch| ch.is_ascii_digit()).collect()
+            } else {
+                text.chars().collect()
+            };
 
             // Support selection replacement in IME too
             if let Some(start) = self.selection_start {
@@ -2482,8 +2776,9 @@ impl SettingsWindow {
                         let view_h = 80.0;
                         let content_h = (self.routine_memo_content_height / scale as f32) + 20.0;
                         let min_offset = -(content_h - view_h).max(0.0);
-                        self.routine_memo_scroll_offset = self.routine_memo_scroll_offset.clamp(min_offset, 0.0);
-                        
+                        self.routine_memo_scroll_offset =
+                            self.routine_memo_scroll_offset.clamp(min_offset, 0.0);
+
                         if (self.routine_memo_scroll_offset - old_off).abs() > 0.01 {
                             scrolled_memo = true;
                             self.window.request_redraw();
@@ -2522,7 +2817,7 @@ impl SettingsWindow {
 
         // Sidebar hover
         if lx >= 0.0 && lx <= 180.0 {
-            for i in 0..5 {
+            for i in 0..SETTINGS_TAB_COUNT {
                 let ty = 60.0 + i as f64 * 80.0;
                 if ly >= ty - 15.0 && ly <= ty + 45.0 {
                     if self.current_tab != i {
@@ -2626,12 +2921,20 @@ impl SettingsWindow {
                                 140.0 + idx as f64 * 190.0
                             };
                             let content_y_base = ry_start + 35.0;
-                            
+
                             let scale_f32 = scale as f32;
-                            let scroll_y = self.history_scroll_states.get(idx).copied().unwrap_or(0.0);
+                            let scroll_y =
+                                self.history_scroll_states.get(idx).copied().unwrap_or(0.0);
                             let layout_x = (lx as f32 - content_x_base as f32) * scale_f32;
-                            let layout_y = (ly as f32 - content_y_base as f32) * scale_f32 - (scroll_y * scale_f32);
-                            self.history_cursor_pos = get_cursor_index_from_xy(text, 16.0 * scale_f32, (450.0 * scale_f32) as u32, layout_x, layout_y);
+                            let layout_y = (ly as f32 - content_y_base as f32) * scale_f32
+                                - (scroll_y * scale_f32);
+                            self.history_cursor_pos = get_cursor_index_from_xy(
+                                text,
+                                16.0 * scale_f32,
+                                (450.0 * scale_f32) as u32,
+                                layout_x,
+                                layout_y,
+                            );
                             self.window.request_redraw();
                         }
                         return None;
@@ -2754,7 +3057,11 @@ impl SettingsWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_text_selection;
+    use super::{
+        field_requires_ascii_digits, focus_order, next_focus_field, normalize_routine_numeric,
+        normalize_text_selection,
+    };
+    use crate::types::{RoutineDef, ScheduleType};
 
     #[test]
     fn stale_selection_indices_are_clamped_to_current_text() {
@@ -2762,6 +3069,55 @@ mod tests {
 
         assert_eq!(cursor, 4);
         assert_eq!(selection_start, None);
+    }
+
+    #[test]
+    fn tab_navigation_includes_all_editable_ai_fields() {
+        assert_eq!(next_focus_field(2, 17, false, None), Some(0));
+        assert_eq!(next_focus_field(2, 0, true, None), Some(17));
+        assert!(!focus_order(2, None).contains(&19));
+    }
+
+    #[test]
+    fn routine_tab_navigation_skips_hidden_controls() {
+        let routine = RoutineDef {
+            id: "test".to_string(),
+            title: "Test".to_string(),
+            schedule_type: ScheduleType::Daily,
+            day_of_week: None,
+            day_of_month: None,
+            interval: None,
+            time_of_day: Some("12:00".to_string()),
+            memo: String::new(),
+            is_active: true,
+            expiry_minutes: None,
+        };
+        assert_eq!(focus_order(5, Some(&routine)), vec![501, 503, 504]);
+        assert_eq!(next_focus_field(5, 504, false, Some(&routine)), Some(501));
+    }
+
+    #[test]
+    fn numeric_fields_reject_non_digits_for_all_input_paths() {
+        assert!(field_requires_ascii_digits(5));
+        assert!(field_requires_ascii_digits(502));
+        assert!(field_requires_ascii_digits(505));
+        assert!(!field_requires_ascii_digits(503));
+        assert!(!field_requires_ascii_digits(504));
+    }
+
+    #[test]
+    fn routine_numeric_values_are_clamped_to_scheduler_ranges() {
+        assert_eq!(normalize_routine_numeric(&ScheduleType::Weekly, 502, 99), 6);
+        assert_eq!(normalize_routine_numeric(&ScheduleType::Monthly, 502, 0), 1);
+        assert_eq!(
+            normalize_routine_numeric(&ScheduleType::Monthly, 502, 99),
+            31
+        );
+        assert_eq!(
+            normalize_routine_numeric(&ScheduleType::IntervalDays, 502, 0),
+            1
+        );
+        assert_eq!(normalize_routine_numeric(&ScheduleType::Daily, 505, 0), 1);
     }
 }
 

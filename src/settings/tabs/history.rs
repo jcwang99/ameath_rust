@@ -113,13 +113,7 @@ pub fn draw(
                 let min_idx = sel_start.min(state.cursor_pos);
                 let max_idx = sel_start.max(state.cursor_pos);
                 if min_idx != max_idx {
-                    let rects = get_selection_rects(
-                        content,
-                        sc(16.0),
-                        content_w,
-                        min_idx,
-                        max_idx,
-                    );
+                    let rects = get_selection_rects(content, sc(16.0), content_w, min_idx, max_idx);
                     for (rx, ry, rw, rh) in rects {
                         let draw_y_f = content_y as f32 + ry + (scroll * scale);
                         let box_bottom = y_pos_i as f32 + card_h as f32;

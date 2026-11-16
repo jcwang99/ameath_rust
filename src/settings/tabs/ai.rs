@@ -828,16 +828,7 @@ pub fn draw(
                 };
 
                 draw_rounded_rect(
-                    buffer,
-                    w,
-                    segment_x,
-                    control_y,
-                    segment_w,
-                    control_h,
-                    6,
-                    color,
-                    w,
-                    h,
+                    buffer, w, segment_x, control_y, segment_w, control_h, 6, color, w, h,
                 );
                 draw_text_dw_ex(
                     buffer,
