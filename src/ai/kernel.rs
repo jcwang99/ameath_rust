@@ -38,6 +38,47 @@ fn contains_image_content(messages: &[Message]) -> bool {
     })
 }
 
+fn should_retry_tool_intent(
+    tag_found: bool,
+    declares_tool: bool,
+    has_actual_tool_calls: bool,
+    tool_used_this_run: bool,
+    retry_already_used: bool,
+) -> bool {
+    tag_found
+        && declares_tool
+        && !has_actual_tool_calls
+        && !tool_used_this_run
+        && !retry_already_used
+}
+
+#[cfg(test)]
+mod tool_intent_tests {
+    use super::should_retry_tool_intent;
+
+    #[test]
+    fn retries_a_declared_tool_intent_once_before_any_tool_was_used() {
+        assert!(should_retry_tool_intent(true, true, false, false, false));
+    }
+
+    #[test]
+    fn does_not_retry_a_summary_after_a_tool_was_already_used() {
+        assert!(!should_retry_tool_intent(true, true, false, true, false));
+    }
+
+    #[test]
+    fn does_not_repeat_the_intent_correction() {
+        assert!(!should_retry_tool_intent(true, true, false, false, true));
+    }
+
+    #[test]
+    fn only_a_yes_tag_without_structured_tool_calls_is_a_mismatch() {
+        assert!(!should_retry_tool_intent(false, true, false, false, false));
+        assert!(!should_retry_tool_intent(true, false, false, false, false));
+        assert!(!should_retry_tool_intent(true, true, true, false, false));
+    }
+}
+
 /// Downscale data-URI images while preserving their aspect ratio.
 /// Returns the number of image parts that were rewritten.
 pub(crate) fn compress_message_images(messages: &mut [Message], max_dimension: u32) -> usize {
@@ -371,6 +412,8 @@ impl ChatKernel {
 
             let mut fc_traces = Vec::new();
             let mut content_accumulator = Vec::new();
+            let mut tool_used_this_run = false;
+            let mut tool_intent_retry_used = false;
 
             while turns < max_turns {
                 turns += 1;
@@ -445,14 +488,19 @@ impl ChatKernel {
                             .as_ref()
                             .is_some_and(|tc| !tc.is_empty());
 
-                        // Verification Logic
-                        // Case 1 (HALLUCINATION): Declared YES but no tool_calls emitted.
-                        //   This is always dangerous regardless of turn number — intercept and force retry.
+                        // A YES tag is ambiguous after a tool has run: it may describe the
+                        // action just completed. Correct only a fresh mismatch, and only once.
                         // Case 2 (TENSE-CONFUSION): Declared NO but tool_calls were emitted.
                         //   This is a minor mis-declaration, commonly caused by the model mixing up
                         //   "I used a tool earlier" vs "I'm using a tool now". Only intercept on Turn 1
                         //   to avoid disrupting mid-loop summaries after tool results come back.
-                        let hallucination = tag_found && is_declaring_tool && !has_actual_tool_calls;
+                        let hallucination = should_retry_tool_intent(
+                            tag_found,
+                            is_declaring_tool,
+                            has_actual_tool_calls,
+                            tool_used_this_run,
+                            tool_intent_retry_used,
+                        );
                         let tense_confusion = tag_found && !is_declaring_tool && has_actual_tool_calls;
 
                         // Use stripped content downstream
@@ -482,7 +530,8 @@ impl ChatKernel {
                         }
 
                         if hallucination {
-                            tracing::warn!("LLM Hallucination on Turn {}: Declared [TOOL_INTENT: YES] but no tool_calls in response. Forcing retry.", turns);
+                            tool_intent_retry_used = true;
+                            tracing::warn!("LLM declared [TOOL_INTENT: YES] without tool_calls on Turn {}; requesting one correction (no tools have run yet)", turns);
                             messages.push(response_msg);
                             messages.push(Message {
                                 role: "user".to_string(),
@@ -508,6 +557,7 @@ impl ChatKernel {
                         }
                         if let Some(calls) = &response_msg.tool_calls {
                             if !calls.is_empty() {
+                                tool_used_this_run = true;
                                 tracing::info!("Tool Calls detected: {}", calls.len());
                             }
                         }
