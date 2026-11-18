@@ -26,24 +26,28 @@ impl SubAgentSkill {
         // Build available tools
         let all_tools = manager.get_tools_for_llm();
         let tools: Vec<Value> = match tools_filter {
-            Some(whitelist) if !whitelist.contains(&"*".to_string()) => {
-                all_tools.into_iter().filter(|t| {
+            Some(whitelist) if !whitelist.contains(&"*".to_string()) => all_tools
+                .into_iter()
+                .filter(|t| {
                     t.get("function")
                         .and_then(|f| f.get("name"))
                         .and_then(|n| n.as_str())
                         .map_or(false, |name| whitelist.contains(&name.to_string()))
-                }).collect()
-            }
+                })
+                .collect(),
             _ => all_tools,
         };
 
         // Filter out the sub_agent tool itself to prevent recursive spawning
-        let tools: Vec<Value> = tools.into_iter().filter(|t| {
-            t.get("function")
-                .and_then(|f| f.get("name"))
-                .and_then(|n| n.as_str())
-                .map_or(true, |name| name != "sub_agent")
-        }).collect();
+        let tools: Vec<Value> = tools
+            .into_iter()
+            .filter(|t| {
+                t.get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(|n| n.as_str())
+                    .map_or(true, |name| name != "sub_agent")
+            })
+            .collect();
 
         let tools_opt = if tools.is_empty() { None } else { Some(tools) };
 
@@ -71,7 +75,12 @@ impl SubAgentSkill {
 
         while turns < react_limit {
             turns += 1;
-            tracing::debug!("[SubAgent] Turn {}/{} for task: {:.50}", turns, react_limit, task);
+            tracing::debug!(
+                "[SubAgent] Turn {}/{} for task: {:.50}",
+                turns,
+                react_limit,
+                task
+            );
 
             let mut retries = 3;
             let response = loop {
@@ -96,7 +105,10 @@ impl SubAgentSkill {
             }
 
             // Check for tool calls
-            let has_tool_calls = response.tool_calls.as_ref().map_or(false, |tc| !tc.is_empty());
+            let has_tool_calls = response
+                .tool_calls
+                .as_ref()
+                .map_or(false, |tc| !tc.is_empty());
 
             if !has_tool_calls {
                 // No tool calls = sub-agent is done
@@ -109,16 +121,25 @@ impl SubAgentSkill {
             if let Some(tool_calls) = &response.tool_calls {
                 for tc in tool_calls {
                     let skill_name = &tc.function.name;
-                    let args: Value = serde_json::from_str(&tc.function.arguments)
-                        .unwrap_or_else(|_| json!({}));
+                    let args: Value =
+                        serde_json::from_str(&tc.function.arguments).unwrap_or_else(|_| json!({}));
 
-                    tracing::info!("[SubAgent] Calling tool: {} args: {:.200}", skill_name, tc.function.arguments);
+                    tracing::info!(
+                        "[SubAgent] Calling tool: {} args: {:.200}",
+                        skill_name,
+                        tc.function.arguments
+                    );
 
                     let result = if let Some(skill) = manager.get(skill_name) {
                         match skill.execute(args).await {
                             Ok(out) => {
                                 let preview: String = out.chars().take(200).collect();
-                                tracing::info!("[SubAgent] Tool '{}' returned {} chars: {}", skill_name, out.len(), preview);
+                                tracing::info!(
+                                    "[SubAgent] Tool '{}' returned {} chars: {}",
+                                    skill_name,
+                                    out.len(),
+                                    preview
+                                );
                                 out
                             }
                             Err(e) => {
@@ -142,13 +163,20 @@ impl SubAgentSkill {
         }
 
         if last_text.is_empty() {
-            tracing::info!("[SubAgent] Completed in {} turns (no output) | task: {:.80}", turns, task);
+            tracing::info!(
+                "[SubAgent] Completed in {} turns (no output) | task: {:.80}",
+                turns,
+                task
+            );
             Ok("(sub-agent produced no output)".to_string())
         } else {
             let preview: String = last_text.chars().take(300).collect();
             tracing::info!(
                 "[SubAgent] Completed in {} turns ({} chars) | task: {:.80} | result: {}",
-                turns, last_text.len(), task, preview
+                turns,
+                last_text.len(),
+                task,
+                preview
             );
             Ok(last_text)
         }
@@ -191,7 +219,11 @@ impl Skill for SubAgentSkill {
 
         let react_limit = args["react_limit"].as_u64().unwrap_or(10) as usize;
 
-        tracing::info!("[SubAgent] Spawning {} sub-agent(s), react_limit={}", tasks.len(), react_limit);
+        tracing::info!(
+            "[SubAgent] Spawning {} sub-agent(s), react_limit={}",
+            tasks.len(),
+            react_limit
+        );
 
         // Spawn all sub-agents in parallel
         let mut handles = Vec::new();
@@ -202,7 +234,8 @@ impl Skill for SubAgentSkill {
             let tools_filter = tools_filter.clone();
 
             handles.push(tokio::spawn(async move {
-                let result = Self::run_one(&client, &manager, &task, &tools_filter, react_limit).await;
+                let result =
+                    Self::run_one(&client, &manager, &task, &tools_filter, react_limit).await;
                 (i, task, result)
             }));
         }
@@ -222,21 +255,39 @@ impl Skill for SubAgentSkill {
         // Format output
         let total = results.len();
         let success_count = results.iter().filter(|(_, _, r)| r.is_ok()).count();
-        let mut output = format!("[Sub-Agent Results: {}/{} succeeded]\n\n", success_count, total);
+        let mut output = format!(
+            "[Sub-Agent Results: {}/{} succeeded]\n\n",
+            success_count, total
+        );
 
         for (i, task, result) in &results {
             let task_preview: String = task.chars().take(80).collect();
             match result {
                 Ok(text) => {
-                    output.push_str(&format!("--- Agent #{} ({}) ---\n{}\n\n", i + 1, task_preview, text));
+                    output.push_str(&format!(
+                        "--- Agent #{} ({}) ---\n{}\n\n",
+                        i + 1,
+                        task_preview,
+                        text
+                    ));
                 }
                 Err(e) => {
-                    output.push_str(&format!("--- Agent #{} ({}) [FAILED] ---\n{}\n\n", i + 1, task_preview, e));
+                    output.push_str(&format!(
+                        "--- Agent #{} ({}) [FAILED] ---\n{}\n\n",
+                        i + 1,
+                        task_preview,
+                        e
+                    ));
                 }
             }
         }
 
-        tracing::info!("[SubAgent] All done: {}/{} succeeded, total output {} chars", success_count, total, output.len());
+        tracing::info!(
+            "[SubAgent] All done: {}/{} succeeded, total output {} chars",
+            success_count,
+            total,
+            output.len()
+        );
 
         Ok(output)
     }

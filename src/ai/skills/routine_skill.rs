@@ -40,12 +40,28 @@ impl Skill for RoutineSkill {
                 let mut out = String::new();
                 for (i, r) in cfg.routines.iter().enumerate() {
                     let schedule = match r.schedule_type {
-                        ScheduleType::Daily => format!("Daily at {}", r.time_of_day.as_deref().unwrap_or("?")),
-                        ScheduleType::Weekly => format!("Weekly day={} at {}", r.day_of_week.unwrap_or(0), r.time_of_day.as_deref().unwrap_or("?")),
-                        ScheduleType::Monthly => format!("Monthly day={} at {}", r.day_of_month.unwrap_or(1), r.time_of_day.as_deref().unwrap_or("?")),
-                        ScheduleType::IntervalDays => format!("Every {} days", r.interval.unwrap_or(1)),
-                        ScheduleType::IntervalHours => format!("Every {} hours", r.interval.unwrap_or(1)),
-                        ScheduleType::IntervalMinutes => format!("Every {} minutes", r.interval.unwrap_or(1)),
+                        ScheduleType::Daily => {
+                            format!("Daily at {}", r.time_of_day.as_deref().unwrap_or("?"))
+                        }
+                        ScheduleType::Weekly => format!(
+                            "Weekly day={} at {}",
+                            r.day_of_week.unwrap_or(0),
+                            r.time_of_day.as_deref().unwrap_or("?")
+                        ),
+                        ScheduleType::Monthly => format!(
+                            "Monthly day={} at {}",
+                            r.day_of_month.unwrap_or(1),
+                            r.time_of_day.as_deref().unwrap_or("?")
+                        ),
+                        ScheduleType::IntervalDays => {
+                            format!("Every {} days", r.interval.unwrap_or(1))
+                        }
+                        ScheduleType::IntervalHours => {
+                            format!("Every {} hours", r.interval.unwrap_or(1))
+                        }
+                        ScheduleType::IntervalMinutes => {
+                            format!("Every {} minutes", r.interval.unwrap_or(1))
+                        }
                     };
                     let status = if r.is_active { "ON" } else { "OFF" };
                     let expiry_str = match r.expiry_minutes {
@@ -54,7 +70,13 @@ impl Skill for RoutineSkill {
                     };
                     out.push_str(&format!(
                         "{}. [{}] \"{}\" | {} | {} | memo: {:.80}\n   id: {}\n",
-                        i + 1, status, r.title, schedule, expiry_str, r.memo, r.id
+                        i + 1,
+                        status,
+                        r.title,
+                        schedule,
+                        expiry_str,
+                        r.memo,
+                        r.id
                     ));
                 }
                 Ok(out)
@@ -95,15 +117,21 @@ impl Skill for RoutineSkill {
                 // Validate required fields per schedule type
                 match schedule_type {
                     ScheduleType::Weekly if day_of_week.is_none() => {
-                        return Err("Weekly schedule requires 'day_of_week' (0=Mon..6=Sun)".to_string());
+                        return Err(
+                            "Weekly schedule requires 'day_of_week' (0=Mon..6=Sun)".to_string()
+                        );
                     }
                     ScheduleType::Monthly if day_of_month.is_none() => {
                         return Err("Monthly schedule requires 'day_of_month' (1-31)".to_string());
                     }
-                    ScheduleType::IntervalDays | ScheduleType::IntervalHours | ScheduleType::IntervalMinutes
+                    ScheduleType::IntervalDays
+                    | ScheduleType::IntervalHours
+                    | ScheduleType::IntervalMinutes
                         if interval.is_none() =>
                     {
-                        return Err("Interval schedule requires 'interval' (positive integer)".to_string());
+                        return Err(
+                            "Interval schedule requires 'interval' (positive integer)".to_string()
+                        );
                     }
                     _ => {}
                 }
@@ -124,7 +152,10 @@ impl Skill for RoutineSkill {
                 cfg.routines.push(routine);
                 cfg.save();
 
-                Ok(format!("Routine '{}' added successfully. It is now active.", title))
+                Ok(format!(
+                    "Routine '{}' added successfully. It is now active.",
+                    title
+                ))
             }
             "remove" => {
                 let id = args["id"]
@@ -132,15 +163,26 @@ impl Skill for RoutineSkill {
                     .ok_or("Missing 'id' (string). You MUST call this tool with action='list' first, then copy the exact UUID from the output. Never guess an ID.")?;
 
                 let before = cfg.routines.len();
-                let removed_title = cfg.routines.iter().find(|r| r.id == id).map(|r| r.title.clone());
+                let removed_title = cfg
+                    .routines
+                    .iter()
+                    .find(|r| r.id == id)
+                    .map(|r| r.title.clone());
                 cfg.routines.retain(|r| r.id != id);
 
                 if cfg.routines.len() == before {
-                    return Err(format!("No routine found with id '{}'. Use action='list' to see all routine IDs.", id));
+                    return Err(format!(
+                        "No routine found with id '{}'. Use action='list' to see all routine IDs.",
+                        id
+                    ));
                 }
 
                 cfg.save();
-                Ok(format!("Routine '{}' (id={}) removed successfully.", removed_title.unwrap_or_default(), id))
+                Ok(format!(
+                    "Routine '{}' (id={}) removed successfully.",
+                    removed_title.unwrap_or_default(),
+                    id
+                ))
             }
             "update" => {
                 let id = args["id"]
@@ -209,9 +251,16 @@ impl Skill for RoutineSkill {
 
                 let name = routine.title.clone();
                 cfg.save();
-                Ok(format!("Routine '{}' updated: [{}]", name, changes.join(", ")))
+                Ok(format!(
+                    "Routine '{}' updated: [{}]",
+                    name,
+                    changes.join(", ")
+                ))
             }
-            _ => Err(format!("Unknown action '{}'. Use 'add', 'list', 'update', or 'remove'.", action)),
+            _ => Err(format!(
+                "Unknown action '{}'. Use 'add', 'list', 'update', or 'remove'.",
+                action
+            )),
         }
     }
 

@@ -139,7 +139,8 @@ impl ScratchpadRenderer {
                     let props = D2D1_RENDER_TARGET_PROPERTIES {
                         r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
                         pixelFormat: D2D1_PIXEL_FORMAT {
-                            format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+                            format:
+                                windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
                             alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
                         },
                         dpiX: 96.0,
@@ -165,12 +166,12 @@ impl ScratchpadRenderer {
                     right: tw,
                     bottom: th,
                 };
-                
+
                 // 0x8899000C is D2DERR_RECREATE_TARGET
-                // We call BindDC on a temporary reference to avoid holding a borrow 
+                // We call BindDC on a temporary reference to avoid holding a borrow
                 // when we might need to reset self.rt below.
                 let bind_result = self.rt.as_ref().unwrap().BindDC(self.hdc_mem, &bind_rect);
-                
+
                 match bind_result {
                     Ok(_) => return (self.rt.as_ref().unwrap(), self.bits),
                     Err(e) if e.code().0 == 0x8899000Cu32 as i32 => {
@@ -178,7 +179,10 @@ impl ScratchpadRenderer {
                         self.rt = None; // Now safe to assign because temp borrow in bind_result is gone
                     }
                     Err(e) => {
-                        panic!("Direct2D BindDC critical failure: {:?}. Status: {}x{}", e, tw, th);
+                        panic!(
+                            "Direct2D BindDC critical failure: {:?}. Status: {}x{}",
+                            e, tw, th
+                        );
                     }
                 }
             }
@@ -453,7 +457,15 @@ pub fn get_or_create_layout_ex(
 }
 
 fn get_or_create_layout(text: &str, font_size: f32, max_w: u32) -> IDWriteTextLayout {
-    get_or_create_layout_ex(text, font_size, max_w, "Microsoft YaHei", false, false, false)
+    get_or_create_layout_ex(
+        text,
+        font_size,
+        max_w,
+        "Microsoft YaHei",
+        false,
+        false,
+        false,
+    )
 }
 
 pub fn draw_rect(
@@ -468,7 +480,11 @@ pub fn draw_rect(
     max_h: u32,
 ) {
     let color_a = (color >> 24) & 0xFF;
-    let a = if color_a == 0 && (color & 0xFFFFFF) != 0 { 255 } else { color_a };
+    let a = if color_a == 0 && (color & 0xFFFFFF) != 0 {
+        255
+    } else {
+        color_a
+    };
 
     let fill_color = if a == 255 {
         (color & 0xFFFFFF) | (0xFF << 24)
@@ -495,7 +511,7 @@ pub fn draw_rect(
     let surface_w_usize = surface_w as usize;
     let rect_w = (max_x - start_x) as usize;
 
-    // OPTIMIZATION: Parallelization threshold tuned. 
+    // OPTIMIZATION: Parallelization threshold tuned.
     if (end_y_idx - start_y_idx) * rect_w > 65536 {
         buffer[start_y_idx * surface_w_usize..end_y_idx * surface_w_usize]
             .par_chunks_mut(surface_w_usize)
@@ -558,7 +574,11 @@ pub fn draw_rect_alpha(
                         let bg_g = ((bg >> 8) & 0xFF) as f32;
                         let bb = (bg & 0xFF) as f32;
                         let color_sa = (color >> 24) & 0xFF;
-                        let rect_alpha = if color_sa == 0 { alpha } else { (color_sa as f32 / 255.0) * alpha };
+                        let rect_alpha = if color_sa == 0 {
+                            alpha
+                        } else {
+                            (color_sa as f32 / 255.0) * alpha
+                        };
                         let inv_alpha = 1.0 - rect_alpha;
 
                         let r = br * inv_alpha + fr * rect_alpha;
@@ -566,7 +586,8 @@ pub fn draw_rect_alpha(
                         let b = bb * inv_alpha + fb * rect_alpha;
                         let out_a = (rect_alpha * 255.0 + (bg >> 24) as f32 * inv_alpha) as u32;
 
-                        row[cx as usize] = (out_a << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+                        row[cx as usize] =
+                            (out_a << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
                     }
                 });
         } else {
@@ -578,7 +599,11 @@ pub fn draw_rect_alpha(
                     let bb = (bg & 0xFF) as f32;
 
                     let color_sa = (color >> 24) & 0xFF;
-                    let rect_alpha = if color_sa == 0 { alpha } else { (color_sa as f32 / 255.0) * alpha };
+                    let rect_alpha = if color_sa == 0 {
+                        alpha
+                    } else {
+                        (color_sa as f32 / 255.0) * alpha
+                    };
                     let inv_alpha = 1.0 - rect_alpha;
 
                     let r = br * inv_alpha + fr * rect_alpha;
@@ -586,7 +611,8 @@ pub fn draw_rect_alpha(
                     let b = bb * inv_alpha + fb * rect_alpha;
                     let out_a = (rect_alpha * 255.0 + (bg >> 24) as f32 * inv_alpha) as u32;
 
-                    row[cx as usize] = (out_a << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+                    row[cx as usize] =
+                        (out_a << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
                 }
             }
         }
@@ -678,7 +704,17 @@ pub fn draw_rounded_rect_with_border(
         let r = r.min(w / 2).min(h / 2);
         let mut alpha = vec![0u8; (w * h) as usize];
         draw_rounded_rect_border_alpha_internal(&mut alpha, w, w, h, r, border_thickness);
-        blit_alpha(buffer, surface_w, x, y, h, &alpha, border_color, max_w, max_h);
+        blit_alpha(
+            buffer,
+            surface_w,
+            x,
+            y,
+            h,
+            &alpha,
+            border_color,
+            max_w,
+            max_h,
+        );
     }
 }
 
@@ -715,16 +751,20 @@ pub fn draw_rounded_rect_border_alpha_internal(
         } else {
             let dy_f = dy as f32;
             let dy_sq = dy_f * dy_f;
-            
+
             for cx in 0..w {
                 let is_left = cx < r;
                 let is_right = cx >= w - r;
-                
+
                 if is_left || is_right {
-                    let dx = if is_left { (r - cx) as i32 } else { (cx - (w - r - 1)) as i32 };
+                    let dx = if is_left {
+                        (r - cx) as i32
+                    } else {
+                        (cx - (w - r - 1)) as i32
+                    };
                     let dx_f = dx as f32;
                     let dist = (dx_f * dx_f + dy_sq).sqrt();
-                    
+
                     // Improved AA for smooth corners
                     let outer_coverage = (r_f + 0.5 - dist).clamp(0.0, 1.0);
                     let inner_coverage = (r_inner + 0.5 - dist).clamp(0.0, 1.0);
@@ -763,7 +803,11 @@ pub fn draw_circle(
     }
 
     let alpha_base = (color >> 24) & 0xFF;
-    let a_fixed = if alpha_base == 0 && (color & 0xFFFFFF) != 0 { 255 } else { alpha_base };
+    let a_fixed = if alpha_base == 0 && (color & 0xFFFFFF) != 0 {
+        255
+    } else {
+        alpha_base
+    };
     let rb_src = color & 0x00FF00FF;
     let g_src = color & 0x0000FF00;
 
@@ -771,13 +815,13 @@ pub fn draw_circle(
         let dy = (y - cy) as f32;
         let dy_sq = dy * dy;
         let row_idx = y as usize * surface_w as usize;
-        
+
         for x in start_x..end_x {
             let dx = (x - cx) as f32;
             let dist = (dx * dx + dy_sq).sqrt();
             let coverage = (r_f + 0.5 - dist).clamp(0.0, 1.0);
             let alpha = (a_fixed as f32 * coverage) as u32;
-            
+
             if alpha == 0 {
                 continue;
             }
@@ -852,10 +896,14 @@ pub fn blit_alpha(
             let g_src = color & 0x0000FF00;
 
             let color_a = (color >> 24) & 0xFF;
-            let sa = if color_a == 0 && color != 0 { 255 } else { color_a };
+            let sa = if color_a == 0 && color != 0 {
+                255
+            } else {
+                color_a
+            };
             let effective_a = (sa * edge_alpha) >> 8;
             let inv_a = 255 - effective_a;
-            
+
             let rb_res = (rb_src * effective_a + rb_dest * inv_a) >> 8;
             let g_res = (g_src * effective_a + g_dest * inv_a) >> 8;
             let a_res = effective_a + ((((d >> 24) & 0xFF) * inv_a) >> 8);
@@ -1163,7 +1211,7 @@ fn draw_text_dw_ex_internal(
                     scroll_offset as i32,
                     scroll_x as i32,
                 );
-                
+
                 // Update L1
                 LAST_RASTER_RESULT.with(|r| {
                     *r.borrow_mut() = Some((raster_key, entry_cloned));
@@ -1215,7 +1263,15 @@ fn draw_text_dw_ex_internal(
             let _g = ((color >> 8) & 0xFF) as f32 / 255.0;
             let _b = (color & 0xFF) as f32 / 255.0;
             let brush = rt
-                .CreateSolidColorBrush(&D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }, None) // Always white for Mask
+                .CreateSolidColorBrush(
+                    &D2D1_COLOR_F {
+                        r: 1.0,
+                        g: 1.0,
+                        b: 1.0,
+                        a: 1.0,
+                    },
+                    None,
+                ) // Always white for Mask
                 .unwrap();
 
             let draw_offset_y = if is_huge { -scroll_offset } else { 0.0 };
@@ -1285,7 +1341,7 @@ fn draw_text_dw_ex_internal(
                     cache.total_pixels = cache.total_pixels.saturating_sub(old_entry.pixel_count);
                 }
                 cache.total_pixels += pixel_count;
-                
+
                 // Update L1
                 LAST_RASTER_RESULT.with(|r| {
                     *r.borrow_mut() = Some((raster_key, entry_arc));
@@ -1314,10 +1370,10 @@ pub fn blit_alpha_pixels(
     // Apply scroll offset and clip to visible region (max_w / max_h)
     // src_x_off/src_y_off are likely negative as they represent scrolling the layout *left/up*
     // but the logic here handles them as offsets into the src_alpha mask.
-    
+
     let start_y = dest_y.max(0);
     let end_y = (dest_y + max_h as i32).min(surface_h as i32);
-    
+
     if start_y >= end_y {
         return;
     }
@@ -1325,13 +1381,13 @@ pub fn blit_alpha_pixels(
     let surface_w = surface_w as usize;
     let start_x_dest = dest_x.max(0);
     let end_x_dest = (dest_x + max_w as i32).min(surface_w as i32);
-    
+
     if start_x_dest >= end_x_dest {
         return;
     }
 
     let _tw_u = tw as usize;
-    
+
     let surface_w_usize = surface_w as usize;
     let tw_u = tw as usize;
     let start_y_idx = start_y as usize;
@@ -1367,7 +1423,11 @@ pub fn blit_alpha_pixels(
                             let g_src = color & 0x0000FF00;
 
                             let color_a = (color >> 24) & 0xFF;
-                            let sa = if color_a == 0 && color != 0 { 255 } else { color_a };
+                            let sa = if color_a == 0 && color != 0 {
+                                255
+                            } else {
+                                color_a
+                            };
                             let effective_a = (sa * edge_alpha) >> 8;
                             let inv_a = 255 - effective_a;
 
@@ -1408,7 +1468,11 @@ pub fn blit_alpha_pixels(
                         let g_src = color & 0x0000FF00;
 
                         let color_a = (color >> 24) & 0xFF;
-                        let sa = if color_a == 0 && color != 0 { 255 } else { color_a };
+                        let sa = if color_a == 0 && color != 0 {
+                            255
+                        } else {
+                            color_a
+                        };
                         let effective_a = (sa * edge_alpha) >> 8;
                         let inv_a = 255 - effective_a;
 
@@ -1458,7 +1522,15 @@ pub fn get_metrics_dw_ex(
 }
 
 pub fn get_metrics_dw(text: &str, font_size: f32, max_w: u32) -> (f32, f32) {
-    get_metrics_dw_ex(text, font_size, max_w, "Microsoft YaHei", false, false, false)
+    get_metrics_dw_ex(
+        text,
+        font_size,
+        max_w,
+        "Microsoft YaHei",
+        false,
+        false,
+        false,
+    )
 }
 #[cfg(target_os = "windows")]
 #[allow(dead_code)]
@@ -1672,8 +1744,6 @@ pub fn get_selection_rects(
     Vec::new()
 }
 
-
-
 pub fn draw_triangle(
     buffer: &mut [u32],
     surface_w: u32,
@@ -1691,21 +1761,27 @@ pub fn draw_triangle(
     }
 
     let color_a = (color >> 24) & 0xFF;
-    let alpha = if color_a == 0 && (color & 0xFFFFFF) != 0 { 255 } else { color_a };
+    let alpha = if color_a == 0 && (color & 0xFFFFFF) != 0 {
+        255
+    } else {
+        color_a
+    };
     if alpha == 0 {
         return;
     }
-    
+
     let rb_src = color & 0x00FF00FF;
     let g_src = color & 0x0000FF00;
 
     let start_y = y.max(0);
     let end_y = (y + height as i32).min(max_h as i32);
-    
+
     let start_x = x.max(0);
     let end_x = (x + base as i32).min(max_w as i32);
-    
-    if start_y >= end_y || start_x >= end_x { return; }
+
+    if start_y >= end_y || start_x >= end_x {
+        return;
+    }
 
     let half_h = height as f32 / 2.0;
 
@@ -1713,11 +1789,11 @@ pub fn draw_triangle(
         let dy = (cur_y - y) as f32;
         // distance from center Y
         let dist = (dy - half_h).abs();
-        
+
         // Triangle shape: wider at center, narrow at edges. Or inverted depending on direction.
         let ratio = 1.0 - (dist / half_h).clamp(0.0, 1.0);
         let max_w_at_y = (base as f32 * ratio) as i32;
-        
+
         let (row_start_x, row_end_x) = if direction_right {
             // Flat on left |>. X starts at `x`, ends at `x + max_w_at_y`
             (x, x + max_w_at_y)
@@ -1725,12 +1801,14 @@ pub fn draw_triangle(
             // Flat on right <|. X starts at `x + base - max_w_at_y`, ends at `x + base`
             (x + base as i32 - max_w_at_y, x + base as i32)
         };
-        
+
         let c_start_x = row_start_x.max(start_x).min(end_x);
         let c_end_x = row_end_x.max(c_start_x).min(end_x);
-        
-        if c_start_x >= c_end_x { continue; }
-        
+
+        if c_start_x >= c_end_x {
+            continue;
+        }
+
         let row_idx = cur_y as usize * surface_w as usize;
         for cur_x in c_start_x..c_end_x {
             let idx = row_idx + cur_x as usize;
@@ -1764,36 +1842,44 @@ pub fn blit_32bit_premultiplied(
     clip_w: u32,
     clip_h: u32,
 ) {
-    if opacity <= 0.0 { return; }
+    if opacity <= 0.0 {
+        return;
+    }
     let global_alpha = (opacity * 255.0) as u32;
 
     let surface_h = (dst.len() as u32) / dst_w.max(1);
     let start_y = y.max(0);
-    let end_y = (y + src_h as i32).min(y + clip_h as i32).min(surface_h as i32);
+    let end_y = (y + src_h as i32)
+        .min(y + clip_h as i32)
+        .min(surface_h as i32);
     let start_x = x.max(0);
     let end_x = (x + src_w as i32).min(x + clip_w as i32).min(dst_w as i32);
 
-    if start_y >= end_y || start_x >= end_x { return; }
+    if start_y >= end_y || start_x >= end_x {
+        return;
+    }
 
     for dy in start_y..end_y {
         let sy = dy - y;
         let dst_row_base = (dy as usize) * (dst_w as usize);
         let src_row_base = (sy as usize) * (src_w as usize);
-        
+
         for dx in start_x..end_x {
             let sx = dx - x;
             let s_pixel = src[src_row_base + sx as usize];
-            
+
             // Extract source components (premultiplied)
             let sa = (((s_pixel >> 24) & 0xFF) * global_alpha) >> 8;
-            if sa == 0 { continue; }
+            if sa == 0 {
+                continue;
+            }
 
             let sr = (((s_pixel >> 16) & 0xFF) * global_alpha) >> 8;
             let sg = (((s_pixel >> 8) & 0xFF) * global_alpha) >> 8;
             let sb = ((s_pixel & 0xFF) * global_alpha) >> 8;
 
             let d_pixel = dst[dst_row_base + dx as usize];
-            
+
             if sa >= 255 {
                 dst[dst_row_base + dx as usize] = (sa << 24) | (sr << 16) | (sg << 8) | sb;
                 continue;
@@ -1802,7 +1888,7 @@ pub fn blit_32bit_premultiplied(
             // Standard premultiplied alpha blending:
             // dest = src + dest * (1 - src_alpha)
             let inv_sa = 255 - sa;
-            
+
             let dr = (d_pixel >> 16) & 0xFF;
             let dg = (d_pixel >> 8) & 0xFF;
             let db = d_pixel & 0xFF;
@@ -1822,8 +1908,12 @@ pub fn blit_32bit_premultiplied(
 pub fn premultiply_alpha_buffer(buffer: &mut [u32]) {
     for pixel in buffer.iter_mut() {
         let color_a = (*pixel >> 24) & 0xFF;
-        let a = if color_a == 0 && (*pixel & 0xFFFFFF) != 0 { 255 } else { color_a };
-        
+        let a = if color_a == 0 && (*pixel & 0xFFFFFF) != 0 {
+            255
+        } else {
+            color_a
+        };
+
         if a == 255 {
             *pixel = (*pixel & 0xFFFFFF) | (0xFF << 24);
             continue;

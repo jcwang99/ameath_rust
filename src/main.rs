@@ -8,8 +8,8 @@ mod chat_window;
 mod interaction;
 mod logging;
 mod menu;
-mod music_player;
 mod music_panel;
+mod music_player;
 mod pet;
 mod pomodoro;
 mod render;
@@ -77,12 +77,29 @@ fn is_mouse_over_bubble(
     let (bubble_x, bubble_y) = if mouse_is_monitor_local {
         (bx as f64, by as f64)
     } else {
-        (target_pos.0 as f64 + bx as f64, target_pos.1 as f64 + by as f64)
+        (
+            target_pos.0 as f64 + bx as f64,
+            target_pos.1 as f64 + by as f64,
+        )
     };
     mouse.0 >= bubble_x
         && mouse.0 <= bubble_x + bw as f64
         && mouse.1 >= bubble_y
         && mouse.1 <= bubble_y + bh as f64
+}
+
+const TOPMOST_REASSERT_INTERVAL: Duration = Duration::from_secs(2);
+
+fn should_reassert_topmost(
+    current_layer: types::WindowLayer,
+    last_reassert: Instant,
+    now: Instant,
+) -> bool {
+    current_layer == types::WindowLayer::Top
+        && now
+            .checked_duration_since(last_reassert)
+            .unwrap_or_default()
+            >= TOPMOST_REASSERT_INTERVAL
 }
 
 type FrameCacheKey = (PetState, usize, usize);
@@ -168,7 +185,10 @@ fn main() {
     }
 
     logging::init_logging();
-    tracing::info!("[App] Ameath starting up | cwd: {:?}", std::env::current_dir().unwrap_or_default());
+    tracing::info!(
+        "[App] Ameath starting up | cwd: {:?}",
+        std::env::current_dir().unwrap_or_default()
+    );
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
@@ -391,20 +411,30 @@ fn main() {
     let mut menu_manager = menu::QuickMenu::new();
     let mut music_player = music_player::MusicPlayer::new();
     let music_renderer = music_panel::MusicRenderer::new();
-    let (interaction_capture_tx, interaction_capture_rx) = std::sync::mpsc::channel::<crate::types::ChatInput>();
+    let (interaction_capture_tx, interaction_capture_rx) =
+        std::sync::mpsc::channel::<crate::types::ChatInput>();
     let mut last_music_render: Option<music_panel::MusicRenderResult> = None;
 
     // AI Kernel & Channel
     let scheduler = interaction::ActionScheduler::new();
     let shared_routines = std::sync::Arc::new(std::sync::Mutex::new(types::RoutinesConfig::load()));
     let (ai_tx, ai_rx) = std::sync::mpsc::channel::<AiResponseEvent>();
-    let mut chat_kernel =
-        std::sync::Arc::new(ai::kernel::ChatKernel::new(&ai_config, scheduler.clone(), shared_routines.clone()));
+    let mut chat_kernel = std::sync::Arc::new(ai::kernel::ChatKernel::new(
+        &ai_config,
+        scheduler.clone(),
+        shared_routines.clone(),
+    ));
 
     // AI 请求队列：用户输入(高优先级) + 系统事件(低优先级)，单一消费者顺序处理
     // Keep both queues bounded so a slow network or model cannot grow memory without limit.
-    let (user_req_tx, mut user_req_rx) = tokio::sync::mpsc::channel::<(crate::types::ChatInput, std::sync::Arc<ai::kernel::ChatKernel>)>(8);
-    let (sys_req_tx, mut sys_req_rx) = tokio::sync::mpsc::channel::<(crate::types::ChatInput, std::sync::Arc<ai::kernel::ChatKernel>)>(8);
+    let (user_req_tx, mut user_req_rx) = tokio::sync::mpsc::channel::<(
+        crate::types::ChatInput,
+        std::sync::Arc<ai::kernel::ChatKernel>,
+    )>(8);
+    let (sys_req_tx, mut sys_req_rx) = tokio::sync::mpsc::channel::<(
+        crate::types::ChatInput,
+        std::sync::Arc<ai::kernel::ChatKernel>,
+    )>(8);
     {
         let consumer_tx = ai_tx.clone();
         tokio::spawn(async move {
@@ -430,8 +460,11 @@ fn main() {
         let _ = std::fs::create_dir_all(&music_dir);
     }
     music_player.set_path(music_dir);
-    let mut interaction_manager =
-        interaction::InteractionManager::new(ai_config.clone(), scheduler.clone(), shared_routines.clone());
+    let mut interaction_manager = interaction::InteractionManager::new(
+        ai_config.clone(),
+        scheduler.clone(),
+        shared_routines.clone(),
+    );
     let (path_tx, path_rx) = std::sync::mpsc::channel::<Option<std::path::PathBuf>>();
     let (tts_path_tx, tts_path_rx) = std::sync::mpsc::channel::<Option<std::path::PathBuf>>();
     let (tts_controller, tts_rx) = if let Some((c, r)) = tts::TtsController::new() {
@@ -494,6 +527,7 @@ fn main() {
     let mut settings_win: Option<SettingsWindow> = None;
     let mut menu_visible_timer: Option<Instant> = None;
     let mut current_layer = types::WindowLayer::Top;
+    let mut last_topmost_reassert = Instant::now();
     let mut last_bubble_click_time: Option<Instant> = None;
 
     let mut composite_data: Vec<u8> = Vec::new();
@@ -530,7 +564,7 @@ fn main() {
                     let center_x = m_x_logical + (m_w_logical / 2.0) - (chat_w / 2.0);
                     let center_y = m_y_logical + (m_h_logical / 2.0) - (chat_h / 2.0);
                     chat_window.show(winit::dpi::LogicalPosition::new(center_x, center_y));
-                    
+
 
                 }
             }
@@ -573,7 +607,7 @@ fn main() {
                                             thinking_state = ThinkingState::Standard;
                                             thinking_start = Some(Instant::now());
                                         }
-                                        
+
                                         // 发送到请求队列（用户优先级通道），由消费者顺序处理
                                         if let Err(error) = user_req_tx.try_send((msg, chat_kernel.clone())) {
                                             tracing::warn!("Dropping user AI request because the queue is full: {}", error);
@@ -738,7 +772,7 @@ fn main() {
                                                         let panel_w = (music_panel::BASE_PANEL_WIDTH as f32 * pet.scale) as f64;
                                                         let panel_x = (pet_off_x + cur_pw/2.0 - panel_w/2.0) as i32;
                                                          let panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
-                                                        
+
                                                         if let Some(action) = music_panel::check_music_panel_hit(&music_player, pos.x, pos.y, panel_x, panel_y, pet.scale) {
                                                             handled = true;
                                                             match action {
@@ -761,7 +795,7 @@ fn main() {
                                                         if let Ok(win_pos) = window.outer_position() {
                                                             let monitor_mx = win_pos.x as f64 + pos.x - monitor_offset.0 as f64;
                                                             let monitor_my = win_pos.y as f64 + pos.y - monitor_offset.1 as f64;
-                                                            
+
                                                             let mut bubble_hit = false;
                                                             let target_x = pet.position.0 - pet_off_x;
                                                             let target_y = pet.position.1 - pet_off_y;
@@ -806,7 +840,7 @@ fn main() {
                                                                                 }
                                                                             }
                                                                         }
-                                                                        
+
                                                                         if !copied_text.is_empty() {
                                                                             if let Ok(mut clipboard) = arboard::Clipboard::new() {
                                                                                 if clipboard.set_text(copied_text).is_ok() {
@@ -855,7 +889,7 @@ fn main() {
                                     // Global coordinates (absolute screen)
                                     let global_x = win_pos.x as f64 + position.x - pet_off_x;
                                     let global_y = win_pos.y as f64 + position.y - pet_off_y;
-                                    
+
                                     // Monitor-local coordinates
                                     let local_x = global_x - monitor_offset.0 as f64;
                                     let local_y = global_y - monitor_offset.1 as f64;
@@ -882,16 +916,16 @@ fn main() {
                                     let m_pos = monitor.position();
                                     let m_size = monitor.size();
                                     let new_offset = (m_pos.x, m_pos.y);
-                                    
+
                                     if new_offset != monitor_offset {
                                         let old_offset = monitor_offset;
                                         monitor_offset = new_offset;
                                         pet.screen_size = (m_size.width as f64, m_size.height as f64);
-                                        
+
                                         // Re-base pet position to the new monitor so it doesn't "jump" or get clamped incorrectly
                                         pet.position.0 += (old_offset.0 - new_offset.0) as f64;
                                         pet.position.1 += (old_offset.1 - new_offset.1) as f64;
-                                        
+
                                         tracing::info!("Monitor changed during move. New offset: {:?}, Re-based pet pos: {:?}", monitor_offset, pet.position);
                                     }
                                 }
@@ -914,21 +948,21 @@ fn main() {
                                         let panel_w = (music_panel::BASE_PANEL_WIDTH as f32 * pet.scale) as f64;
                                         let panel_x = (pet_off_x + cur_pw/2.0 - panel_w/2.0) as i32;
                                         let panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
-                                        
+
                                         // 更加精准的判定：面板本身高度 + 播放列表高度 (200.0)
                                         let panel_h = (music_panel::BASE_PANEL_HEIGHT as f32 * pet.scale) as f64;
                                         let list_h = if music_player.list_visible { 200.0 * pet.scale as f64 } else { 0.0 };
                                         let total_h = panel_h + list_h;
 
                                         let is_in_panel_x = pos.x >= panel_x as f64 && pos.x < panel_x as f64 + panel_w;
-                                        let is_in_panel_y = pos.y >= panel_y as f64 && pos.y < panel_y as f64 + total_h; 
+                                        let is_in_panel_y = pos.y >= panel_y as f64 && pos.y < panel_y as f64 + total_h;
 
                                         if is_in_panel_x && is_in_panel_y {
                                             let dy = match delta {
                                                 winit::event::MouseScrollDelta::LineDelta(_, y) => y * 25.0,
                                                 winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32,
                                             };
-                                            
+
                                             let max_offset = music_panel::get_max_scroll_offset(music_player.songs().len());
                                             music_player.list_scroll_offset = (music_player.list_scroll_offset - dy).clamp(0.0, max_offset);
                                             window.request_redraw();
@@ -1115,7 +1149,7 @@ fn main() {
                                                 settings::SettingsAction::ToggleAutoStart => {
                                                     let new_state = !window_config.run_on_startup;
                                                     autostart::set_autostart(new_state);
-                                                    
+
                                                     // Synchronize with reality just to be safe
                                                     window_config.run_on_startup = autostart::is_autostart_enabled();
                                                     window_config.save();
@@ -1185,6 +1219,19 @@ fn main() {
                     }
                 }
                 Event::AboutToWait => {
+                    let now = Instant::now();
+                    if should_reassert_topmost(current_layer, last_topmost_reassert, now) {
+                        window.set_window_level(WindowLevel::AlwaysOnTop);
+                        #[cfg(target_os = "windows")]
+                        if let RawWindowHandle::Win32(handle) = window.raw_window_handle() {
+                            let hwnd = HWND(handle.hwnd as isize);
+                            if let Err(error) = reassert_window_topmost(hwnd) {
+                                tracing::warn!("Failed to reassert pet window topmost z-order: {error}");
+                            }
+                        }
+                        last_topmost_reassert = now;
+                    }
+
                     // Poll for settings window background updates fallback
                     if let Some(sw) = &mut settings_win {
                         if sw.poll_recent_logs() {
@@ -1216,7 +1263,7 @@ fn main() {
                                 let mut segments = Vec::new();
                                 let mut pure_text_accum = String::new();
                                 let mut remaining = response.as_str();
-                                
+
                                 while let Some(idx) = remaining.find("[IMG]") {
                                     if idx > 0 {
                                         let text_part = &remaining[..idx];
@@ -1227,17 +1274,17 @@ fn main() {
                                             segments.push(bubble::BubbleContent::Text(text));
                                         }
                                     }
-                                    
+
                                     remaining = &remaining[idx + 5..]; // skip "[IMG]"
-                                    
+
                                     // find end of path (next whitespace or end of string)
                                     let path_end = remaining.find(|c: char| c.is_whitespace()).unwrap_or(remaining.len());
                                     let path = &remaining[..path_end];
-                                    
+
                                     if !path.is_empty() {
                                         segments.push(bubble::BubbleContent::Image(path.to_string()));
                                     }
-                                    
+
                                     remaining = &remaining[path_end..];
                                 }
 
@@ -1246,10 +1293,10 @@ fn main() {
                                     pure_text_accum.push_str(&text);
                                     segments.push(bubble::BubbleContent::Text(text));
                                 }
-                                
+
                                 last_response_segments = segments.clone();
                                 last_pure_text_response = pure_text_accum.trim().to_string();
-                                
+
                                 // Actually handle TTs & display queue
                                 if let Some(tts) = &tts_controller {
                                     if ai_config.tts_enabled {
@@ -1258,14 +1305,14 @@ fn main() {
                                         }
                                     }
                                 }
-                                
+
                                 // Generate all bubbles concurrently
                                 let max_remaining = bubbles.iter()
                                     .filter_map(|b| b.show_until)
                                     .map(|until| until.saturating_duration_since(Instant::now()))
                                     .max()
                                     .unwrap_or(Duration::from_secs(0));
-                                
+
                                 let mut cumulative_duration = max_remaining;
                                 for seg in segments {
                                     let mut new_bubble = bubble::SpeechBubble::new();
@@ -1278,23 +1325,23 @@ fn main() {
                                             new_bubble.show_image(&p, pet.scale);
                                         }
                                     }
-                                    
+
                                     // Extract the base duration it assigned itself
                                     let base_dur = if let Some(until) = new_bubble.show_until {
                                         until.duration_since(Instant::now())
                                     } else {
                                         Duration::from_secs(4)
                                     };
-                                    
+
                                     // Make it stay visible for its own duration PLUS all previous bubbles' durations
                                     new_bubble.show_until = Some(Instant::now() + cumulative_duration + base_dur);
-                                    
+
                                     // Add to cumulative for the NEXT bubble
                                     cumulative_duration += base_dur;
-                                    
+
                                     bubbles.push(new_bubble);
                                 }
-                                
+
                                 needs_pet_redraw = true;
                             }
                         }
@@ -1395,14 +1442,14 @@ fn main() {
                         let target_mouse = compute_clingy_follow_target(current_mouse, monitor_offset);
                         pet.follow_mouse(target_mouse);
                     }
-                    
+
                     // Logic update pause check (one-frame lag for hover is intended for stability)
                     let is_paused = is_hovered && pet.state != PetState::Clingy && pet.behavior_mode != BehaviorMode::Clingy;
                     pet.update_state(dt, is_paused);
 
                     // 3. Triggers
                     let is_thinking = thinking_state != ThinkingState::None;
-                    
+
                     // Auto-dismiss expired bubbles, but keep hovering ones alive
                     if is_hovered {
                         if bubbles.is_empty() && !last_response_segments.is_empty() && !is_thinking {
@@ -1420,19 +1467,19 @@ fn main() {
                                         new_bubble.show_image(p, pet.scale);
                                     }
                                 }
-                                
+
                                 let base_dur = if let Some(until) = new_bubble.show_until {
                                     until.duration_since(Instant::now())
                                 } else {
                                     Duration::from_secs(4)
                                 };
-                                
+
                                 new_bubble.show_until = Some(Instant::now() + cumulative_duration + base_dur);
                                 cumulative_duration += base_dur;
                                 bubbles.push(new_bubble);
                             }
                         }
-                        
+
                         for b in bubbles.iter_mut() {
                             b.keep_alive();
                         }
@@ -1442,7 +1489,7 @@ fn main() {
                         if hover_leave_time.is_none() {
                             hover_leave_time = Some(Instant::now());
                         }
-                        
+
                         if let Some(leave_t) = hover_leave_time {
                             if leave_t.elapsed() > Duration::from_secs(2) {
                                 bubbles.retain(|b| !b.is_hover_recall);
@@ -1481,7 +1528,7 @@ fn main() {
                     // 4. GLOBAL LAYOUT CALCULATION (Runs every frame to ensure perfect sync)
                     let draw_scale = pet.scale.max(0.05);
                     let (cur_pw, cur_ph) = pet.get_scaled_size();
-                    
+
                     let curr_loading_frames = match thinking_state {
                         ThinkingState::Standard => &loading_frames_standard,
                         ThinkingState::Network => &loading_frames_network,
@@ -1504,11 +1551,11 @@ fn main() {
                         0.0
                     };
 
-                    let current_bubble_w_f = if !bubbles.is_empty() { 
+                    let current_bubble_w_f = if !bubbles.is_empty() {
                         let max_w: u32 = bubbles.iter().map(|b| b.current_width as u32).max().unwrap_or(0);
-                        (max_w as f64).max(100.0 * pet.scale as f64) 
-                    } else { 
-                        0.0 
+                        (max_w as f64).max(100.0 * pet.scale as f64)
+                    } else {
+                        0.0
                     };
 
                     let current_pomodoro_w_f = if pomodoro_manager.visible { (pomodoro::BASE_POMODORO_WIDTH as f32 * pet.scale) as f64 } else { 0.0 };
@@ -1534,23 +1581,23 @@ fn main() {
                     let b_left = pet_cx - current_bubble_w_f / 2.0;
                     let p_left = pet_cx - current_pomodoro_w_f / 2.0;
                     let min_left = 0.0f64.min(b_left).min(p_left);
-                    
+
                     let padding_edge_v = 40.0;
                     pet_off_x = padding_edge_v - min_left;
 
                     let padding_top_v = 40.0;
                     let mut extras_h = 0.0;
-                    if !bubbles.is_empty() { 
-                        extras_h += total_bubbles_h; 
+                    if !bubbles.is_empty() {
+                        extras_h += total_bubbles_h;
                     }
                     if pomodoro_manager.visible { extras_h += current_pomodoro_h_f + gap_between; }
                     if is_thinking { extras_h += loading_h_f + gap_between; }
-                    
+
                     pet_off_y = padding_top_v + extras_h;
 
                     let loading_y_f = if is_thinking { pet_off_y - gap_between - loading_h_f } else { pet_off_y };
                     let bubble_stack_bottom_y = if is_thinking { loading_y_f - gap_between } else { pet_off_y - gap_between };
-                    
+
                     let pomodoro_y_f = if pomodoro_manager.visible {
                         if !bubbles.is_empty() {
                             bubble_stack_bottom_y - total_bubbles_h - current_pomodoro_h_f
@@ -1563,7 +1610,7 @@ fn main() {
                         pet_off_y // fallback
                     };
 
-                    
+
                     let music_y_f = if music_player.panel_enabled && (menu_manager.visible || menu_manager.opacity > 0.0) {
                                        pet_off_y + cur_ph + 10.0 * pet.scale as f64
                                     } else { pet_off_y + cur_ph };
@@ -1579,32 +1626,32 @@ fn main() {
                     let bubble_right_f = pet_off_x + b_left + current_bubble_w_f + padding_edge_v;
                     let pomodoro_right_f = pet_off_x + p_left + current_pomodoro_w_f + padding_edge_v;
                     let win_w = (menu_area_right_f.max(bubble_right_f).max(pomodoro_right_f).max(pet_off_x + cur_pw/2.0 + music_panel_w_f/2.0 + padding_edge_v) + 20.0) as u32;
-                    
+
                     // --- COMPREHENSIVE HEIGHT CALCULATION ---
                     // 1. Pet bottom
                     let pet_bottom = pet_off_y + cur_ph + 5.0 * pet.scale as f64;
-                    
+
                     // 2. Menu bottom (if visible)
                     let menu_bottom = if menu_manager.visible || menu_manager.opacity > 0.0 {
                         pet_off_y + menu_h_f_val + 5.0 * pet.scale as f64
                     } else { 0.0 };
-                    
+
                     // 3. Music panel bottom (if enabled)
                     let music_bottom = if music_player.panel_enabled {
                         music_y_f + music_panel_h_f + 5.0 * pet.scale as f64
                     } else { 0.0 };
-                    
+
                     // Final win_h is the max of all active components' bottoms
                     let win_h = pet_bottom.max(menu_bottom).max(music_bottom) as u32;
 
                     let monitor_w = pet.screen_size.0;
                     let monitor_h = pet.screen_size.1;
-                    
+
                     let min_x = pet_off_x;
                     let max_x = monitor_w - win_w as f64 + pet_off_x;
                     let min_y = pet_off_y;
                     let max_y = monitor_h - win_h as f64 + pet_off_y;
-                    
+
                     pet.safe_bounds = Some((min_x, min_y, max_x, max_y));
 
                     let target_x = monitor_offset.0 + (pet.position.0 - pet_off_x) as i32;
@@ -1614,7 +1661,7 @@ fn main() {
                     // 5. UPDATE CACHED RECTS & HIT DETECTION
                     let mouse_x = current_mouse.0;
                     let mouse_y = current_mouse.1;
-                    
+
                     // current_mouse is already monitor-local per step 1
                     let over_pet = pet.check_hit(mouse_x, mouse_y);
                     let mut over_menu = false;
@@ -1664,7 +1711,7 @@ fn main() {
                     }
 
                     is_hovered = over_pet || over_menu || over_bubble || over_music || over_pomodoro;
-                    
+
                     if is_hovered {
                         for b in &mut bubbles {
                             b.keep_alive();
@@ -1697,7 +1744,7 @@ fn main() {
                         hover_state_changed = true;
                         last_over_info = current_over_info;
                     }
-                    
+
                     let mut current_hover_action_id = 0u64;
                     if over_menu {
                         let m_local_x = pet.position.0 - pet_off_x + menu_x_f;
@@ -1722,7 +1769,7 @@ fn main() {
                             current_hover_action_id = 1000 + act_id; // Offset to avoid collision with menu actions
                         }
                     }
-                    
+
                     if current_hover_action_id != last_hover_action_id {
                         hover_state_changed = true;
                         last_hover_action_id = current_hover_action_id;
@@ -1734,15 +1781,15 @@ fn main() {
                     // Visual adjustment: -2px offset to compensate for asymmetrical pet gif assets
                     let m_panel_x = (pet_off_x + cur_pw/2.0 - panel_w/2.0 - 2.0 * pet.scale as f64) as i32;
                     let m_panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
-                    
+
                     let win_mouse_x = current_mouse.0 as f64 - (pet.position.0 - pet_off_x);
                     let win_mouse_y = current_mouse.1 as f64 - (pet.position.1 - pet_off_y);
-                    
+
                     let music_state = music_panel::MusicRenderState::new(
-                        &mut music_player, 
-                        pet.scale, 
-                        menu_manager.opacity, 
-                        win_mouse_x - m_panel_x as f64, 
+                        &mut music_player,
+                        pet.scale,
+                        menu_manager.opacity,
+                        win_mouse_x - m_panel_x as f64,
                         win_mouse_y - m_panel_y as f64
                     );
                     music_renderer.update_state(music_state);
@@ -1759,13 +1806,13 @@ fn main() {
                             pos_changed = true;
                         }
                     }
-                    
-                    let pet_frame_changed = pet.current_frame_idx != last_frame_idx 
-                        || pet.state != last_state 
+
+                    let pet_frame_changed = pet.current_frame_idx != last_frame_idx
+                        || pet.state != last_state
                         || pet.facing_right != last_facing_right;
-                    
+
                     let layout_changed = (pet_off_x - last_render_pet_off.0).abs() > 0.1 || (pet_off_y - last_render_pet_off.1).abs() > 0.1 || pos_changed;
-                    
+
                     let loading_frame_idx = if is_thinking && !curr_loading_frames.is_empty() {
                         (Instant::now().duration_since(thinking_start.unwrap_or(Instant::now())).as_millis() / 100) as usize % curr_loading_frames.len()
                     } else { 0 };
@@ -1779,7 +1826,7 @@ fn main() {
                         needs_pet_redraw = true;
                     }
 
-                    if needs_pet_redraw || pet_frame_changed || layout_changed || loading_frame_changed || 
+                    if needs_pet_redraw || pet_frame_changed || layout_changed || loading_frame_changed ||
                        any_bubble_animating || now >= pet.next_frame_at() {
                         needs_pet_redraw = true;
                     }
@@ -1800,10 +1847,10 @@ fn main() {
                         last_facing_right = pet.facing_right;
                         last_window_pos = target_pos;
                         last_processed_mouse = current_mouse;
-                        
+
                         // Verification: check if id() works
                         let _ = window.id();
-                        
+
                         // --- SYNCHRONOUS RENDER START ---
                         menu_manager.update_layout(draw_scale);
 
@@ -1816,7 +1863,7 @@ fn main() {
                         let win_h_usize = win_h as usize;
 
                         let facing_right = pet.facing_right;
-                        
+
                         // Frame cache lookup. The returned slice avoids copying cached pixels.
                         let cache_key = (pet.state, pet.current_anim_variant, pet.current_frame_idx);
                         let frame = pet.current_frame();
@@ -1826,10 +1873,10 @@ fn main() {
                             frame,
                             &mut decompressed_frame_buffer,
                         );
-                        
+
                         let dest_y_start = pet_off_y as usize;
                         let dest_x_start = pet_off_x as usize;
-                        
+
                         if (draw_scale - 1.0).abs() < 0.001 {
                             let fw = frame.width as usize;
                             let fh = frame.height as usize;
@@ -1865,7 +1912,7 @@ fn main() {
                             let fw = frame.width as usize;
                             let fh = frame.height as usize;
                             let inv_scale = 1.0 / draw_scale;
-                            
+
                                 // Parallelized scaled source copy using rayon
                                 composite_data
                                     .par_chunks_mut(win_w_usize * 4)
@@ -1909,7 +1956,7 @@ fn main() {
                         if is_thinking && !curr_loading_frames.is_empty() {
                              let f_idx = loading_frame_idx % curr_loading_frames.len();
                              let (f_width, f_height, loading_data) = &curr_loading_frames[f_idx];
-                             
+
                              let ly = loading_y_f as i32;
                              let lw = loading_w_f as i32;
                              let lh = loading_h_f as i32;
@@ -1921,10 +1968,10 @@ fn main() {
                                       if src_y >= *f_height as usize { continue; }
                                       let dy_i32 = ly + y as i32;
                                       if dy_i32 < 0 || dy_i32 >= win_h as i32 { continue; }
-                                      
+
                                       let src_row_off = src_y * *f_width as usize * 4;
                                       let dest_row_off = dy_i32 as usize * win_w_usize * 4;
-                                      
+
                                       for x in 0..lw as usize {
                                           let src_x = (x as f32 * sx) as usize;
                                           if src_x < *f_width as usize {
@@ -1945,10 +1992,10 @@ fn main() {
                         }
 
                         // 2. Bubbles
-                        let mut stack_bottom_y = if is_thinking { 
-                            loading_y_f - gap_between 
-                        } else { 
-                            pet_off_y - gap_between 
+                        let mut stack_bottom_y = if is_thinking {
+                            loading_y_f - gap_between
+                        } else {
+                            pet_off_y - gap_between
                         };
 
                         if !bubbles.is_empty() {
@@ -1956,24 +2003,24 @@ fn main() {
                             for (idx, b) in bubbles.iter_mut().rev().enumerate() {
                                 b.hide_tail = idx > 0;
                                 b.render_to_buffer(std::ptr::null_mut(), pet.scale);
-                                
+
                                 if let Some(b_pixels) = b.pixel_data() {
                                     let bw = b.current_width as u32;
                                     let bh = b.current_height as u32;
-                                    
+
                                     // Base center coordinate for the pet
                                     let pet_center_x = pet_off_x + cur_pw / 2.0;
                                     let bx = (pet_center_x - (bw as f64 / 2.0)) as i32;
-                                    
-                                    
+
+
                                     // Calculate top Y coordinate of this bubble
                                     let mut by = stack_bottom_y as i32 - bh as i32;
-                                    
+
                                     // if it's pushed off screen top, we just stop drawing or clip it
                                     if by < 0 {
                                         by = by.max(0);
                                     }
-                                    
+
                                     let expected_len = (bw * bh * 4) as usize;
                                     if b_pixels.len() == expected_len {
                                         let b_u32 = unsafe {
@@ -2001,10 +2048,10 @@ fn main() {
                                             win_w,
                                             win_h,
                                         );
-                                        
+
                                         // Move the stack bottom up for the next older bubble
                                         stack_bottom_y = stack_bottom_y - bh as f64 - (10.0 * pet.scale as f64);
-                                        
+
                                         // Tell the bubble where it ended up for hit detection
                                         b.update_rect(bx, by, bw, bh);
                                     }
@@ -2050,7 +2097,7 @@ fn main() {
                             let my_buffer = mouse_y - pet.position.1 + pet_off_y;
 
                             menu_manager.render(composite_data.as_mut_slice(), win_w as i32, win_h as i32, menu_x_f as i32, menu_y_f as i32, mx_buffer, my_buffer);
-                            
+
                             // 3.5 Music Panel (Asynchronous Blit)
                             if let Some(ref res) = last_music_render {
                                 if music_player.panel_enabled && menu_manager.opacity > 0.0 {
@@ -2059,14 +2106,14 @@ fn main() {
                                     // Visual adjustment: -2px offset to compensate for asymmetrical pet gif assets
                                     let panel_x = (pet_off_x + cur_pw/2.0 - panel_w/2.0 - 2.0 * pet.scale as f64) as i32;
                                     let panel_y = (pet_off_y + cur_ph + 10.0 * pet.scale as f64) as i32;
-                                    
+
                                     let comp_u32 = unsafe {
                                         std::slice::from_raw_parts_mut(
                                             composite_data.as_mut_ptr() as *mut u32,
                                             composite_data.len() / 4,
                                         )
                                     };
-                                    
+
                                     crate::ui_primitives::blit_32bit_premultiplied(
                                         comp_u32,
                                         win_w,
@@ -2095,11 +2142,11 @@ fn main() {
                         window.set_outer_position(PhysicalPosition::new(target_pos.x, target_pos.y));
                         last_window_pos = target_pos;
                     }
-                    
+
                     // --- OPTIMIZATION: Precise scheduling ---
                     let now = Instant::now();
                     let mut next_deadline = now + Duration::from_secs(1);
-                    
+
                     if pet.state != PetState::Drag {
                         next_deadline = next_deadline.min(pet.next_frame_at());
                     }
@@ -2110,8 +2157,8 @@ fn main() {
                         next_deadline = next_deadline.min(now + Duration::from_millis(100));
                     }
 
-                    let needs_high_freq = pet.state == PetState::Move || 
-                                         pet.state == PetState::Clingy || 
+                    let needs_high_freq = pet.state == PetState::Move ||
+                                         pet.state == PetState::Clingy ||
                                          pet.state == PetState::Drag ||
                                          menu_manager.opacity > 0.0 ||
                                          !bubbles.is_empty() ||
@@ -2120,7 +2167,7 @@ fn main() {
                     if needs_high_freq {
                         next_deadline = next_deadline.min(now + target_frame_duration);
                     }
-                    
+
                     // Extra deadline check for music progress bar
                     if music_player.panel_enabled && music_player.is_playing() && (menu_manager.visible || menu_manager.opacity > 0.0) {
                         next_deadline = next_deadline.min(now + Duration::from_millis(100));
@@ -2179,11 +2226,26 @@ mod tests {
         let target_pos = (1920, 100);
         let bubble_rect = (20, 30, 100, 40);
 
-        assert!(bubble_hover(
-            (40.0, 50.0),
-            target_pos,
-            bubble_rect,
-            true,
+        assert!(bubble_hover((40.0, 50.0), target_pos, bubble_rect, true,));
+    }
+
+    #[test]
+    fn topmost_is_reasserted_only_for_top_layer_after_interval() {
+        let start = std::time::Instant::now();
+        assert!(!super::should_reassert_topmost(
+            crate::types::WindowLayer::Top,
+            start,
+            start + std::time::Duration::from_millis(1999),
+        ));
+        assert!(super::should_reassert_topmost(
+            crate::types::WindowLayer::Top,
+            start,
+            start + std::time::Duration::from_secs(2),
+        ));
+        assert!(!super::should_reassert_topmost(
+            crate::types::WindowLayer::Bottom,
+            start,
+            start + std::time::Duration::from_secs(10),
         ));
     }
 
@@ -2266,9 +2328,9 @@ mod tests {
 fn apply_window_styles(hwnd: HWND, top_most: bool) {
     unsafe {
         use windows::Win32::UI::WindowsAndMessaging::{
-            GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE, WS_CAPTION, WS_EX_LAYERED,
+            GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE, HWND_NOTOPMOST,
+            HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_CAPTION, WS_EX_LAYERED,
             WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_THICKFRAME, WS_VISIBLE,
-            HWND_TOPMOST, HWND_NOTOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE,
         };
         // STYLE: Remove Caption/ThickFrame, Force Popup + Visible
         let style = GetWindowLongW(hwnd, GWL_STYLE);
@@ -2289,7 +2351,11 @@ fn apply_window_styles(hwnd: HWND, top_most: bool) {
         SetWindowLongW(hwnd, GWL_EXSTYLE, new_ex_style);
 
         // Properly enforce Z-Order with SetWindowPos
-        let insert_after = if top_most { HWND_TOPMOST } else { HWND_NOTOPMOST };
+        let insert_after = if top_most {
+            HWND_TOPMOST
+        } else {
+            HWND_NOTOPMOST
+        };
         let _ = SetWindowPos(
             hwnd,
             insert_after,
@@ -2299,5 +2365,24 @@ fn apply_window_styles(hwnd: HWND, top_most: bool) {
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
         );
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn reassert_window_topmost(hwnd: HWND) -> windows::core::Result<()> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    };
+
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
     }
 }

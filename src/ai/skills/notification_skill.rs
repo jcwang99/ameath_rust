@@ -13,7 +13,7 @@ impl NotificationSkill {
     fn send_notification(&self, title: &str, message: &str) -> Result<(), String> {
         #[cfg(target_os = "windows")]
         {
-            use base64::{Engine as _, engine::general_purpose::STANDARD};
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
 
             // Encode text to base64 to completely avoid PowerShell string escaping and encoding issues
             let title_b64 = STANDARD.encode(title.as_bytes());
@@ -71,7 +71,11 @@ impl Skill for NotificationSkill {
             .as_str()
             .ok_or("Missing 'message' parameter")?;
         let title = args["title"].as_str().unwrap_or("Ameath");
-        tracing::info!("[NotificationSkill] title='{}' | message: {:.100}", title, message);
+        tracing::info!(
+            "[NotificationSkill] title='{}' | message: {:.100}",
+            title,
+            message
+        );
 
         self.send_notification(title, message)?;
         Ok(format!("Notification sent: [{}] {}", title, message))

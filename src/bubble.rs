@@ -70,11 +70,7 @@ struct RecyclePool {
 const MAX_RECYCLED_BUFFERS: usize = 32;
 
 #[cfg(target_os = "windows")]
-fn acquire_recycled_buffer(
-    rx: &Receiver<Vec<u8>>,
-    pool: &mut RecyclePool,
-    len: usize,
-) -> Vec<u8> {
+fn acquire_recycled_buffer(rx: &Receiver<Vec<u8>>, pool: &mut RecyclePool, len: usize) -> Vec<u8> {
     let mut reusable = pool
         .buffers
         .iter()
@@ -189,7 +185,7 @@ pub struct SpeechBubble {
     pub current_scale: f32,
     pub is_working: bool,
     pub content: BubbleContent,
-    pub rect: Option<(i32, i32, i32, i32)>, 
+    pub rect: Option<(i32, i32, i32, i32)>,
     pub is_ai_response: bool,
     pub is_hover_recall: bool,
 
@@ -233,7 +229,8 @@ impl SpeechBubble {
 
     pub fn show(&mut self, text: &str, _duration: Duration, scale: f32) {
         let clean_text = Self::clean_markdown(text);
-        let content_changed = !matches!(&self.content, BubbleContent::Text(current) if current == &clean_text);
+        let content_changed =
+            !matches!(&self.content, BubbleContent::Text(current) if current == &clean_text);
         if content_changed {
             self.text = clean_text.clone();
             self.content = BubbleContent::Text(clean_text);
@@ -245,9 +242,10 @@ impl SpeechBubble {
     }
 
     pub fn show_image(&mut self, path: &str, scale: f32) {
-        let content_changed = !matches!(&self.content, BubbleContent::Image(current) if current == path);
+        let content_changed =
+            !matches!(&self.content, BubbleContent::Image(current) if current == path);
         if content_changed {
-            self.text = path.to_string(); 
+            self.text = path.to_string();
             self.content = BubbleContent::Image(path.to_string());
         }
         self.show_until = Some(Instant::now() + Duration::from_secs(4));
@@ -290,7 +288,9 @@ impl SpeechBubble {
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 empty_count += 1;
-                if empty_count == 1 { result.push(""); }
+                if empty_count == 1 {
+                    result.push("");
+                }
             } else {
                 empty_count = 0;
                 result.push(trimmed);
@@ -329,9 +329,15 @@ impl SpeechBubble {
         if self.frames.len() > 1 {
             let now = Instant::now();
             let mut elapsed = now.duration_since(self.last_frame_time);
-            
-            while elapsed >= self.frames[self.current_frame_idx % self.frames.len()].1.max(Duration::from_millis(10)) {
-                let current_delay = self.frames[self.current_frame_idx % self.frames.len()].1.max(Duration::from_millis(10));
+
+            while elapsed
+                >= self.frames[self.current_frame_idx % self.frames.len()]
+                    .1
+                    .max(Duration::from_millis(10))
+            {
+                let current_delay = self.frames[self.current_frame_idx % self.frames.len()]
+                    .1
+                    .max(Duration::from_millis(10));
                 elapsed -= current_delay;
                 self.current_frame_idx = (self.current_frame_idx + 1) % self.frames.len();
                 self.last_frame_time = now - elapsed; // Step the time forward by the delay
@@ -347,7 +353,7 @@ impl SpeechBubble {
             }
         }
     }
-    
+
     pub fn get_rect(&self) -> Option<(i32, i32, i32, i32)> {
         self.rect
     }
@@ -413,7 +419,10 @@ mod tests {
         bubble.show("hello", Duration::from_secs(1), 1.0);
         assert!(!bubble.is_working);
 
-        assert_ne!(render_hash(&bubble.content, false), render_hash(&bubble.content, true));
+        assert_ne!(
+            render_hash(&bubble.content, false),
+            render_hash(&bubble.content, true)
+        );
     }
 
     #[test]
@@ -471,7 +480,7 @@ struct WorkerState {
     #[cfg(target_os = "windows")]
     old_bitmap: windows::Win32::Graphics::Gdi::HGDIOBJ,
     #[cfg(target_os = "windows")]
-    bitmap_capacity: (i32, i32), 
+    bitmap_capacity: (i32, i32),
     #[cfg(target_os = "windows")]
     bgra_scratch: Vec<u8>,
     #[cfg(target_os = "windows")]
@@ -479,10 +488,7 @@ struct WorkerState {
     rx_recycle: Receiver<Vec<u8>>,
 }
 
-fn worker_loop(
-    rx: Receiver<BubbleRenderRequest>,
-    rx_recycle: Receiver<Vec<u8>>,
-) {
+fn worker_loop(rx: Receiver<BubbleRenderRequest>, rx_recycle: Receiver<Vec<u8>>) {
     #[cfg(target_os = "windows")]
     let mut state = unsafe {
         let hdc_screen = GetDC(HWND(0));
@@ -547,7 +553,11 @@ fn render_bubble_internal(
         let max_w_allowed =
             ((screen_w / 2) - padding * 2).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
 
-        let tail_h = if req.hide_tail { 0 } else { (20.0 * scale) as i32 };
+        let tail_h = if req.hide_tail {
+            0
+        } else {
+            (20.0 * scale) as i32
+        };
         let mut calc_w = 0;
         let mut calc_h = 0;
 
@@ -555,23 +565,40 @@ fn render_bubble_internal(
 
         match &req.content {
             BubbleContent::Text(text) => {
-                let (text_w, text_h) = get_metrics_dw_ex(text, font_size, max_w_allowed as u32, font_family, true, true, false);
+                let (text_w, text_h) = get_metrics_dw_ex(
+                    text,
+                    font_size,
+                    max_w_allowed as u32,
+                    font_family,
+                    true,
+                    true,
+                    false,
+                );
                 let width_buffer = (16.0 * scale).ceil() as i32;
                 let height_buffer = (32.0 * scale).ceil() as i32;
-                calc_w = (text_w as i32 + padding * 2 + width_buffer).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
+                calc_w = (text_w as i32 + padding * 2 + width_buffer)
+                    .max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
                 calc_h = text_h.ceil() as i32 + padding * 2 + tail_h + height_buffer;
-                let layout = get_or_create_layout_ex(text, font_size, (calc_w - padding * 2) as u32, font_family, true, true, false);
+                let layout = get_or_create_layout_ex(
+                    text,
+                    font_size,
+                    (calc_w - padding * 2) as u32,
+                    font_family,
+                    true,
+                    true,
+                    false,
+                );
                 state.cached_layout = Some(layout);
             }
             BubbleContent::Image(path) => {
                 state.cached_layout = None;
-                
+
                 let trimmed_path = path.trim();
                 let lower_path = trimmed_path.to_lowercase();
-                
+
                 // 优先从嵌入资源加载
                 let embedded_bytes = crate::stickers::get_sticker_bytes(trimmed_path);
-                
+
                 // 只要是嵌入资源（目前全是 GIF）或者路径以 .gif 结尾，就尝试动画解码
                 let should_try_gif = embedded_bytes.is_some() || lower_path.ends_with(".gif");
 
@@ -619,10 +646,27 @@ fn render_bubble_internal(
                         }
                         Err(e) => {
                             let fallback = format!("[Image Error: {} | {}]", path, e);
-                            let (tw, th) = get_metrics_dw_ex(&fallback, font_size, max_w_allowed as u32, font_family, true, true, false);
-                            calc_w = (tw as i32 + padding * 2).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
+                            let (tw, th) = get_metrics_dw_ex(
+                                &fallback,
+                                font_size,
+                                max_w_allowed as u32,
+                                font_family,
+                                true,
+                                true,
+                                false,
+                            );
+                            calc_w = (tw as i32 + padding * 2)
+                                .max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
                             calc_h = th.ceil() as i32 + padding * 2 + tail_h;
-                            let layout = get_or_create_layout_ex(&fallback, font_size, (calc_w - padding * 2) as u32, font_family, true, true, false);
+                            let layout = get_or_create_layout_ex(
+                                &fallback,
+                                font_size,
+                                (calc_w - padding * 2) as u32,
+                                font_family,
+                                true,
+                                true,
+                                false,
+                            );
                             state.cached_layout = Some(layout);
                         }
                     }
@@ -634,13 +678,22 @@ fn render_bubble_internal(
                     for (iw, ih, _, _) in &frames_data {
                         let mut fw = *iw as f32 * scale;
                         let mut fh = *ih as f32 * scale;
-                        if fw > max_w_allowed as f32 { let r = max_w_allowed as f32 / fw; fw = max_w_allowed as f32; fh *= r; }
+                        if fw > max_w_allowed as f32 {
+                            let r = max_w_allowed as f32 / fw;
+                            fw = max_w_allowed as f32;
+                            fh *= r;
+                        }
                         let max_h_allowed = 400.0 * scale;
-                        if fh > max_h_allowed { let r = max_h_allowed / fh; fh = max_h_allowed; fw *= r; }
+                        if fh > max_h_allowed {
+                            let r = max_h_allowed / fh;
+                            fh = max_h_allowed;
+                            fw *= r;
+                        }
                         max_img_w = max_img_w.max(fw);
                         max_img_h = max_img_h.max(fh);
                     }
-                    calc_w = (max_img_w as i32 + padding * 2).max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
+                    calc_w = (max_img_w as i32 + padding * 2)
+                        .max((BASE_BUBBLE_WIDTH as f32 * scale) as i32);
                     calc_h = max_img_h as i32 + padding * 2 + tail_h;
                 }
             }
@@ -649,7 +702,10 @@ fn render_bubble_internal(
         let width = calc_w;
         let height = calc_h;
 
-        if state.h_bitmap.0 == 0 || width > state.bitmap_capacity.0 || height > state.bitmap_capacity.1 {
+        if state.h_bitmap.0 == 0
+            || width > state.bitmap_capacity.0
+            || height > state.bitmap_capacity.1
+        {
             state.cached_rt = None;
             if state.h_bitmap.0 != 0 {
                 if state.old_bitmap.0 != 0 {
@@ -660,23 +716,40 @@ fn render_bubble_internal(
             let bmi = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: width, biHeight: -height, biPlanes: 1, biBitCount: 32, biCompression: BI_RGB.0, ..Default::default()
-                }, ..Default::default()
+                    biWidth: width,
+                    biHeight: -height,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
             };
             let mut bits = std::ptr::null_mut();
-            state.h_bitmap = CreateDIBSection(state.hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, HANDLE(0), 0).unwrap();
+            state.h_bitmap =
+                CreateDIBSection(state.hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, HANDLE(0), 0)
+                    .unwrap();
             state.bitmap_capacity = (width, height);
             state.old_bitmap = SelectObject(state.hdc_mem, state.h_bitmap);
         }
 
         let mut render_frames = Vec::new();
-        let frame_count = if frames_data.is_empty() { 1 } else { frames_data.len() };
+        let frame_count = if frames_data.is_empty() {
+            1
+        } else {
+            frames_data.len()
+        };
 
         for i in 0..frame_count {
             let d2d_factory = get_d2d_factory();
-            let dc_rt = if let Some(ref rt) = state.cached_rt { rt.clone() } else {
+            let dc_rt = if let Some(ref rt) = state.cached_rt {
+                rt.clone()
+            } else {
                 let props = D2D1_RENDER_TARGET_PROPERTIES {
-                    pixelFormat: D2D1_PIXEL_FORMAT { format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                    pixelFormat: D2D1_PIXEL_FORMAT {
+                        format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+                        alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                    },
                     ..Default::default()
                 };
                 let rt = d2d_factory.CreateDCRenderTarget(&props).unwrap();
@@ -684,16 +757,41 @@ fn render_bubble_internal(
                 rt
             };
 
-            let rect_gdi = RECT { left: 0, top: 0, right: width, bottom: height };
+            let rect_gdi = RECT {
+                left: 0,
+                top: 0,
+                right: width,
+                bottom: height,
+            };
             if dc_rt.BindDC(state.hdc_mem, &rect_gdi).is_ok() {
                 if let Ok(rt) = dc_rt.cast::<ID2D1DeviceContext>() {
                     rt.BeginDraw();
                     rt.Clear(None);
 
-                    let bg_color = D2D1_COLOR_F { r: 1.0, g: 235.0/255.0, b: 240.0/255.0, a: 1.0 };
-                    let border_color = D2D1_COLOR_F { r: 1.0, g: 180.0/255.0, b: 190.0/255.0, a: 1.0 };
-                    let white_color = D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
-                    let text_color = D2D1_COLOR_F { r: 100.0/255.0, g: 60.0/255.0, b: 70.0/255.0, a: 1.0 };
+                    let bg_color = D2D1_COLOR_F {
+                        r: 1.0,
+                        g: 235.0 / 255.0,
+                        b: 240.0 / 255.0,
+                        a: 1.0,
+                    };
+                    let border_color = D2D1_COLOR_F {
+                        r: 1.0,
+                        g: 180.0 / 255.0,
+                        b: 190.0 / 255.0,
+                        a: 1.0,
+                    };
+                    let white_color = D2D1_COLOR_F {
+                        r: 1.0,
+                        g: 1.0,
+                        b: 1.0,
+                        a: 1.0,
+                    };
+                    let text_color = D2D1_COLOR_F {
+                        r: 100.0 / 255.0,
+                        g: 60.0 / 255.0,
+                        b: 70.0 / 255.0,
+                        a: 1.0,
+                    };
 
                     let bg_brush = rt.CreateSolidColorBrush(&bg_color, None).unwrap();
                     let border_brush = rt.CreateSolidColorBrush(&border_color, None).unwrap();
@@ -703,11 +801,38 @@ fn render_bubble_internal(
                     let radius = 12.0 * scale;
                     let main_h = height - tail_h;
 
-                    let outer = D2D1_ROUNDED_RECT { rect: D2D_RECT_F { left: 0.0, top: 0.0, right: width as f32, bottom: main_h as f32 }, radiusX: radius, radiusY: radius };
+                    let outer = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: 0.0,
+                            top: 0.0,
+                            right: width as f32,
+                            bottom: main_h as f32,
+                        },
+                        radiusX: radius,
+                        radiusY: radius,
+                    };
                     rt.FillRoundedRectangle(&outer, &border_brush);
-                    let white_rect = D2D1_ROUNDED_RECT { rect: D2D_RECT_F { left: 1.0, top: 1.0, right: (width-1) as f32, bottom: (main_h-1) as f32 }, radiusX: radius-1.0, radiusY: radius-1.0 };
+                    let white_rect = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: 1.0,
+                            top: 1.0,
+                            right: (width - 1) as f32,
+                            bottom: (main_h - 1) as f32,
+                        },
+                        radiusX: radius - 1.0,
+                        radiusY: radius - 1.0,
+                    };
                     rt.FillRoundedRectangle(&white_rect, &white_brush);
-                    let inner = D2D1_ROUNDED_RECT { rect: D2D_RECT_F { left: 2.0, top: 2.0, right: (width-2) as f32, bottom: (main_h-2) as f32 }, radiusX: radius-2.0, radiusY: radius-2.0 };
+                    let inner = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: 2.0,
+                            top: 2.0,
+                            right: (width - 2) as f32,
+                            bottom: (main_h - 2) as f32,
+                        },
+                        radiusX: radius - 2.0,
+                        radiusY: radius - 2.0,
+                    };
                     rt.FillRoundedRectangle(&inner, &bg_brush);
 
                     if !req.hide_tail {
@@ -715,10 +840,24 @@ fn render_bubble_internal(
                         let tail_x = (width as f32 - tail_w) / 2.0;
                         let geometry = d2d_factory.CreatePathGeometry().unwrap();
                         let sink = geometry.Open().unwrap();
-                        sink.BeginFigure(D2D_POINT_2F { x: tail_x, y: main_h as f32 - 2.0 }, windows::Win32::Graphics::Direct2D::Common::D2D1_FIGURE_BEGIN_FILLED);
-                        sink.AddLine(D2D_POINT_2F { x: tail_x + tail_w, y: main_h as f32 - 2.0 });
-                        sink.AddLine(D2D_POINT_2F { x: width as f32 / 2.0, y: height as f32 });
-                        sink.EndFigure(windows::Win32::Graphics::Direct2D::Common::D2D1_FIGURE_END_CLOSED);
+                        sink.BeginFigure(
+                            D2D_POINT_2F {
+                                x: tail_x,
+                                y: main_h as f32 - 2.0,
+                            },
+                            windows::Win32::Graphics::Direct2D::Common::D2D1_FIGURE_BEGIN_FILLED,
+                        );
+                        sink.AddLine(D2D_POINT_2F {
+                            x: tail_x + tail_w,
+                            y: main_h as f32 - 2.0,
+                        });
+                        sink.AddLine(D2D_POINT_2F {
+                            x: width as f32 / 2.0,
+                            y: height as f32,
+                        });
+                        sink.EndFigure(
+                            windows::Win32::Graphics::Direct2D::Common::D2D1_FIGURE_END_CLOSED,
+                        );
                         sink.Close().unwrap();
                         rt.FillGeometry(&geometry, &bg_brush, None);
                         rt.DrawGeometry(&geometry, &border_brush, 2.0 * scale, None);
@@ -731,18 +870,47 @@ fn render_bubble_internal(
                             pixelFormat: D2D1_PIXEL_FORMAT { format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
                             dpiX: 96.0, dpiY: 96.0
                         };
-                        if let Ok(bmp) = rt.CreateBitmap(windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U { width: *fw, height: *fh }, Some(state.bgra_scratch.as_ptr() as *const _), *fw * 4, &bmp_props) {
+                        if let Ok(bmp) = rt.CreateBitmap(
+                            windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U {
+                                width: *fw,
+                                height: *fh,
+                            },
+                            Some(state.bgra_scratch.as_ptr() as *const _),
+                            *fw * 4,
+                            &bmp_props,
+                        ) {
                             let mut dw = *fw as f32 * scale;
                             let mut dh = *fh as f32 * scale;
-                            if dw > (width - padding*2) as f32 { let r = (width-padding*2) as f32 / dw; dw = (width-padding*2) as f32; dh *= r; }
-                            if dh > (main_h - padding*2) as f32 { let r = (main_h-padding*2) as f32 / dh; dh = (main_h-padding*2) as f32; dw *= r; }
+                            if dw > (width - padding * 2) as f32 {
+                                let r = (width - padding * 2) as f32 / dw;
+                                dw = (width - padding * 2) as f32;
+                                dh *= r;
+                            }
+                            if dh > (main_h - padding * 2) as f32 {
+                                let r = (main_h - padding * 2) as f32 / dh;
+                                dh = (main_h - padding * 2) as f32;
+                                dw *= r;
+                            }
                             let ox = (width as f32 - padding as f32 * 2.0 - dw) / 2.0;
                             let oy = (main_h as f32 - padding as f32 * 2.0 - dh) / 2.0;
-                            let dest = D2D_RECT_F { left: padding as f32 + ox, top: padding as f32 + oy, right: padding as f32 + ox + dw, bottom: padding as f32 + oy + dh };
+                            let dest = D2D_RECT_F {
+                                left: padding as f32 + ox,
+                                top: padding as f32 + oy,
+                                right: padding as f32 + ox + dw,
+                                bottom: padding as f32 + oy + dh,
+                            };
                             rt.DrawBitmap(&bmp, Some(&dest), 1.0, windows::Win32::Graphics::Direct2D::D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None);
                         }
                     } else if let Some(layout) = &state.cached_layout {
-                        rt.DrawTextLayout(D2D_POINT_2F { x: padding as f32, y: padding as f32 }, layout, &text_brush, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+                        rt.DrawTextLayout(
+                            D2D_POINT_2F {
+                                x: padding as f32,
+                                y: padding as f32,
+                            },
+                            layout,
+                            &text_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                        );
                     }
 
                     rt.EndDraw(None, None).unwrap();
@@ -751,14 +919,15 @@ fn render_bubble_internal(
 
             GdiFlush();
             let mut bitmap_info: windows::Win32::Graphics::Gdi::BITMAP = std::mem::zeroed();
-            windows::Win32::Graphics::Gdi::GetObjectW(state.h_bitmap, std::mem::size_of::<windows::Win32::Graphics::Gdi::BITMAP>() as i32, Some(&mut bitmap_info as *mut _ as *mut std::ffi::c_void));
+            windows::Win32::Graphics::Gdi::GetObjectW(
+                state.h_bitmap,
+                std::mem::size_of::<windows::Win32::Graphics::Gdi::BITMAP>() as i32,
+                Some(&mut bitmap_info as *mut _ as *mut std::ffi::c_void),
+            );
             let pixel_ptr = bitmap_info.bmBits as *mut u8;
             let total_bytes = width as usize * height as usize * 4;
-            let mut frame_buffer = acquire_recycled_buffer(
-                &state.rx_recycle,
-                &mut state.recycle_pool,
-                total_bytes,
-            );
+            let mut frame_buffer =
+                acquire_recycled_buffer(&state.rx_recycle, &mut state.recycle_pool, total_bytes);
             frame_buffer.fill(0);
             if !pixel_ptr.is_null() {
                 let bmp_stride = if bitmap_info.bmWidthBytes > 0 {
@@ -773,12 +942,21 @@ fn render_bubble_internal(
                     std::ptr::copy_nonoverlapping(src_row, dst_row, row_bytes);
                 }
             }
-            let delay = if frames_data.is_empty() { Duration::from_secs(1) } else { frames_data[i].3 };
+            let delay = if frames_data.is_empty() {
+                Duration::from_secs(1)
+            } else {
+                frames_data[i].3
+            };
             render_frames.push((frame_buffer, delay));
         }
 
         let render_hash = render_hash(&req.content, req.hide_tail);
 
-        Some(BubbleRenderResult { frames: render_frames, width, height, render_hash })
+        Some(BubbleRenderResult {
+            frames: render_frames,
+            width,
+            height,
+            render_hash,
+        })
     }
 }

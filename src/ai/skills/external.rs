@@ -41,9 +41,7 @@ fn file_preview(content: &str, file_label: &str) -> String {
 
 /// Return a short metadata string for a file (line count + size).
 fn file_metadata(path: &Path) -> String {
-    let size = fs::metadata(path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let lines = fs::read_to_string(path)
         .map(|c| c.lines().count())
         .unwrap_or(0);
@@ -199,7 +197,11 @@ impl SkillCatalog {
                         }
                         Err(e) => {
                             tracing::warn!("Invalid skill.json in {}: {}", dir_name, e);
-                            (false, dir_name.clone(), format!("(skill.json 解析失败: {})", e))
+                            (
+                                false,
+                                dir_name.clone(),
+                                format!("(skill.json 解析失败: {})", e),
+                            )
                         }
                     },
                     Err(_) => (false, dir_name.clone(), "(skill.json 读取失败)".to_string()),
@@ -237,17 +239,19 @@ impl SkillCatalog {
         if q.is_empty() || q == "*" {
             return self.entries.iter().collect();
         }
-        
+
         // Tokenize query by whitespace for multi-keyword matching
         let keywords: Vec<&str> = q.split_whitespace().collect();
-        
+
         self.entries
             .iter()
             .filter(|e| {
                 let name = e.name.to_lowercase();
                 let desc = e.description.to_lowercase();
                 // A skill matches if ALL keywords are found in either its name or description
-                keywords.iter().all(|&kw| name.contains(kw) || desc.contains(kw))
+                keywords
+                    .iter()
+                    .all(|&kw| name.contains(kw) || desc.contains(kw))
             })
             .collect()
     }
@@ -289,7 +293,11 @@ impl SkillCatalog {
                 Err(_) => (false, dir_name.clone(), "(解析失败)".to_string()),
             }
         } else {
-            (false, dir_name.clone(), format!("(未标准化 - {})", files.join(", ")))
+            (
+                false,
+                dir_name.clone(),
+                format!("(未标准化 - {})", files.join(", ")),
+            )
         };
 
         Some(SkillCatalogEntry {
@@ -358,7 +366,12 @@ impl Skill for ExternalToolSkill {
     }
 
     async fn execute(&self, args: Value) -> Result<String, String> {
-        tracing::info!("[ExternalTool] Executing '{}' (type={}, entry={})", self.tool_name, self.executor.exec_type, self.executor.entry);
+        tracing::info!(
+            "[ExternalTool] Executing '{}' (type={}, entry={})",
+            self.tool_name,
+            self.executor.exec_type,
+            self.executor.entry
+        );
 
         let entry_path = self.work_dir.join(&self.executor.entry);
         if !entry_path.exists() {
@@ -437,14 +450,24 @@ impl Skill for ExternalToolSkill {
                 let stderr = String::from_utf8_lossy(&output.stderr).to_string();
                 if output.status.success() {
                     let preview: String = stdout.chars().take(200).collect();
-                    tracing::info!("[ExternalTool] '{}' succeeded ({} chars): {}", self.tool_name, stdout.len(), preview);
+                    tracing::info!(
+                        "[ExternalTool] '{}' succeeded ({} chars): {}",
+                        self.tool_name,
+                        stdout.len(),
+                        preview
+                    );
                     if stdout.trim().is_empty() {
                         Ok("(tool returned empty output)".to_string())
                     } else {
                         Ok(stdout)
                     }
                 } else {
-                    tracing::warn!("[ExternalTool] '{}' failed ({}): {}", self.tool_name, output.status, stderr);
+                    tracing::warn!(
+                        "[ExternalTool] '{}' failed ({}): {}",
+                        self.tool_name,
+                        output.status,
+                        stderr
+                    );
                     Err(format!("Tool exited with {}: {}", output.status, stderr))
                 }
             }
@@ -453,7 +476,11 @@ impl Skill for ExternalToolSkill {
                 Err(format!("Tool execution error: {}", e))
             }
             Err(_) => {
-                tracing::warn!("[ExternalTool] '{}' timed out after {}s", self.tool_name, self.executor.timeout_secs);
+                tracing::warn!(
+                    "[ExternalTool] '{}' timed out after {}s",
+                    self.tool_name,
+                    self.executor.timeout_secs
+                );
                 Err(format!(
                     "Tool timed out after {}s",
                     self.executor.timeout_secs
@@ -490,14 +517,25 @@ impl SkillRegistrySkill {
         model: String,
         client: Option<crate::ai::client::OpenAiClient>,
     ) -> Self {
-        Self { catalog, manager, api_key, base_url, model, client }
+        Self {
+            catalog,
+            manager,
+            api_key,
+            base_url,
+            model,
+            client,
+        }
     }
 
     fn handle_discover(&self, query: &str) -> Result<String, String> {
         let catalog = self.catalog.read().map_err(|e| e.to_string())?;
         let results = catalog.search(query);
 
-        tracing::info!("[SkillRegistry] discover_skills query='{}' => {} result(s)", query, results.len());
+        tracing::info!(
+            "[SkillRegistry] discover_skills query='{}' => {} result(s)",
+            query,
+            results.len()
+        );
 
         if results.is_empty() {
             return Ok("No external skills found matching your query.".to_string());
@@ -505,8 +543,16 @@ impl SkillRegistrySkill {
 
         let mut output = String::from("Available External Skills:\n");
         for entry in results {
-            let status = if entry.normalized { "✓" } else { "⚠ 未标准化" };
-            let tools_info = if entry.has_tools { ", 有可执行工具" } else { "" };
+            let status = if entry.normalized {
+                "✓"
+            } else {
+                "⚠ 未标准化"
+            };
+            let tools_info = if entry.has_tools {
+                ", 有可执行工具"
+            } else {
+                ""
+            };
             output.push_str(&format!(
                 "- [{}] {} : {}{}\n",
                 status, entry.name, entry.description, tools_info
@@ -530,10 +576,7 @@ impl SkillRegistrySkill {
             match fs::read_to_string(&skill_md_path) {
                 Ok(content) => {
                     let preview = file_preview(&content, "SKILL.md");
-                    result_parts.push(format!(
-                        "[Skill Knowledge: {}]\n{}",
-                        entry.name, preview
-                    ));
+                    result_parts.push(format!("[Skill Knowledge: {}]\n{}", entry.name, preview));
                 }
                 Err(e) => {
                     result_parts.push(format!("(Failed to read SKILL.md: {})", e));
@@ -566,27 +609,29 @@ impl SkillRegistrySkill {
                     let fpath = file.path();
                     if fpath.extension().map_or(false, |e| e == "json") {
                         match fs::read_to_string(&fpath) {
-                            Ok(content) => match serde_json::from_str::<ToolDeclaration>(&content) {
-                                Ok(decl) => {
-                                    let tool_name = decl.function.name.clone();
-                                    let skill = ExternalToolSkill::new(
-                                        decl,
-                                        tools_dir.clone(),
-                                        self.api_key.clone(),
-                                        self.base_url.clone(),
-                                        self.model.clone(),
-                                    );
-                                    self.manager.register(Arc::new(skill));
-                                    registered_tools.push(tool_name);
+                            Ok(content) => {
+                                match serde_json::from_str::<ToolDeclaration>(&content) {
+                                    Ok(decl) => {
+                                        let tool_name = decl.function.name.clone();
+                                        let skill = ExternalToolSkill::new(
+                                            decl,
+                                            tools_dir.clone(),
+                                            self.api_key.clone(),
+                                            self.base_url.clone(),
+                                            self.model.clone(),
+                                        );
+                                        self.manager.register(Arc::new(skill));
+                                        registered_tools.push(tool_name);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "Failed to parse tool declaration {}: {}",
+                                            fpath.display(),
+                                            e
+                                        );
+                                    }
                                 }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "Failed to parse tool declaration {}: {}",
-                                        fpath.display(),
-                                        e
-                                    );
-                                }
-                            },
+                            }
                             Err(e) => {
                                 tracing::warn!("Failed to read {}: {}", fpath.display(), e);
                             }
@@ -597,7 +642,11 @@ impl SkillRegistrySkill {
         }
 
         if !registered_tools.is_empty() {
-            tracing::info!("[SkillRegistry] load_skill '{}': registered tools [{}]", name, registered_tools.join(", "));
+            tracing::info!(
+                "[SkillRegistry] load_skill '{}': registered tools [{}]",
+                name,
+                registered_tools.join(", ")
+            );
             result_parts.push(format!(
                 "Registered {} new tool(s): [{}]. You can now call them directly.",
                 registered_tools.len(),
@@ -607,10 +656,17 @@ impl SkillRegistrySkill {
 
         if result_parts.is_empty() {
             tracing::info!("[SkillRegistry] load_skill '{}': no content or tools", name);
-            Ok(format!("Skill '{}' loaded but contains no content or tools.", name))
+            Ok(format!(
+                "Skill '{}' loaded but contains no content or tools.",
+                name
+            ))
         } else {
             let result = result_parts.join("\n\n");
-            tracing::info!("[SkillRegistry] load_skill '{}' done ({} chars returned)", name, result.len());
+            tracing::info!(
+                "[SkillRegistry] load_skill '{}' done ({} chars returned)",
+                name,
+                result.len()
+            );
             Ok(result)
         }
     }
@@ -627,10 +683,7 @@ impl SkillRegistrySkill {
         }
 
         // List files with metadata — model uses read_file to inspect each
-        let mut content = format!(
-            "[Skill '{}' 待标准化 — 文件清单]\n\n",
-            name
-        );
+        let mut content = format!("[Skill '{}' 待标准化 — 文件清单]\n\n", name);
 
         for file_name in &entry.files {
             let file_path = entry.path.join(file_name);
@@ -704,8 +757,20 @@ impl SkillRegistrySkill {
         ))
     }
 
-    fn handle_read_file(&self, name: &str, file: &str, start_line: usize, end_line: usize) -> Result<String, String> {
-        tracing::info!("[SkillRegistry] read_file '{}/{}' lines {}-{}", name, file, start_line, end_line);
+    fn handle_read_file(
+        &self,
+        name: &str,
+        file: &str,
+        start_line: usize,
+        end_line: usize,
+    ) -> Result<String, String> {
+        tracing::info!(
+            "[SkillRegistry] read_file '{}/{}' lines {}-{}",
+            name,
+            file,
+            start_line,
+            end_line
+        );
         let catalog = self.catalog.read().map_err(|e| e.to_string())?;
         let entry = catalog
             .get(name)
@@ -718,8 +783,13 @@ impl SkillRegistrySkill {
         }
 
         // Security: ensure resolved path is within the skill directory
-        let canonical_skill = entry.path.canonicalize().unwrap_or_else(|_| entry.path.clone());
-        let canonical_file = file_path.canonicalize().unwrap_or_else(|_| file_path.clone());
+        let canonical_skill = entry
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| entry.path.clone());
+        let canonical_file = file_path
+            .canonicalize()
+            .unwrap_or_else(|_| file_path.clone());
         if !canonical_file.starts_with(&canonical_skill) {
             return Err("Access denied: path traversal detected".to_string());
         }
@@ -746,7 +816,11 @@ impl SkillRegistrySkill {
 
         let mut result = format!(
             "[{} : lines {}-{} of {}]\n{}",
-            file, start + 1, end, total, selected
+            file,
+            start + 1,
+            end,
+            total,
+            selected
         );
 
         if has_more {
@@ -760,7 +834,12 @@ impl SkillRegistrySkill {
     }
 
     fn handle_write_file(&self, name: &str, file: &str, content: &str) -> Result<String, String> {
-        tracing::info!("[SkillRegistry] write_file '{}/{}' ({} chars)", name, file, content.len());
+        tracing::info!(
+            "[SkillRegistry] write_file '{}/{}' ({} chars)",
+            name,
+            file,
+            content.len()
+        );
         let catalog = self.catalog.read().map_err(|e| e.to_string())?;
         let entry = catalog
             .get(name)
@@ -769,23 +848,41 @@ impl SkillRegistrySkill {
         let file_path = entry.path.join(file);
 
         // Security: ensure resolved path is within the skill directory
-        let canonical_skill = entry.path.canonicalize().unwrap_or_else(|_| entry.path.clone());
+        let canonical_skill = entry
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| entry.path.clone());
         // For new files, canonicalize the parent
         let parent_dir = file_path.parent().unwrap_or(&entry.path);
-        let canonical_parent = parent_dir.canonicalize().unwrap_or_else(|_| parent_dir.to_path_buf());
-        
+        let canonical_parent = parent_dir
+            .canonicalize()
+            .unwrap_or_else(|_| parent_dir.to_path_buf());
+
         if !canonical_parent.starts_with(&canonical_skill) {
             return Err("Access denied: path traversal detected".to_string());
         }
 
         // Write the file
-        fs::write(&file_path, content)
-            .map_err(|e| format!("Failed to write '{}': {}", file, e))?;
+        fs::write(&file_path, content).map_err(|e| format!("Failed to write '{}': {}", file, e))?;
 
-        Ok(format!("Successfully wrote {} characters to '{}/{}'", content.len(), name, file))
+        Ok(format!(
+            "Successfully wrote {} characters to '{}/{}'",
+            content.len(),
+            name,
+            file
+        ))
     }
 
-    fn handle_replace_file(&self, name: &str, file: &str, target: &str, replacement: &str, start_line: Option<usize>, end_line: Option<usize>, allow_multiple: bool) -> Result<String, String> {
+    fn handle_replace_file(
+        &self,
+        name: &str,
+        file: &str,
+        target: &str,
+        replacement: &str,
+        start_line: Option<usize>,
+        end_line: Option<usize>,
+        allow_multiple: bool,
+    ) -> Result<String, String> {
         tracing::info!("[SkillRegistry] replace_file '{}/{}'", name, file);
         let catalog = self.catalog.read().map_err(|e| e.to_string())?;
         let entry = catalog
@@ -795,9 +892,14 @@ impl SkillRegistrySkill {
         let file_path = entry.path.join(file);
 
         // Security check
-        let canonical_skill = entry.path.canonicalize().unwrap_or_else(|_| entry.path.clone());
-        let canonical_file = file_path.canonicalize().map_err(|_| format!("File not found: {}", file))?;
-        
+        let canonical_skill = entry
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| entry.path.clone());
+        let canonical_file = file_path
+            .canonicalize()
+            .map_err(|_| format!("File not found: {}", file))?;
+
         if !canonical_file.starts_with(&canonical_skill) {
             return Err("Access denied: path traversal detected".to_string());
         }
@@ -812,7 +914,12 @@ impl SkillRegistrySkill {
         let end = end_line.unwrap_or(total).min(total);
 
         if start >= end && total > 0 {
-            return Err(format!("Invalid line range {}-{} (file has {} lines)", start + 1, end, total));
+            return Err(format!(
+                "Invalid line range {}-{} (file has {} lines)",
+                start + 1,
+                end,
+                total
+            ));
         }
 
         let prefix = lines[..start].join("");
@@ -824,7 +931,12 @@ impl SkillRegistrySkill {
             return Err(format!("Target content not found in lines {}-{} (make sure formatting and whitespace match exactly)", start + 1, end));
         }
         if matches > 1 && !allow_multiple {
-            return Err(format!("Target content found {} times in lines {}-{}, but allow_multiple is false", matches, start + 1, end));
+            return Err(format!(
+                "Target content found {} times in lines {}-{}, but allow_multiple is false",
+                matches,
+                start + 1,
+                end
+            ));
         }
 
         let new_middle = if allow_multiple {
@@ -838,12 +950,22 @@ impl SkillRegistrySkill {
         fs::write(&file_path, new_content)
             .map_err(|e| format!("Failed to write '{}': {}", file, e))?;
 
-        Ok(format!("Successfully replaced {} occurrence(s) in lines {}-{} of '{}/{}'", matches, start + 1, end, name, file))
+        Ok(format!(
+            "Successfully replaced {} occurrence(s) in lines {}-{} of '{}/{}'",
+            matches,
+            start + 1,
+            end,
+            name,
+            file
+        ))
     }
 
     async fn handle_recommend(&self, task: &str) -> Result<String, String> {
-        let client = self.client.as_ref().ok_or("No LLM client available for recommendation")?;
-        
+        let client = self
+            .client
+            .as_ref()
+            .ok_or("No LLM client available for recommendation")?;
+
         let prompt = {
             let catalog = self.catalog.read().map_err(|e| e.to_string())?;
             if catalog.entries.is_empty() {
@@ -852,7 +974,10 @@ impl SkillRegistrySkill {
 
             let mut skills_list = String::new();
             for entry in &catalog.entries {
-                skills_list.push_str(&format!("Skill Name: {}\nDescription: {}\n\n", entry.name, entry.description));
+                skills_list.push_str(&format!(
+                    "Skill Name: {}\nDescription: {}\n\n",
+                    entry.name, entry.description
+                ));
             }
 
             format!(
@@ -872,8 +997,11 @@ impl SkillRegistrySkill {
         }];
 
         tracing::info!("[SkillRegistry] recommend_skill for task: {:.50}", task);
-        let response = client.chat(messages, None).await.map_err(|e| format!("LLM semantic search error: {}", e))?;
-        
+        let response = client
+            .chat(messages, None)
+            .await
+            .map_err(|e| format!("LLM semantic search error: {}", e))?;
+
         Ok(response.content_as_str().to_string())
     }
 }

@@ -138,7 +138,16 @@ impl QuickMenu {
         }
     }
 
-    pub fn render(&self, buffer: &mut [u8], win_w: i32, win_h: i32, menu_x: i32, menu_y: i32, mx: f64, my: f64) {
+    pub fn render(
+        &self,
+        buffer: &mut [u8],
+        win_w: i32,
+        win_h: i32,
+        menu_x: i32,
+        menu_y: i32,
+        mx: f64,
+        my: f64,
+    ) {
         if self.opacity <= 0.0 {
             return;
         }
@@ -161,11 +170,7 @@ impl QuickMenu {
                     btn.hover_icon.height() as i32,
                 )
             } else {
-                (
-                    &btn.icon,
-                    btn.rect.2 - btn.rect.0,
-                    btn.rect.3 - btn.rect.1,
-                )
+                (&btn.icon, btn.rect.2 - btn.rect.0, btn.rect.3 - btn.rect.1)
             };
 
             let draw_x_offset = btn_center_x - draw_w / 2;

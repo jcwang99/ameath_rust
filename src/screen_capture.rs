@@ -240,7 +240,6 @@ pub fn capture_all_monitors() -> Result<Vec<DynamicImage>, String> {
     }
 }
 
-
 pub fn compress_to_jpeg(img: &DynamicImage, quality: u8) -> Result<Vec<u8>, String> {
     let mut buffer = Vec::new();
     let mut cursor = std::io::Cursor::new(&mut buffer);

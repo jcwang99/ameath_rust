@@ -29,7 +29,11 @@ impl MemoryManager {
         let mut db_path = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         db_path.push("data");
         if let Err(error) = std::fs::create_dir_all(&db_path) {
-            tracing::error!("[Memory] Failed to create database directory {:?}: {}", db_path, error);
+            tracing::error!(
+                "[Memory] Failed to create database directory {:?}: {}",
+                db_path,
+                error
+            );
         }
         db_path.push("ameath_memory.db");
 
@@ -53,15 +57,19 @@ impl MemoryManager {
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;",
         ) {
-            tracing::warn!("[Memory] WAL mode unavailable, continuing with SQLite defaults: {}", error);
+            tracing::warn!(
+                "[Memory] WAL mode unavailable, continuing with SQLite defaults: {}",
+                error
+            );
         }
         Self::initialize_schema(&conn);
 
-        Self { conn: Mutex::new(conn) }
+        Self {
+            conn: Mutex::new(conn),
+        }
     }
 
     fn initialize_schema(conn: &Connection) {
-
         // Layer 1 & 2: Conversations (Core Dialogue & L1 Summaries)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS conversations (
@@ -90,25 +98,15 @@ impl MemoryManager {
             [],
         )
         .expect("Failed to create tool_traces table");
-        
+
         // Migrations are idempotent, but real errors must be surfaced instead of
         // being deferred until a later INSERT/SELECT fails.
         Self::ensure_column(conn, "conversations", "layer", "INTEGER DEFAULT 1")
             .expect("Failed to migrate conversations.layer");
-        Self::ensure_column(
-            conn,
-            "conversations",
-            "summarized",
-            "INTEGER DEFAULT 0",
-        )
-        .expect("Failed to migrate conversations.summarized");
-        Self::ensure_column(
-            conn,
-            "conversations",
-            "compacted",
-            "INTEGER DEFAULT 0",
-        )
-        .expect("Failed to migrate conversations.compacted");
+        Self::ensure_column(conn, "conversations", "summarized", "INTEGER DEFAULT 0")
+            .expect("Failed to migrate conversations.summarized");
+        Self::ensure_column(conn, "conversations", "compacted", "INTEGER DEFAULT 0")
+            .expect("Failed to migrate conversations.compacted");
         Self::ensure_column(conn, "tool_traces", "tool_calls", "TEXT")
             .expect("Failed to migrate tool_traces.tool_calls");
         Self::ensure_column(conn, "tool_traces", "request_id", "TEXT")
@@ -242,13 +240,19 @@ impl MemoryManager {
 
         // A zero threshold is used by the settings UI to represent disabled
         // summarization. It must not make every count satisfy the threshold.
-        let l1_hit = config.l1_summary_threshold > 0
-            && l1_count >= config.l1_summary_threshold as i64;
-        let l2_hit = config.l2_merge_threshold > 0
-            && l2_count >= config.l2_merge_threshold as i64;
+        let l1_hit =
+            config.l1_summary_threshold > 0 && l1_count >= config.l1_summary_threshold as i64;
+        let l2_hit = config.l2_merge_threshold > 0 && l2_count >= config.l2_merge_threshold as i64;
         if l1_hit || l2_hit {
-            tracing::info!("[Memory] Threshold check: L1={}/{} (hit={}), L2={}/{} (hit={})",
-                l1_count, config.l1_summary_threshold, l1_hit, l2_count, config.l2_merge_threshold, l2_hit);
+            tracing::info!(
+                "[Memory] Threshold check: L1={}/{} (hit={}), L2={}/{} (hit={})",
+                l1_count,
+                config.l1_summary_threshold,
+                l1_hit,
+                l2_count,
+                config.l2_merge_threshold,
+                l2_hit
+            );
         }
 
         Ok((l1_hit, l2_hit))
@@ -261,22 +265,28 @@ impl MemoryManager {
 
     pub fn add_message_returning_id(&self, msg: &Message) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
-        
+
         let content_str = msg.content_as_str();
-        
+
         let (images_json, images_desc): (Option<String>, Option<String>) = match &msg.content {
             Some(Content::Multimodal(parts)) => {
-                let images: Vec<_> = parts.iter().filter_map(|p| {
-                    if let crate::ai::client::ContentPart::ImageUrl { image_url } = p {
-                        Some(image_url.clone())
-                    } else {
-                        None
-                    }
-                }).collect();
+                let images: Vec<_> = parts
+                    .iter()
+                    .filter_map(|p| {
+                        if let crate::ai::client::ContentPart::ImageUrl { image_url } = p {
+                            Some(image_url.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 if images.is_empty() {
                     (None, None)
                 } else {
-                    (Some(serde_json::to_string(&images).unwrap_or_default()), None)
+                    (
+                        Some(serde_json::to_string(&images).unwrap_or_default()),
+                        None,
+                    )
                 }
             }
             _ => (None, None),
@@ -288,8 +298,13 @@ impl MemoryManager {
             params![msg.role, content_str, images_json, images_desc],
         )?;
         let id = conn.last_insert_rowid();
-        tracing::debug!("[Memory] add_message: role={}, chars={}, images={}, id={}",
-            msg.role, content_str.len(), images_json.is_some(), id);
+        tracing::debug!(
+            "[Memory] add_message: role={}, chars={}, images={}, id={}",
+            msg.role,
+            content_str.len(),
+            images_json.is_some(),
+            id
+        );
         Ok(id)
     }
 
@@ -335,8 +350,11 @@ impl MemoryManager {
         } else {
             msg.content_as_str().to_string()
         };
-        
-        let tool_calls_json = msg.tool_calls.as_ref().map(|tc| serde_json::to_string(tc).unwrap_or_default());
+
+        let tool_calls_json = msg
+            .tool_calls
+            .as_ref()
+            .map(|tc| serde_json::to_string(tc).unwrap_or_default());
 
         conn.execute(
             "INSERT INTO tool_traces (request_id, role, content, tool_call_id, tool_calls) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -406,13 +424,19 @@ impl MemoryManager {
                 .join("\n");
             context.push(Message {
                 role: "system".to_string(),
-                content: Some(Content::Simple(format!("[Current Fact Board / Known Facts]\n{}{}", facts_str, facts_instruction))),
+                content: Some(Content::Simple(format!(
+                    "[Current Fact Board / Known Facts]\n{}{}",
+                    facts_str, facts_instruction
+                ))),
                 ..Default::default()
             });
         } else {
             context.push(Message {
                 role: "system".to_string(),
-                content: Some(Content::Simple(format!("[Current Fact Board / Known Facts]\n(Currently Empty){}", facts_instruction))),
+                content: Some(Content::Simple(format!(
+                    "[Current Fact Board / Known Facts]\n(Currently Empty){}",
+                    facts_instruction
+                ))),
                 ..Default::default()
             });
         }
@@ -448,14 +472,14 @@ impl MemoryManager {
         }
         if !l2_summaries.is_empty() {
             l2_summaries.reverse();
-                context.push(Message {
-                    role: "system".to_string(),
-                    content: Some(Content::Simple(format!(
-                        "Recent Context Summary:\n{}",
-                        l2_summaries.join("\n")
-                    ))),
-                    ..Default::default()
-                });
+            context.push(Message {
+                role: "system".to_string(),
+                content: Some(Content::Simple(format!(
+                    "Recent Context Summary:\n{}",
+                    l2_summaries.join("\n")
+                ))),
+                ..Default::default()
+            });
         }
 
         // 4. Get Active Tool Traces (Volatile)
@@ -482,13 +506,17 @@ impl MemoryManager {
         if !traces.is_empty() {
             context.push(Message {
                 role: "system".to_string(),
-                content: Some(Content::Simple("--- START OF CURRENT TOOL EXECUTION LOG ---".to_string())),
+                content: Some(Content::Simple(
+                    "--- START OF CURRENT TOOL EXECUTION LOG ---".to_string(),
+                )),
                 ..Default::default()
             });
             context.extend(traces);
             context.push(Message {
                 role: "system".to_string(),
-                content: Some(Content::Simple("--- END OF TOOL EXECUTION LOG ---".to_string())),
+                content: Some(Content::Simple(
+                    "--- END OF TOOL EXECUTION LOG ---".to_string(),
+                )),
                 ..Default::default()
             });
         }
@@ -505,28 +533,41 @@ impl MemoryManager {
                 let text_content: String = row.get(1)?;
                 let images_json: Option<String> = row.get(2)?;
                 let images_desc: Option<String> = row.get(3)?;
-                
+
                 let mut content = Content::Simple(text_content.clone());
-                
+
                 if let Some(json_str) = images_json {
                     if allow_images {
-                        if let Ok(images) = serde_json::from_str::<Vec<crate::ai::client::ImageUrl>>(&json_str) {
+                        if let Ok(images) =
+                            serde_json::from_str::<Vec<crate::ai::client::ImageUrl>>(&json_str)
+                        {
                             if !images.is_empty() {
-                                let mut parts = vec![crate::ai::client::ContentPart::Text { text: text_content.clone() }];
+                                let mut parts = vec![crate::ai::client::ContentPart::Text {
+                                    text: text_content.clone(),
+                                }];
                                 for img in images {
-                                    parts.push(crate::ai::client::ContentPart::ImageUrl { image_url: img });
+                                    parts.push(crate::ai::client::ContentPart::ImageUrl {
+                                        image_url: img,
+                                    });
                                 }
                                 content = Content::Multimodal(parts);
                             }
                         }
                     } else {
                         // Fallback to text description since allow_images is false
-                        let desc = images_desc.unwrap_or_else(|| "[图片内容处理中/暂不可见]".to_string());
-                        content = Content::Simple(format!("{}\n[历史多模态附图摘要: {}]", text_content, desc));
+                        let desc =
+                            images_desc.unwrap_or_else(|| "[图片内容处理中/暂不可见]".to_string());
+                        content = Content::Simple(format!(
+                            "{}\n[历史多模态附图摘要: {}]",
+                            text_content, desc
+                        ));
                     }
                 } else if let Some(desc) = images_desc {
-                     // images_json is expired (or missing from multi-modal inputs originally somehow) but we have description
-                     content = Content::Simple(format!("{}\n[历史多模态附图摘要: {}]", text_content, desc));
+                    // images_json is expired (or missing from multi-modal inputs originally somehow) but we have description
+                    content = Content::Simple(format!(
+                        "{}\n[历史多模态附图摘要: {}]",
+                        text_content, desc
+                    ));
                 }
 
                 Ok(Message {
@@ -549,7 +590,7 @@ impl MemoryManager {
                     if let Some(idx) = content.find(delimiter) {
                         let original_response = &content[..idx];
                         let trace_content = &content[idx + delimiter.len()..];
-                        
+
                         // Push the clean assistant message
                         history.push(Message {
                             role: "assistant".to_string(),
@@ -558,8 +599,11 @@ impl MemoryManager {
                         });
 
                         // Create the system context message for the parsed traces
-                        let mut system_trace_text = format!("[历史工具调用背景：该轮对话中模型调用的工具及其结果如下]\n{}", trace_content);
-                        
+                        let mut system_trace_text = format!(
+                            "[历史工具调用背景：该轮对话中模型调用的工具及其结果如下]\n{}",
+                            trace_content
+                        );
+
                         // Special handling for reminders
                         if trace_content.contains("Tool: schedule_reminder") {
                             system_trace_text.push_str("\n*注：此条目仅记录定时任务已成功提交至调度器，不代表定时任务此时已触发生效，请勿在回复中模仿工具调用格式。*");
@@ -568,8 +612,8 @@ impl MemoryManager {
                         }
 
                         // Push the system trace message *before* the assistant message in the vector
-                        // Since `history` gets reversed later, we want the system trace to appear 
-                        // chronologically *after* the assistant message if we push them here, 
+                        // Since `history` gets reversed later, we want the system trace to appear
+                        // chronologically *after* the assistant message if we push them here,
                         // it means pushing assistant then system. After reverse, system will be before assistant.
                         // Wait, chronological order in DB is oldest to newest. Oh, the limit query order is DESC.
                         // So the first row is the *newest*.
@@ -577,11 +621,11 @@ impl MemoryManager {
                         // After `history.reverse()`, it becomes: Msg N-2, Msg N-1, Msg N
                         // We want the AI to see: Assistant Reply -> System Trace
                         // So in the `history` vector (which is DESC), we should push: System Trace -> Assistant Reply.
-                        // Let's verify: 
+                        // Let's verify:
                         // history = [System Trace, Assistant Reply] -> reverse -> [Assistant Reply, System Trace]. Correct.
-                        
+
                         history.pop(); // Remove the assistant message we just pushed
-                        
+
                         history.push(Message {
                             role: "system".to_string(),
                             content: Some(Content::Simple(system_trace_text)),
@@ -593,7 +637,6 @@ impl MemoryManager {
                             content: Some(Content::Simple(original_response.to_string())),
                             ..Default::default()
                         });
-
                     } else {
                         history.push(msg);
                     }
@@ -679,10 +722,7 @@ impl MemoryManager {
             let images_desc: Option<String> = row.get(3)?;
 
             let content = if let Some(desc) = images_desc {
-                Content::Simple(format!(
-                    "{}\n[历史多模态附图摘要: {}]",
-                    text_content, desc
-                ))
+                Content::Simple(format!("{}\n[历史多模态附图摘要: {}]", text_content, desc))
             } else {
                 Content::Simple(text_content)
             };
@@ -972,8 +1012,13 @@ impl MemoryManager {
         )?;
 
         if l1_deleted > 0 || l2_deleted > 0 || l3_deleted > 0 {
-            tracing::info!("[Memory] prune_layers: L1 deleted={}, L2 deleted={}, L3 deleted={} (keep={})",
-                l1_deleted, l2_deleted, l3_deleted, keep_count);
+            tracing::info!(
+                "[Memory] prune_layers: L1 deleted={}, L2 deleted={}, L3 deleted={} (keep={})",
+                l1_deleted,
+                l2_deleted,
+                l3_deleted,
+                keep_count
+            );
         }
 
         Ok(l1_deleted + l2_deleted + l3_deleted)
@@ -1058,7 +1103,9 @@ mod tests {
     fn l1_batch_marking_only_affects_selected_messages() {
         let memory = MemoryManager::new_in_memory();
         memory.add_message(&text_message("user", "oldest")).unwrap();
-        memory.add_message(&text_message("assistant", "middle")).unwrap();
+        memory
+            .add_message(&text_message("assistant", "middle"))
+            .unwrap();
         memory.add_message(&text_message("user", "newest")).unwrap();
 
         let batch = memory.get_l1_unsummarized_batch(2).unwrap();
@@ -1066,7 +1113,10 @@ mod tests {
             .iter()
             .map(|(_, msg): &(i64, Message)| msg.content_as_str().to_string())
             .collect();
-        assert_eq!(batch_texts, vec!["oldest".to_string(), "middle".to_string()]);
+        assert_eq!(
+            batch_texts,
+            vec!["oldest".to_string(), "middle".to_string()]
+        );
 
         let processed_ids: Vec<i64> = batch.iter().map(|(id, _)| *id).collect();
         memory
@@ -1130,8 +1180,12 @@ mod tests {
             .unwrap()
             .map(|column| column.unwrap())
             .collect();
-        assert!(conversation_columns.iter().any(|name| name == "images_json"));
-        assert!(conversation_columns.iter().any(|name| name == "images_desc"));
+        assert!(conversation_columns
+            .iter()
+            .any(|name| name == "images_json"));
+        assert!(conversation_columns
+            .iter()
+            .any(|name| name == "images_desc"));
         assert!(conversation_columns.iter().any(|name| name == "layer"));
         assert!(conversation_columns.iter().any(|name| name == "summarized"));
         assert!(conversation_columns.iter().any(|name| name == "compacted"));
@@ -1231,9 +1285,11 @@ mod tests {
 
         let conn = memory.conn.lock().unwrap();
         let l3_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM summaries WHERE layer >= 3", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM summaries WHERE layer >= 3",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(l3_count, 0);
     }
@@ -1276,9 +1332,11 @@ mod tests {
 
         let conn = memory.conn.lock().unwrap();
         let l3_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM summaries WHERE layer >= 3", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM summaries WHERE layer >= 3",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(l3_count, 0);
     }
@@ -1292,7 +1350,9 @@ mod tests {
             ..AiConfig::default()
         };
 
-        memory.add_message(&text_message("user", "message")).unwrap();
+        memory
+            .add_message(&text_message("user", "message"))
+            .unwrap();
         assert_eq!(memory.check_thresholds(&config).unwrap(), (false, false));
     }
 }

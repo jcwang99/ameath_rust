@@ -1,3 +1,7 @@
+use image::RgbaImage;
+use lofty::file::TaggedFileExt;
+use lofty::tag::Accessor;
+use rand::Rng;
 use rodio::{Decoder, OutputStream, Sink, Source};
 use std::collections::HashMap;
 use std::fs;
@@ -5,10 +9,6 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use rand::Rng;
-use image::RgbaImage;
-use lofty::file::TaggedFileExt;
-use lofty::tag::Accessor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlayMode {
@@ -101,7 +101,11 @@ impl MusicPlayer {
         }
         self.songs.sort(); // Sequential order
         self.current_song_idx = 0;
-        tracing::info!("[MusicPlayer] Loaded {} songs from {:?}", self.songs.len(), path);
+        tracing::info!(
+            "[MusicPlayer] Loaded {} songs from {:?}",
+            self.songs.len(),
+            path
+        );
         if !self.songs.is_empty() {
             let first_song = self.songs[0].clone();
             let meta = self.get_metadata(&first_song).clone();
@@ -110,13 +114,17 @@ impl MusicPlayer {
     }
 
     pub fn next(&mut self) {
-        if self.songs.is_empty() { return; }
+        if self.songs.is_empty() {
+            return;
+        }
         self.current_song_idx = (self.current_song_idx + 1) % self.songs.len();
         self.play_current();
     }
 
     pub fn prev(&mut self) {
-        if self.songs.is_empty() { return; }
+        if self.songs.is_empty() {
+            return;
+        }
         if self.current_song_idx == 0 {
             self.current_song_idx = self.songs.len() - 1;
         } else {
@@ -154,7 +162,11 @@ impl MusicPlayer {
     }
 
     pub fn get_progress(&self) -> (f32, Duration, Duration) {
-        let current = self.sink.as_ref().map(|s| s.get_pos()).unwrap_or(Duration::ZERO);
+        let current = self
+            .sink
+            .as_ref()
+            .map(|s| s.get_pos())
+            .unwrap_or(Duration::ZERO);
         let total = self.current_duration.unwrap_or(Duration::from_secs(1)); // Avoid div zero
         let progress = (current.as_secs_f32() / total.as_secs_f32()).min(1.0);
         (progress, current, total)
@@ -218,14 +230,18 @@ impl MusicPlayer {
     }
 
     pub fn current_song_name(&mut self) -> Option<String> {
-        if self.songs.is_empty() { return None; }
+        if self.songs.is_empty() {
+            return None;
+        }
         let path = self.songs[self.current_song_idx].clone();
         let meta = self.get_metadata(&path);
         Some(meta.title.clone())
     }
 
     pub fn song_display_name(&mut self, idx: usize) -> Option<String> {
-        if idx >= self.songs.len() { return None; }
+        if idx >= self.songs.len() {
+            return None;
+        }
         let path = self.songs[idx].clone();
         let meta = self.get_metadata(&path);
         Some(meta.title.clone())
@@ -261,7 +277,7 @@ impl MusicPlayer {
         let Some(sink) = &self.sink else { return None };
 
         // If playing but sink became empty, move to next
-        // ONLY trigger auto-next if the panel is enabled. 
+        // ONLY trigger auto-next if the panel is enabled.
         // This prevents sink.stop() (called when closing panel) from triggering a seek and bubble.
         if self.panel_enabled && !sink.is_paused() && sink.empty() && !self.songs.is_empty() {
             match self.play_mode {
@@ -308,7 +324,10 @@ fn extract_metadata(path: &Path) -> SongMetadata {
     let mut cover = None;
 
     if let Ok(tagged_file) = lofty::read_from_path(path) {
-        if let Some(tag) = tagged_file.primary_tag().or_else(|| tagged_file.first_tag()) {
+        if let Some(tag) = tagged_file
+            .primary_tag()
+            .or_else(|| tagged_file.first_tag())
+        {
             if let Some(t) = tag.title() {
                 let t_trim = t.trim();
                 if !t_trim.is_empty() {

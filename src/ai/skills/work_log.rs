@@ -1,11 +1,11 @@
-use crate::ai::skills::Skill;
 use crate::ai::memory::MemoryManager;
+use crate::ai::skills::Skill;
 use async_trait::async_trait;
+use chrono::{Datelike, Duration as ChronoDuration, Local, NaiveDate};
 use serde_json::{json, Value};
-use std::sync::Arc;
 use std::fs;
 use std::path::PathBuf;
-use chrono::{Local, Datelike, NaiveDate, Duration as ChronoDuration};
+use std::sync::Arc;
 
 pub struct WorkLogSkill {
     memory: Arc<MemoryManager>,
@@ -39,13 +39,13 @@ impl WorkLogSkill {
         let now = Local::now();
         let date_str = now.format("%Y-%m-%d").to_string();
         let time_str = now.format("%H:%M").to_string();
-        
+
         let log_dir = Self::get_log_dir();
         fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
-        
+
         let log_file = log_dir.join(format!("{}.md", date_str));
         let log_line = format!("- [{}] {}\n", time_str, content);
-        
+
         fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -56,7 +56,7 @@ impl WorkLogSkill {
                 f.flush()
             })
             .map_err(|e| format!("Failed to write log: {}", e))?;
-        
+
         Ok(format!("Log recorded in {}.md", date_str))
     }
 }
@@ -95,21 +95,22 @@ impl Skill for WorkLogSkill {
                 let now = Local::now();
                 let date_str = now.format("%Y-%m-%d").to_string();
                 let log_dir = Self::get_log_dir();
-                
+
                 fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
                 let log_file = log_dir.join(format!("{}.md", date_str));
-                
-                fs::write(&log_file, content).map_err(|e| format!("Failed to update log: {}", e))?;
-                
+
+                fs::write(&log_file, content)
+                    .map_err(|e| format!("Failed to update log: {}", e))?;
+
                 Ok(format!("Log updated in {}.md", date_str))
             }
             "get_weekly_logs" => {
                 let now = Local::now().date_naive();
                 // weekday() returns 0-6 (Mon-Sun) in chrono 0.4.x with Datelike (assuming ISO week or similar)
-                // Actually chrono's weekday() returns an enum. 
+                // Actually chrono's weekday() returns an enum.
                 let weekday = now.weekday().number_from_monday(); // 1 (Mon) to 7 (Sun)
                 let monday = now - ChronoDuration::days((weekday - 1) as i64);
-                
+
                 let mut weekly_content = String::new();
                 let log_dir = Self::get_log_dir();
 
@@ -117,14 +118,14 @@ impl Skill for WorkLogSkill {
                     let date = monday + ChronoDuration::days(i);
                     let date_str = date.format("%Y-%m-%d").to_string();
                     let log_file = log_dir.join(format!("{}.md", date_str));
-                    
+
                     if log_file.exists() {
                         if let Ok(content) = fs::read_to_string(&log_file) {
                             weekly_content.push_str(&format!("### {}\n{}\n", date_str, content));
                         }
                     }
                 }
-                
+
                 if weekly_content.is_empty() {
                     Ok("No logs found for this week.".to_string())
                 } else {
@@ -137,15 +138,20 @@ impl Skill for WorkLogSkill {
                 let weekday = now.weekday().number_from_monday();
                 let monday = now - ChronoDuration::days((weekday - 1) as i64);
                 let sunday = monday + ChronoDuration::days(6);
-                
+
                 let report_dir = Self::get_report_dir();
                 fs::create_dir_all(&report_dir).map_err(|e| e.to_string())?;
-                
-                let filename = format!("weekly_{}_to_{}.md", monday.format("%Y-%m-%d"), sunday.format("%Y-%m-%d"));
+
+                let filename = format!(
+                    "weekly_{}_to_{}.md",
+                    monday.format("%Y-%m-%d"),
+                    sunday.format("%Y-%m-%d")
+                );
                 let report_file = report_dir.join(filename);
-                
-                fs::write(&report_file, report_content).map_err(|e| format!("Failed to save report: {}", e))?;
-                
+
+                fs::write(&report_file, report_content)
+                    .map_err(|e| format!("Failed to save report: {}", e))?;
+
                 Ok(format!("Weekly report saved to {}", report_file.display()))
             }
             "get_auto_suggest_context" => {
@@ -154,17 +160,21 @@ impl Skill for WorkLogSkill {
                 let date_str = now.format("%Y-%m-%d").to_string();
                 let log_dir = Self::get_log_dir();
                 let log_file = log_dir.join(format!("{}.md", date_str));
-                
+
                 let today_logs = if log_file.exists() {
                     fs::read_to_string(&log_file).unwrap_or_default()
                 } else {
                     "None".to_string()
                 };
-                
+
                 // Get recent history from memory as "system activity"
                 // Recent 100 items should provide enough context for "what I did"
-                let history = self.memory.get_recent_history(100).map_err(|e| e.to_string())?;
-                let system_activity = history.iter()
+                let history = self
+                    .memory
+                    .get_recent_history(100)
+                    .map_err(|e| e.to_string())?;
+                let system_activity = history
+                    .iter()
                     .map(|(role, content)| format!("[{}] {}", role, content))
                     .collect::<Vec<_>>()
                     .join("\n");
@@ -194,29 +204,36 @@ impl Skill for WorkLogSkill {
                 let scope = args["merge_scope"].as_str().unwrap_or("month");
                 let now = Local::now().date_naive();
                 let target_year = args["target_year"].as_i64().unwrap_or(now.year() as i64) as i32;
-                let target_month = args["target_month"].as_u64().unwrap_or(now.month() as u64) as u32;
+                let target_month =
+                    args["target_month"].as_u64().unwrap_or(now.month() as u64) as u32;
                 let report_dir = Self::get_report_dir();
 
                 if !report_dir.exists() {
-                    return Ok("No reports directory found. No weekly reports to merge.".to_string());
+                    return Ok(
+                        "No reports directory found. No weekly reports to merge.".to_string()
+                    );
                 }
 
                 // Validate inputs
                 if target_month < 1 || target_month > 12 {
-                    return Err(format!("Invalid target_month: {}. Must be 1-12.", target_month));
+                    return Err(format!(
+                        "Invalid target_month: {}. Must be 1-12.",
+                        target_month
+                    ));
                 }
 
                 // Determine date range based on scope
                 let (range_start, range_end, merged_filename) = match scope {
                     "year" => {
-                        let start = NaiveDate::from_ymd_opt(target_year, 1, 1)
-                            .ok_or("Invalid date")?;
-                        let end = NaiveDate::from_ymd_opt(target_year, 12, 31)
-                            .ok_or("Invalid date")?;
+                        let start =
+                            NaiveDate::from_ymd_opt(target_year, 1, 1).ok_or("Invalid date")?;
+                        let end =
+                            NaiveDate::from_ymd_opt(target_year, 12, 31).ok_or("Invalid date")?;
                         let filename = format!("merged_year_{}.md", target_year);
                         (start, end, filename)
                     }
-                    _ => { // default to "month"
+                    _ => {
+                        // default to "month"
                         let start = NaiveDate::from_ymd_opt(target_year, target_month, 1)
                             .ok_or("Invalid date")?;
                         // Last day of month: first day of next month - 1 day
@@ -224,9 +241,11 @@ impl Skill for WorkLogSkill {
                             NaiveDate::from_ymd_opt(target_year + 1, 1, 1)
                         } else {
                             NaiveDate::from_ymd_opt(target_year, target_month + 1, 1)
-                        }.ok_or("Invalid date")?;
+                        }
+                        .ok_or("Invalid date")?;
                         let end = next_month_start - ChronoDuration::days(1);
-                        let filename = format!("merged_month_{}-{:02}.md", target_year, target_month);
+                        let filename =
+                            format!("merged_month_{}-{:02}.md", target_year, target_month);
                         (start, end, filename)
                     }
                 };
@@ -269,23 +288,33 @@ impl Skill for WorkLogSkill {
                 }
 
                 if merged_content.is_empty() {
-                    return Ok(format!("No weekly reports found for scope '{}' (range: {} to {}).", scope, range_start, range_end));
+                    return Ok(format!(
+                        "No weekly reports found for scope '{}' (range: {} to {}).",
+                        scope, range_start, range_end
+                    ));
                 }
 
                 // Save merged report to dedicated merged_reports directory
                 let merged_dir = Self::get_merged_report_dir();
                 fs::create_dir_all(&merged_dir).map_err(|e| e.to_string())?;
                 let merged_file = merged_dir.join(&merged_filename);
-                let header = format!("# Merged Report ({})\nScope: {} to {}\nReports included: {}\n\n",
-                    scope, range_start, range_end, report_count);
+                let header = format!(
+                    "# Merged Report ({})\nScope: {} to {}\nReports included: {}\n\n",
+                    scope, range_start, range_end, report_count
+                );
                 let full_content = format!("{}{}", header, merged_content);
 
                 fs::write(&merged_file, &full_content)
                     .map_err(|e| format!("Failed to save merged report: {}", e))?;
 
-                Ok(format!("Merged {} weekly reports into {}. Content preview:\n\n{}", report_count, merged_file.display(), full_content))
+                Ok(format!(
+                    "Merged {} weekly reports into {}. Content preview:\n\n{}",
+                    report_count,
+                    merged_file.display(),
+                    full_content
+                ))
             }
-            _ => Err(format!("Unknown action: {}", action))
+            _ => Err(format!("Unknown action: {}", action)),
         }
     }
 

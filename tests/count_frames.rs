@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use std::fs::File;
-    
+
     #[test]
     fn count_gif_frames() {
         for name in &["loading.gif", "network-loading.gif", "tool-loading.gif"] {

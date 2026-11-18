@@ -11,7 +11,11 @@ pub struct SystemSkill {
 
 impl SystemSkill {
     pub fn new(api_key: String, base_url: String, model: String) -> Self {
-        Self { api_key, base_url, model }
+        Self {
+            api_key,
+            base_url,
+            model,
+        }
     }
 }
 
@@ -32,7 +36,10 @@ impl Skill for SystemSkill {
         tracing::info!("[SystemSkill] executing command: {:.200}", command_str);
         let output = if cfg!(target_os = "windows") {
             // Force UTF-8 output encoding for PowerShell commands to prevent garbled text
-            let utf8_cmd = format!("$OutputEncoding = [Console]::OutputEncoding = [Text.Encoding]::UTF8; {}", command_str);
+            let utf8_cmd = format!(
+                "$OutputEncoding = [Console]::OutputEncoding = [Text.Encoding]::UTF8; {}",
+                command_str
+            );
             Command::new("powershell")
                 .arg("-NoProfile")
                 .arg("-Command")

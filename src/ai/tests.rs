@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::ai::client::{ChatResponse, Message, Content, ToolCall, ToolFunction};
+    use crate::ai::client::{ChatResponse, Content, Message, ToolCall, ToolFunction};
 
     #[test]
     fn test_parse_tool_call_response_with_null_content() {
@@ -78,14 +78,14 @@ mod tests {
         ];
 
         let (instructions, items) = convert_messages_to_responses_input(&messages);
-        
+
         // All system context is merged into the top-level instructions.
         assert_eq!(
             instructions,
             Some("You are a helpful assistant.\n\nExtra context info.".to_string())
         );
         assert_eq!(items.len(), 1);
-        
+
         // Verify serialization works
         let json = serde_json::to_string(&items).unwrap();
         assert!(json.contains("Hello!"));
@@ -153,11 +153,8 @@ mod tests {
                 ((x * 7 + y * 43) % 256) as u8,
             ])
         });
-        let encoded = crate::screen_capture::compress_to_jpeg(
-            &DynamicImage::ImageRgb8(image),
-            90,
-        )
-        .unwrap();
+        let encoded =
+            crate::screen_capture::compress_to_jpeg(&DynamicImage::ImageRgb8(image), 90).unwrap();
         let mut messages = vec![Message {
             role: "user".to_string(),
             content: Some(Content::Multimodal(vec![
@@ -219,10 +216,10 @@ mod tests {
 
         let (instructions, items) = convert_messages_to_responses_input(&messages);
         assert!(instructions.is_none());
-        
+
         // assistant content + function_call + function_call_output = 3 items
         assert_eq!(items.len(), 3);
-        
+
         let json = serde_json::to_string(&items).unwrap();
         assert!(json.contains("function_call"));
         assert!(json.contains("function_call_output"));
@@ -232,7 +229,7 @@ mod tests {
     #[test]
     fn test_convert_responses_output_text() {
         use crate::ai::client::convert_responses_output_to_message;
-        use crate::ai::client::{ResponsesOutputItem, ResponsesContentBlock};
+        use crate::ai::client::{ResponsesContentBlock, ResponsesOutputItem};
 
         let output = vec![ResponsesOutputItem::Message {
             content: vec![ResponsesContentBlock::OutputText {
@@ -249,7 +246,7 @@ mod tests {
     #[test]
     fn test_convert_responses_output_function_call() {
         use crate::ai::client::convert_responses_output_to_message;
-        use crate::ai::client::{ResponsesOutputItem, ResponsesContentBlock};
+        use crate::ai::client::{ResponsesContentBlock, ResponsesOutputItem};
 
         let output = vec![
             ResponsesOutputItem::Message {
@@ -349,7 +346,12 @@ mod tests {
         let items = parse_responses_api_output(json).unwrap();
         assert_eq!(items.len(), 1);
         match &items[0] {
-            crate::ai::client::ResponsesOutputItem::FunctionCall { item_id, call_id, name, .. } => {
+            crate::ai::client::ResponsesOutputItem::FunctionCall {
+                item_id,
+                call_id,
+                name,
+                ..
+            } => {
                 assert_eq!(item_id, "call_123456");
                 assert_eq!(call_id, "call_123456");
                 assert_eq!(name, "get_weather");
@@ -382,9 +384,12 @@ mod tests {
 
         let items = parse_responses_api_output(json).unwrap();
         assert_eq!(items.len(), 2);
-        
+
         match &items[0] {
-            crate::ai::client::ResponsesOutputItem::Reasoning { summary, encrypted_content } => {
+            crate::ai::client::ResponsesOutputItem::Reasoning {
+                summary,
+                encrypted_content,
+            } => {
                 assert_eq!(summary, "I am thinking about weather.");
                 assert_eq!(encrypted_content, "ENCRYPTED_THOUGHTS");
             }
@@ -394,7 +399,7 @@ mod tests {
 
     #[test]
     fn test_convert_reasoning_to_input() {
-        use crate::ai::client::{Message, convert_messages_to_responses_input};
+        use crate::ai::client::{convert_messages_to_responses_input, Message};
 
         let msg = Message {
             role: "assistant".to_string(),
@@ -408,9 +413,11 @@ mod tests {
         let (_, items) = convert_messages_to_responses_input(&[msg]);
         // Should have 2 items: Reasoning + Message
         assert_eq!(items.len(), 2);
-        
+
         match &items[0] {
-            crate::ai::client::ResponsesInputItem::Reasoning { encrypted_content, .. } => {
+            crate::ai::client::ResponsesInputItem::Reasoning {
+                encrypted_content, ..
+            } => {
                 assert_eq!(encrypted_content, "SECRET");
             }
             _ => panic!("First item should be Reasoning"),

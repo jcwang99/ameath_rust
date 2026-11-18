@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
-use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageData {
@@ -515,14 +515,14 @@ pub struct RoutineDef {
     pub id: String,
     pub title: String,
     pub schedule_type: ScheduleType,
-    pub day_of_week: Option<u32>,     // 0-6 (0=Monday, 6=Sunday for chrono)
-    pub day_of_month: Option<u32>,    // 1-31
+    pub day_of_week: Option<u32>,  // 0-6 (0=Monday, 6=Sunday for chrono)
+    pub day_of_month: Option<u32>, // 1-31
     pub interval: Option<u32>,
-    pub time_of_day: Option<String>,  // "HH:MM"
+    pub time_of_day: Option<String>, // "HH:MM"
     pub memo: String,
     pub is_active: bool,
     #[serde(default)]
-    pub expiry_minutes: Option<u32>,  // None = always run, Some(n) = skip if n minutes past scheduled time
+    pub expiry_minutes: Option<u32>, // None = always run, Some(n) = skip if n minutes past scheduled time
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

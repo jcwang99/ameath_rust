@@ -1,12 +1,12 @@
-use crate::ai::skills::Skill;
 use crate::ai::memory::MemoryManager;
+use crate::ai::skills::Skill;
 use async_trait::async_trait;
+use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::sync::Arc;
 use std::fs;
 use std::path::PathBuf;
-use chrono::{Local, DateTime};
+use std::sync::Arc;
 use uuid::Uuid;
 
 fn default_time() -> DateTime<Local> {
@@ -29,8 +29,7 @@ pub enum TodoStatus {
     Done,
 }
 
-pub struct TodoSkill {
-}
+pub struct TodoSkill {}
 
 impl TodoSkill {
     pub fn new(_memory: Arc<MemoryManager>) -> Self {
@@ -79,7 +78,10 @@ impl TodoSkill {
     pub fn list_todos_local(only_pending: bool) -> Vec<Todo> {
         let todos = Self::load_todos();
         if only_pending {
-            todos.into_iter().filter(|t| t.status == TodoStatus::Pending).collect()
+            todos
+                .into_iter()
+                .filter(|t| t.status == TodoStatus::Pending)
+                .collect()
         } else {
             todos
         }
@@ -101,10 +103,13 @@ impl TodoSkill {
             todos[idx].completed_at = Some(Local::now());
             let content = todos[idx].content.clone();
             Self::save_todos(&todos)?;
-            
+
             // Link with WorkLogSkill: Record to log automatically
-            let _ = crate::ai::skills::work_log::WorkLogSkill::record_log_local(&format!("[Todo Done] {}", content));
-            
+            let _ = crate::ai::skills::work_log::WorkLogSkill::record_log_local(&format!(
+                "[Todo Done] {}",
+                content
+            ));
+
             Ok(format!("Completed: {}", content))
         } else {
             Err("No matching pending todo found.".to_string())
@@ -143,8 +148,9 @@ impl Skill for TodoSkill {
                 } else {
                     let mut list = String::from("Current Pending Todos:\n");
                     for todo in todos {
-                        list.push_str(&format!("- [ ] ({}) {} (Added: {})\n", 
-                            &todo.id[..4], 
+                        list.push_str(&format!(
+                            "- [ ] ({}) {} (Added: {})\n",
+                            &todo.id[..4],
                             todo.content,
                             todo.created_at.format("%Y-%m-%d %H:%M")
                         ));
@@ -154,15 +160,22 @@ impl Skill for TodoSkill {
             }
             "list_completed_todos" => {
                 let todos = Self::load_todos();
-                let completed: Vec<_> = todos.into_iter().filter(|t| t.status == TodoStatus::Done).collect();
+                let completed: Vec<_> = todos
+                    .into_iter()
+                    .filter(|t| t.status == TodoStatus::Done)
+                    .collect();
                 if completed.is_empty() {
                     Ok("No completed todos found.".to_string())
                 } else {
                     let mut list = String::from("Recently Completed Todos:\n");
                     for todo in completed {
-                        let comp_time = todo.completed_at.map(|t| t.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_else(|| "N/A".to_string());
-                        list.push_str(&format!("- [x] ({}) {} (Done at: {})\n", 
-                            &todo.id[..4], 
+                        let comp_time = todo
+                            .completed_at
+                            .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+                            .unwrap_or_else(|| "N/A".to_string());
+                        list.push_str(&format!(
+                            "- [x] ({}) {} (Done at: {})\n",
+                            &todo.id[..4],
                             todo.content,
                             comp_time
                         ));

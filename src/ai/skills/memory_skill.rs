@@ -156,38 +156,54 @@ mod tests {
         let test_key_2 = "test_key_role_456";
 
         // 1. 设置数据
-        skill.execute(json!({
-            "action": "set",
-            "key": test_key_1,
-            "value": "Antigravity"
-        })).await.unwrap();
-        
-        skill.execute(json!({
-            "action": "set",
-            "key": test_key_2,
-            "value": "AI Assistant"
-        })).await.unwrap();
+        skill
+            .execute(json!({
+                "action": "set",
+                "key": test_key_1,
+                "value": "Antigravity"
+            }))
+            .await
+            .unwrap();
+
+        skill
+            .execute(json!({
+                "action": "set",
+                "key": test_key_2,
+                "value": "AI Assistant"
+            }))
+            .await
+            .unwrap();
 
         // 2. 测试获取单个 key
-        let res_single = skill.execute(json!({
-            "action": "get",
-            "key": test_key_1
-        })).await.unwrap();
+        let res_single = skill
+            .execute(json!({
+                "action": "get",
+                "key": test_key_1
+            }))
+            .await
+            .unwrap();
         assert!(res_single.contains(test_key_1));
         assert!(res_single.contains("Antigravity"));
 
         // 3. 测试获取所有 key (不传入 key)
-        let res_all = skill.execute(json!({
-            "action": "get"
-        })).await.unwrap();
-        
+        let res_all = skill
+            .execute(json!({
+                "action": "get"
+            }))
+            .await
+            .unwrap();
+
         assert!(res_all.contains("Current Fact Board:"));
         assert!(res_all.contains(test_key_1));
         assert!(res_all.contains(test_key_2));
 
         // 清理测试数据
-        let _ = skill.execute(json!({"action": "delete", "key": test_key_1})).await;
-        let _ = skill.execute(json!({"action": "delete", "key": test_key_2})).await;
+        let _ = skill
+            .execute(json!({"action": "delete", "key": test_key_1}))
+            .await;
+        let _ = skill
+            .execute(json!({"action": "delete", "key": test_key_2}))
+            .await;
     }
 
     #[tokio::test]
@@ -197,10 +213,13 @@ mod tests {
         let memory = Arc::new(MemoryManager::new());
         let skill = MemorySkill::new(memory);
 
-        let res = skill.execute(json!({
-            "action": "get"
-        })).await.unwrap();
-        
+        let res = skill
+            .execute(json!({
+                "action": "get"
+            }))
+            .await
+            .unwrap();
+
         // 只要返回包含预期前缀或特定字符串即可证明逻辑走通
         assert!(res.contains("Current Fact Board") || res == "No facts found in the Fact Board.");
     }

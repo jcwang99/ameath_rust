@@ -1,3 +1,4 @@
+use crate::ui_primitives::draw_circle;
 use softbuffer::{Context, Surface};
 use std::num::NonZeroU32;
 use std::rc::Rc;
@@ -8,7 +9,6 @@ use winit::{
     keyboard::{Key, NamedKey},
     window::{Window, WindowBuilder, WindowLevel},
 };
-use crate::ui_primitives::draw_circle;
 
 #[derive(Clone)]
 pub struct Thumbnail {
@@ -77,9 +77,6 @@ pub enum ChatAction {
     Close,
 }
 
-
-
-
 impl ChatWindow {
     pub fn new<T>(
         event_loop: &EventLoopWindowTarget<T>,
@@ -119,14 +116,17 @@ impl ChatWindow {
                 let thumb = Thumbnail {
                     width: w,
                     height: h,
-                    pixels: rgba.pixels().map(|p| {
-                        let a = p[3] as u32;
-                        // PRE-APPLY 60% factor to save CPU in every frame
-                        let r = (p[0] as u32 * 60) / 100;
-                        let g = (p[1] as u32 * 60) / 100;
-                        let b = (p[2] as u32 * 60) / 100;
-                        (a << 24) | (r << 16) | (g << 8) | b
-                    }).collect(),
+                    pixels: rgba
+                        .pixels()
+                        .map(|p| {
+                            let a = p[3] as u32;
+                            // PRE-APPLY 60% factor to save CPU in every frame
+                            let r = (p[0] as u32 * 60) / 100;
+                            let g = (p[1] as u32 * 60) / 100;
+                            let b = (p[2] as u32 * 60) / 100;
+                            (a << 24) | (r << 16) | (g << 8) | b
+                        })
+                        .collect(),
                 };
                 let _ = tx_skin.send(ImageAsyncMsg::SkinLoaded(thumb));
                 let _ = proxy_skin.send_event(());
@@ -166,8 +166,6 @@ impl ChatWindow {
         }
     }
 
-
-
     pub fn id(&self) -> winit::window::WindowId {
         self.window.id()
     }
@@ -201,7 +199,6 @@ impl ChatWindow {
     }
 
     pub fn hide(&mut self) {
-
         self.window.set_visible(false);
         self.is_visible = false;
     }
@@ -294,7 +291,7 @@ impl ChatWindow {
                     let size = self.window.inner_size();
                     let buf_w = size.width as f32;
                     let padding = 10.0;
-                    
+
                     let max_scroll = self.cached_max_scroll;
                     let text_area_h = self.cached_text_area_h;
                     let text_y_base = self.cached_text_y_base;
@@ -335,7 +332,7 @@ impl ChatWindow {
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_pos = (position.x, position.y);
                 self.update_hover_states();
-                
+
                 let padding = 10.0;
                 let text_y_base = self.cached_text_y_base;
                 let text_area_h = self.cached_text_area_h;
@@ -389,7 +386,9 @@ impl ChatWindow {
                         return ChatAction::Close;
                     }
                     Key::Named(NamedKey::Backspace) => {
-                        if self.selection_start.is_some() && self.selection_start != Some(self.cursor_byte_idx) {
+                        if self.selection_start.is_some()
+                            && self.selection_start != Some(self.cursor_byte_idx)
+                        {
                             self.delete_selection();
                             self.selection_start = None;
                             self.cursor_blink_start = std::time::Instant::now();
@@ -441,7 +440,9 @@ impl ChatWindow {
                         }
                     }
                     Key::Named(NamedKey::Delete) => {
-                        if self.selection_start.is_some() && self.selection_start != Some(self.cursor_byte_idx) {
+                        if self.selection_start.is_some()
+                            && self.selection_start != Some(self.cursor_byte_idx)
+                        {
                             self.delete_selection();
                             self.selection_start = None;
                             self.cursor_blink_start = std::time::Instant::now();
@@ -476,7 +477,7 @@ impl ChatWindow {
                     }
                     Key::Character(c) => {
                         let c_lower = c.to_lowercase();
-                        
+
                         if self.ignore_next_char && (c_lower == "m") {
                             self.ignore_next_char = false;
                             return ChatAction::None;
@@ -555,8 +556,6 @@ impl ChatWindow {
         self.plus_button_hovered =
             mx >= btn_x && mx <= btn_x + btn_size && my >= btn_y && my <= btn_y + btn_size;
 
-
-
         self.hovered_thumb = self.get_thumbnail_at_mouse();
 
         self.request_redraw();
@@ -568,24 +567,43 @@ impl ChatWindow {
             // 1. Try DIB (More reliable on Windows for many apps)
             {
                 use clipboard_win::{formats, get_clipboard};
-                if let Ok(dib_data) = get_clipboard::<Vec<u8>, _>(formats::RawData(formats::CF_DIB)) {
+                if let Ok(dib_data) = get_clipboard::<Vec<u8>, _>(formats::RawData(formats::CF_DIB))
+                {
                     if dib_data.len() >= 40 {
                         let mut bmp_file = Vec::with_capacity(14 + dib_data.len());
                         bmp_file.extend_from_slice(b"BM");
                         bmp_file.extend_from_slice(&((14 + dib_data.len()) as u32).to_le_bytes());
                         bmp_file.extend_from_slice(&0u16.to_le_bytes());
                         bmp_file.extend_from_slice(&0u16.to_le_bytes());
-                        let header_size = u32::from_le_bytes([dib_data[0], dib_data[1], dib_data[2], dib_data[3]]);
+                        let header_size = u32::from_le_bytes([
+                            dib_data[0],
+                            dib_data[1],
+                            dib_data[2],
+                            dib_data[3],
+                        ]);
                         bmp_file.extend_from_slice(&(14 + header_size).to_le_bytes());
                         bmp_file.extend_from_slice(&dib_data);
 
-                        if let Ok(img) = image::load_from_memory_with_format(&bmp_file, image::ImageFormat::Bmp) {
+                        if let Ok(img) =
+                            image::load_from_memory_with_format(&bmp_file, image::ImageFormat::Bmp)
+                        {
                             let slot_id = self.next_slot_id;
                             self.next_slot_id += 1;
-                            self.slots.push(ImageSlot { id: slot_id, status: ImageStatus::Processing });
+                            self.slots.push(ImageSlot {
+                                id: slot_id,
+                                status: ImageStatus::Processing,
+                            });
                             if let Ok(data) = crate::screen_capture::compress_to_jpeg(&img, 80) {
-                                let img_data = crate::types::ImageData { data, mime_type: "image/jpeg".to_string() };
-                                Self::process_raw_image(img_data, slot_id, self.image_tx.clone(), self.proxy.clone());
+                                let img_data = crate::types::ImageData {
+                                    data,
+                                    mime_type: "image/jpeg".to_string(),
+                                };
+                                Self::process_raw_image(
+                                    img_data,
+                                    slot_id,
+                                    self.image_tx.clone(),
+                                    self.proxy.clone(),
+                                );
                                 self.layout_valid = false;
                                 self.ensure_cursor_visible();
                                 self.request_redraw();
@@ -604,16 +622,33 @@ impl ChatWindow {
                 if let Ok(image) = clipboard.get_image() {
                     if image.width > 0 && image.height > 0 {
                         let rgba_data = image.bytes.to_vec();
-                        if let Some(img_buf) = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(
-                            image.width as u32, image.height as u32, rgba_data
-                        ) {
+                        if let Some(img_buf) =
+                            image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(
+                                image.width as u32,
+                                image.height as u32,
+                                rgba_data,
+                            )
+                        {
                             let dynamic_img = image::DynamicImage::ImageRgba8(img_buf);
-                            if let Ok(data) = crate::screen_capture::compress_to_jpeg(&dynamic_img, 80) {
+                            if let Ok(data) =
+                                crate::screen_capture::compress_to_jpeg(&dynamic_img, 80)
+                            {
                                 let slot_id = self.next_slot_id;
                                 self.next_slot_id += 1;
-                                self.slots.push(ImageSlot { id: slot_id, status: ImageStatus::Processing });
-                                let img_data = crate::types::ImageData { data, mime_type: "image/jpeg".to_string() };
-                                Self::process_raw_image(img_data, slot_id, self.image_tx.clone(), self.proxy.clone());
+                                self.slots.push(ImageSlot {
+                                    id: slot_id,
+                                    status: ImageStatus::Processing,
+                                });
+                                let img_data = crate::types::ImageData {
+                                    data,
+                                    mime_type: "image/jpeg".to_string(),
+                                };
+                                Self::process_raw_image(
+                                    img_data,
+                                    slot_id,
+                                    self.image_tx.clone(),
+                                    self.proxy.clone(),
+                                );
                                 self.layout_valid = false;
                                 self.ensure_cursor_visible();
                                 self.request_redraw();
@@ -629,14 +664,19 @@ impl ChatWindow {
                     let path = std::path::Path::new(trimmed);
                     if path.exists() && path.is_file() {
                         let ok_exts = ["png", "jpg", "jpeg", "webp", "gif"];
-                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                        let ext = path
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("")
+                            .to_lowercase();
                         if ok_exts.contains(&ext.as_str()) {
                             self.add_image_from_path(path.to_path_buf());
                             return;
                         }
                     }
                     let normalized = trimmed.replace("\r\n", "\n");
-                    self.input_text.insert_str(self.cursor_byte_idx, &normalized);
+                    self.input_text
+                        .insert_str(self.cursor_byte_idx, &normalized);
                     self.cursor_byte_idx += normalized.len();
                     self.layout_valid = false;
                     self.ensure_cursor_visible();
@@ -705,7 +745,11 @@ impl ChatWindow {
         }
 
         let char_idx = crate::ui_primitives::get_cursor_index_from_xy(
-            &self.input_text, 18.0, max_width as u32, rx, ry
+            &self.input_text,
+            18.0,
+            max_width as u32,
+            rx,
+            ry,
         );
         let mut byte_idx = 0;
         for (i, c) in self.input_text.char_indices().take(char_idx) {
@@ -817,7 +861,11 @@ impl ChatWindow {
                     processed_img_data.mime_type = "image/jpeg".to_string();
                 }
 
-                let _ = tx.send(ImageAsyncMsg::Finished(slot_id, processed_img_data, thumb_obj));
+                let _ = tx.send(ImageAsyncMsg::Finished(
+                    slot_id,
+                    processed_img_data,
+                    thumb_obj,
+                ));
                 let _ = proxy.send_event(());
             } else {
                 let _ = tx.send(ImageAsyncMsg::Failed(slot_id));
@@ -833,24 +881,28 @@ impl ChatWindow {
 
         // 1. Calculate target size based on DirectWrite text measurement (Only when invalid)
         if !self.layout_valid {
-            let (_, th) = crate::ui_primitives::get_metrics_dw(&self.input_text, font_size, max_width as u32);
+            let (_, th) =
+                crate::ui_primitives::get_metrics_dw(&self.input_text, font_size, max_width as u32);
             self.cached_text_h = (th as f32).max(font_size + 8.0);
-            
+
             let thumbnail_h = if self.slots.is_empty() { 0.0 } else { 100.0 };
             let button_row_h = 40.0;
             let total_padding = padding * 2.0;
-            
+
             let raw_text_area_height = self.cached_text_h;
             let raw_target_height = total_padding + thumbnail_h + self.cached_text_h + button_row_h;
             let target_height = raw_target_height.min(400.0);
-            
-            self.cached_text_area_h = (target_height - (total_padding + thumbnail_h + button_row_h)).max(0.0);
+
+            self.cached_text_area_h =
+                (target_height - (total_padding + thumbnail_h + button_row_h)).max(0.0);
             self.cached_max_scroll = (raw_text_area_height - self.cached_text_area_h).max(0.0);
             self.cached_text_y_base = thumbnail_h;
 
             let current_size = self.window.inner_size();
             if current_size.height != target_height as u32 {
-                let _ = self.window.request_inner_size(PhysicalSize::new(600, target_height as u32));
+                let _ = self
+                    .window
+                    .request_inner_size(PhysicalSize::new(600, target_height as u32));
             }
             // Always ensure surface matches target_height in layout pass
             let _ = self.surface.resize(
@@ -870,7 +922,7 @@ impl ChatWindow {
             let my = self.mouse_pos.1 as f32;
             let top_bound = padding + text_y_base;
             let bottom_bound = (self.window.inner_size().height as f32) - 40.0 - padding;
-            
+
             let mut scrolled = false;
             if my < top_bound {
                 let dist = (top_bound - my).min(100.0);
@@ -897,11 +949,11 @@ impl ChatWindow {
         let buf_h = size.height as usize;
 
         let mut buffer = self.surface.buffer_mut().unwrap();
-        
+
         // Safety check for resize lag
         if buffer.len() != buf_w * buf_h {
-             buffer.present().unwrap();
-             return;
+            buffer.present().unwrap();
+            return;
         }
 
         // Colors
@@ -913,7 +965,7 @@ impl ChatWindow {
         if !self.base_ui_valid || self.base_ui_buffer.len() != buf_w * buf_h {
             self.base_ui_buffer.resize(buf_w * buf_h, 0);
             self.base_ui_buffer.fill(0);
-            
+
             let base_buffer = &mut self.base_ui_buffer[..];
             let bg_color: u32 = 0xFF2D2D2D;
 
@@ -940,44 +992,52 @@ impl ChatWindow {
                 let draw_h = (img_h as f32 * scale) as usize;
                 let off_x = (draw_w.saturating_sub(buf_w)) / 2;
                 let off_y = ((draw_h.saturating_sub(buf_h)) as f32 * 0.25) as usize;
-                
+
                 use rayon::prelude::*;
-                base_buffer.par_chunks_mut(buf_w).enumerate().for_each(|(y, row)| {
-                    for (x, pixel) in row.iter_mut().enumerate() {
-                        let ex_a = (*pixel >> 24) & 0xFF;
-                        if ex_a > 0 { 
-                            let tx = ((x + off_x) as f32 / scale) as usize;
-                            let ty = ((y + off_y) as f32 / scale) as usize;
-                            if tx < img_w && ty < img_h {
-                                let skin_px = skin.pixels[ty * img_w + tx];
-                                if ex_a == 255 {
-                                    // Opaque background: Darken skin to 60% for readability
-                                    let r = ((skin_px >> 16) & 0xFF) * 160 / 255;
-                                    let g = ((skin_px >> 8) & 0xFF) * 160 / 255;
-                                    let b = (skin_px & 0xFF) * 160 / 255;
-                                    *pixel = (0xFF << 24) | (r << 16) | (g << 8) | b;
-                                } else {
-                                    let sr = (skin_px >> 16) & 0xFF;
-                                    let sg = (skin_px >> 8) & 0xFF;
-                                    let sb = skin_px & 0xFF;
-                                    
-                                    // Combine AA alpha with 60% brightness darkening
-                                    let dr = (sr * ex_a * 160) / (255 * 255);
-                                    let dg = (sg * ex_a * 160) / (255 * 255);
-                                    let db = (sb * ex_a * 160) / (255 * 255);
-                                    *pixel = (ex_a << 24) | (dr << 16) | (dg << 8) | db;
+                base_buffer
+                    .par_chunks_mut(buf_w)
+                    .enumerate()
+                    .for_each(|(y, row)| {
+                        for (x, pixel) in row.iter_mut().enumerate() {
+                            let ex_a = (*pixel >> 24) & 0xFF;
+                            if ex_a > 0 {
+                                let tx = ((x + off_x) as f32 / scale) as usize;
+                                let ty = ((y + off_y) as f32 / scale) as usize;
+                                if tx < img_w && ty < img_h {
+                                    let skin_px = skin.pixels[ty * img_w + tx];
+                                    if ex_a == 255 {
+                                        // Opaque background: Darken skin to 60% for readability
+                                        let r = ((skin_px >> 16) & 0xFF) * 160 / 255;
+                                        let g = ((skin_px >> 8) & 0xFF) * 160 / 255;
+                                        let b = (skin_px & 0xFF) * 160 / 255;
+                                        *pixel = (0xFF << 24) | (r << 16) | (g << 8) | b;
+                                    } else {
+                                        let sr = (skin_px >> 16) & 0xFF;
+                                        let sg = (skin_px >> 8) & 0xFF;
+                                        let sb = skin_px & 0xFF;
+
+                                        // Combine AA alpha with 60% brightness darkening
+                                        let dr = (sr * ex_a * 160) / (255 * 255);
+                                        let dg = (sg * ex_a * 160) / (255 * 255);
+                                        let db = (sb * ex_a * 160) / (255 * 255);
+                                        *pixel = (ex_a << 24) | (dr << 16) | (dg << 8) | db;
+                                    }
                                 }
                             }
                         }
-                    }
-                });
+                    });
             }
 
             self.alpha_buffer.resize(buf_w * buf_h, 0);
             self.alpha_buffer.fill(0);
             let border_r = 12.min(buf_h as u32 / 2).max(1);
             crate::ui_primitives::draw_rounded_rect_border_alpha_internal(
-                &mut self.alpha_buffer, buf_w as u32, buf_w as u32, buf_h as u32, border_r, 1
+                &mut self.alpha_buffer,
+                buf_w as u32,
+                buf_w as u32,
+                buf_h as u32,
+                border_r,
+                1,
             );
             crate::ui_primitives::blit_alpha(
                 base_buffer,
@@ -1026,14 +1086,20 @@ impl ChatWindow {
                 }
             }
             thumb_x_cursor += 90;
-            if thumb_x_cursor + 80 > buf_w { break; }
+            if thumb_x_cursor + 80 > buf_w {
+                break;
+            }
         }
 
         // Draw Plus Button with AA Circle
         let btn_x = 10 + 16; // Center X
         let btn_y = buf_h as i32 - 10 - 16; // Center Y
-        let plus_bg = if self.plus_button_hovered { 0xFF444444 } else { 0xFF3D3D3D };
-        
+        let plus_bg = if self.plus_button_hovered {
+            0xFF444444
+        } else {
+            0xFF3D3D3D
+        };
+
         draw_circle(
             &mut buffer,
             buf_w as u32,
@@ -1048,7 +1114,8 @@ impl ChatWindow {
         // Draw the plus symbol (+)
         for ty in 0..32 {
             for tx in 0..32 {
-                let is_plus = (tx > 10 && tx < 22 && ty >= 15 && ty <= 16) || (ty > 10 && ty < 22 && tx >= 15 && tx <= 16);
+                let is_plus = (tx > 10 && tx < 22 && ty >= 15 && ty <= 16)
+                    || (ty > 10 && ty < 22 && tx >= 15 && tx <= 16);
                 if is_plus {
                     let px = (10 + tx) as usize;
                     let py = (buf_h - 10 - 32 + ty) as usize;
@@ -1064,10 +1131,10 @@ impl ChatWindow {
             if sel_start != self.cursor_byte_idx {
                 let sel_min = sel_start.min(self.cursor_byte_idx);
                 let sel_max = sel_start.max(self.cursor_byte_idx);
-                
+
                 let char_sel_start = self.input_text[..sel_min].chars().count();
                 let char_sel_end = self.input_text[..sel_max].chars().count();
-                
+
                 let rects = crate::ui_primitives::get_selection_rects(
                     &self.input_text,
                     font_size,
@@ -1075,15 +1142,17 @@ impl ChatWindow {
                     char_sel_start,
                     char_sel_end,
                 );
-                
+
                 for (rx, ry, _rw, _rh) in rects {
                     let draw_y = padding as f32 + text_y_base + ry - self.scroll_y;
                     // Only draw if within text area bounds
-                    if draw_y + _rh >= padding + text_y_base && draw_y <= padding + text_y_base + text_area_h {
+                    if draw_y + _rh >= padding + text_y_base
+                        && draw_y <= padding + text_y_base + text_area_h
+                    {
                         let clip_y = draw_y.max(padding + text_y_base);
                         let clip_bottom = (draw_y + _rh).min(padding + text_y_base + text_area_h);
                         let clip_h = clip_bottom - clip_y;
-                        
+
                         if clip_h > 0.0 {
                             crate::ui_primitives::draw_rect(
                                 &mut buffer,
@@ -1126,7 +1195,7 @@ impl ChatWindow {
             max_width as u32,
             char_cursor,
         );
-        
+
         let cursor_x = (padding as f32 + cx) as i32;
         let cursor_y = (padding as f32 + text_y_base + cy - self.scroll_y) as i32;
         let cursor_pos = (cursor_x, cursor_y);
@@ -1134,7 +1203,9 @@ impl ChatWindow {
         // Cursor Blink (only if within view)
         let elapsed = self.cursor_blink_start.elapsed().as_millis();
         if (elapsed % 1000) < 500 {
-            if cursor_pos.1 >= (padding + text_y_base) as i32 && (cursor_pos.1 + ch as i32) <= (padding + text_y_base + text_area_h) as i32 {
+            if cursor_pos.1 >= (padding + text_y_base) as i32
+                && (cursor_pos.1 + ch as i32) <= (padding + text_y_base + text_area_h) as i32
+            {
                 crate::ui_primitives::draw_rect(
                     &mut buffer,
                     buf_w as u32,
@@ -1154,8 +1225,9 @@ impl ChatWindow {
             let sb_width = 4;
             let sb_x = buf_w - 6;
             let sb_h = (text_area_h * (text_area_h / self.cached_text_h)) as u32;
-            let sb_y = (padding + text_y_base) + (self.scroll_y / max_scroll) * (text_area_h - sb_h as f32);
-            
+            let sb_y = (padding + text_y_base)
+                + (self.scroll_y / max_scroll) * (text_area_h - sb_h as f32);
+
             crate::ui_primitives::draw_rounded_rect(
                 &mut buffer,
                 buf_w as u32,
@@ -1195,7 +1267,7 @@ impl ChatWindow {
         );
 
         let text_area_h = self.cached_text_area_h;
-        
+
         // If cursor is below viewport
         if cy + ch > self.scroll_y + text_area_h {
             self.scroll_y = cy + ch - text_area_h;

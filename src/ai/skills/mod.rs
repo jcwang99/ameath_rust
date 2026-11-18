@@ -6,13 +6,13 @@ use std::sync::{Arc, RwLock};
 pub mod browser;
 pub mod external;
 pub mod llm_call;
+pub mod memo_skill;
 pub mod memory_skill;
 pub mod notification_skill;
 pub mod reminder_skill;
 pub mod routine_skill;
 pub mod sub_agent;
 pub mod system;
-pub mod memo_skill;
 pub mod todo_skill;
 pub mod work_log;
 
@@ -70,9 +70,9 @@ impl SkillManager {
         manager.register(Arc::new(routine_skill::RoutineSkill::new(shared_routines)));
 
         // Register the external skill registry (passes API config as env vars to subprocesses)
-        let catalog = Arc::new(RwLock::new(
-            external::SkillCatalog::scan(&external::get_skills_dir()),
-        ));
+        let catalog = Arc::new(RwLock::new(external::SkillCatalog::scan(
+            &external::get_skills_dir(),
+        )));
 
         // Create client first so we can pass it to both internal LLM skills and the external registry
         let client_opt = if !profile.api_key.is_empty() {

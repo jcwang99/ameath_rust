@@ -103,10 +103,9 @@ pub(crate) fn compress_message_images(messages: &mut [Message], max_dimension: u
                 continue;
             }
 
-            let Ok(encoded) = base64::Engine::decode(
-                &base64::engine::general_purpose::STANDARD,
-                payload,
-            ) else {
+            let Ok(encoded) =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, payload)
+            else {
                 continue;
             };
             let Ok(image) = image::load_from_memory(&encoded) else {
@@ -124,10 +123,7 @@ pub(crate) fn compress_message_images(messages: &mut [Message], max_dimension: u
                 continue;
             }
 
-            let encoded = base64::Engine::encode(
-                &base64::engine::general_purpose::STANDARD,
-                jpeg,
-            );
+            let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, jpeg);
             image_url.url = format!("data:image/jpeg;base64,{}", encoded);
             compressed_count += 1;
         }
@@ -144,7 +140,11 @@ pub struct ChatKernel {
 }
 
 impl ChatKernel {
-    pub fn new(config: &AiConfig, scheduler: crate::interaction::ActionScheduler, shared_routines: std::sync::Arc<std::sync::Mutex<crate::types::RoutinesConfig>>) -> Self {
+    pub fn new(
+        config: &AiConfig,
+        scheduler: crate::interaction::ActionScheduler,
+        shared_routines: std::sync::Arc<std::sync::Mutex<crate::types::RoutinesConfig>>,
+    ) -> Self {
         let profile = config.active_profile();
         let client = if profile.api_key.is_empty() {
             None
@@ -180,9 +180,19 @@ impl ChatKernel {
         let request_id = next_request_id();
 
         let mut log_msg = if input.chars().count() > 50 {
-            format!("[INPUT_TRACE] Received: {}...", input.chars().take(47).collect::<String>().replace("\n", " "))
+            format!(
+                "[INPUT_TRACE] Received: {}...",
+                input
+                    .chars()
+                    .take(47)
+                    .collect::<String>()
+                    .replace("\n", " ")
+            )
         } else {
-            format!("[INPUT_TRACE] Received: {}", input.trim().replace("\n", " "))
+            format!(
+                "[INPUT_TRACE] Received: {}",
+                input.trim().replace("\n", " ")
+            )
         };
         if !images.is_empty() {
             log_msg.push_str(&format!(" (Images: {})", images.len()));
@@ -195,12 +205,15 @@ impl ChatKernel {
             if !log_content.is_empty() {
                 match crate::ai::skills::work_log::WorkLogSkill::record_log_local(log_content) {
                     Ok(_) => {
-                        let confirmation = "好哒，已经帮你记在小本本上啦~ [IMG]assets/stickers/写笔记.gif";
-                        
+                        let confirmation =
+                            "好哒，已经帮你记在小本本上啦~ [IMG]assets/stickers/写笔记.gif";
+
                         // Persistent persistence for the command and response
                         self.memory.add_conversation_item("user", &input, 1).ok();
-                        self.memory.add_conversation_item("assistant", confirmation, 1).ok();
-                        
+                        self.memory
+                            .add_conversation_item("assistant", confirmation, 1)
+                            .ok();
+
                         let _ = tx.send(AiResponseEvent::Response(confirmation.to_string()));
                         return;
                     }
@@ -219,10 +232,12 @@ impl ChatKernel {
                 match crate::ai::skills::todo_skill::TodoSkill::add_todo_local(todo_content) {
                     Ok(_) => {
                         let confirmation = "收到！已经加入待办清单啦~ [IMG]assets/stickers/OK.gif";
-                        
+
                         self.memory.add_conversation_item("user", &input, 1).ok();
-                        self.memory.add_conversation_item("assistant", confirmation, 1).ok();
-                        
+                        self.memory
+                            .add_conversation_item("assistant", confirmation, 1)
+                            .ok();
+
                         let _ = tx.send(AiResponseEvent::Response(confirmation.to_string()));
                         return;
                     }
@@ -239,11 +254,14 @@ impl ChatKernel {
             if !memo_content.is_empty() {
                 match crate::ai::skills::memo_skill::MemoSkill::add_memo_local(memo_content) {
                     Ok(_) => {
-                        let confirmation = "记下来啦！我会帮你盯着的~ [IMG]assets/stickers/写笔记.gif";
-                        
+                        let confirmation =
+                            "记下来啦！我会帮你盯着的~ [IMG]assets/stickers/写笔记.gif";
+
                         self.memory.add_conversation_item("user", &input, 1).ok();
-                        self.memory.add_conversation_item("assistant", confirmation, 1).ok();
-                        
+                        self.memory
+                            .add_conversation_item("assistant", confirmation, 1)
+                            .ok();
+
                         let _ = tx.send(AiResponseEvent::Response(confirmation.to_string()));
                         return;
                     }
@@ -310,13 +328,20 @@ impl ChatKernel {
             let is_multimodal = self.config.active_profile().is_multimodal;
             let mut messages = self
                 .memory
-                .get_context_for_request(self.config.l1_summary_threshold, is_multimodal, Some(&request_id))
+                .get_context_for_request(
+                    self.config.l1_summary_threshold,
+                    is_multimodal,
+                    Some(&request_id),
+                )
                 .unwrap_or_default();
 
             // Inject Base System Prompt (Configurable Persona)
             if !self.config.system_prompt.is_empty() {
                 let current_time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                let prompt_to_use = format!("{}\n\n[Current System Time]: {}", self.config.system_prompt, current_time);
+                let prompt_to_use = format!(
+                    "{}\n\n[Current System Time]: {}",
+                    self.config.system_prompt, current_time
+                );
                 messages.insert(
                     0,
                     Message {
@@ -337,22 +362,26 @@ impl ChatKernel {
             }
 
             // --- Inject Dynamic Todo Context ---
-            let pending_todos: Vec<_> = crate::ai::skills::todo_skill::TodoSkill::list_todos_local(true);
-            
+            let pending_todos: Vec<_> =
+                crate::ai::skills::todo_skill::TodoSkill::list_todos_local(true);
+
             if !pending_todos.is_empty() {
                 let mut todo_list_str = String::from("[Current Pending Todos]\n");
                 for (i, t) in pending_todos.iter().enumerate() {
                     todo_list_str.push_str(&format!("{}. ({}) {}\n", i + 1, &t.id[..4], t.content));
                 }
-                
+
                 let todo_instruction = "\n[Instruction]\n\
                     These are the user's current pending tasks. Please act as a proactive assistant: \
                     be aware of these tasks, and naturally remind or suggest follow-up actions to the user \
                     during the conversation whenever relevant, helping them stay productive.";
-                
+
                 messages.push(Message {
                     role: "system".to_string(),
-                    content: Some(Content::Simple(format!("{}{}", todo_list_str, todo_instruction))),
+                    content: Some(Content::Simple(format!(
+                        "{}{}",
+                        todo_list_str, todo_instruction
+                    ))),
                     ..Default::default()
                 });
             }
@@ -365,13 +394,13 @@ impl ChatKernel {
                 for (i, m) in memos.iter().enumerate() {
                     memo_str.push_str(&format!("{}. {}\n", i + 1, m.content));
                 }
-                
+
                 let memo_instruction = "\n[Instruction]\n\
                     These are things the user wants to remember. If the user seems to have forgotten something \
                     mentioned here, or if the context is highly relevant, please proactively remind them in a natural way. \
                     IMPORTANT: Once the user confirms a memo event is completed or no longer needed, you SHOULD proactively \
                     call 'delete_memo' to keep the list clean and focused.";
-                
+
                 messages.push(Message {
                     role: "system".to_string(),
                     content: Some(Content::Simple(format!("{}{}", memo_str, memo_instruction))),
@@ -420,14 +449,10 @@ impl ChatKernel {
 
                 // Refresh tools each turn (supports dynamically loaded external skills)
                 let tools = self.skills.get_tools_for_llm();
-                let tools_opt = if tools.is_empty() {
-                    None
-                } else {
-                    Some(tools)
-                };
+                let tools_opt = if tools.is_empty() { None } else { Some(tools) };
                 tracing::info!("Turn {}/{}", turns, max_turns);
                 let _ = tx.send(AiResponseEvent::Status(ThinkingState::Network));
-                
+
                 tracing::debug!("Requesting LLM with {} messages", messages.len());
                 let mut retries = 0;
                 let max_retries = 3;
@@ -459,25 +484,29 @@ impl ChatKernel {
                 match response_result {
                     Ok(response_msg) => {
                         let original_content_str = response_msg.content_as_str();
-                        
+
                         // Parse Tool Intent
                         let mut stripped_content = original_content_str.to_string();
                         let mut is_declaring_tool = false;
                         let mut tag_found = false;
-                        
+
                         // Re-parse response to extract and strip the [TOOL_INTENT: ...] tag
                         if let Some(idx) = stripped_content.rfind("[TOOL_INTENT:") {
                             let sub = &stripped_content[idx..];
                             if let Some(end_idx) = sub.find(']') {
                                 tag_found = true;
-                                let intent_str = sub["[TOOL_INTENT:".len()..end_idx].trim().to_uppercase();
+                                let intent_str =
+                                    sub["[TOOL_INTENT:".len()..end_idx].trim().to_uppercase();
                                 if intent_str.contains("YES") || intent_str.contains("TRUE") {
                                     is_declaring_tool = true;
-                                } else if !intent_str.contains("NO") && !intent_str.contains("NONE") && !intent_str.contains("FALSE") {
+                                } else if !intent_str.contains("NO")
+                                    && !intent_str.contains("NONE")
+                                    && !intent_str.contains("FALSE")
+                                {
                                     // If it's a spelling mistake like [TOOL_INTENT: search_web], we still assume it intends to use a tool
                                     is_declaring_tool = true;
                                 }
-                                
+
                                 stripped_content.replace_range(idx..(idx + end_idx + 1), "");
                                 stripped_content = stripped_content.trim_end().to_string();
                             }
@@ -501,7 +530,8 @@ impl ChatKernel {
                             tool_used_this_run,
                             tool_intent_retry_used,
                         );
-                        let tense_confusion = tag_found && !is_declaring_tool && has_actual_tool_calls;
+                        let tense_confusion =
+                            tag_found && !is_declaring_tool && has_actual_tool_calls;
 
                         // Use stripped content downstream
                         let content_str = stripped_content.as_str();
@@ -510,7 +540,8 @@ impl ChatKernel {
                             let char_count = content_str.chars().count();
                             if char_count > 100 {
                                 let start: String = content_str.chars().take(50).collect();
-                                let end: String = content_str.chars().skip(char_count - 50).collect();
+                                let end: String =
+                                    content_str.chars().skip(char_count - 50).collect();
                                 format!("{} ... {}", start, end)
                             } else {
                                 content_str.to_string()
@@ -621,8 +652,12 @@ impl ChatKernel {
                                 };
 
                                 // Store in Layer 2 (Traces)
-                                self.memory.add_trace_for_request(&request_id, &response_msg).ok();
-                                self.memory.add_trace_for_request(&request_id, &tool_response).ok();
+                                self.memory
+                                    .add_trace_for_request(&request_id, &response_msg)
+                                    .ok();
+                                self.memory
+                                    .add_trace_for_request(&request_id, &tool_response)
+                                    .ok();
 
                                 messages.push(tool_response);
                             }
@@ -632,14 +667,17 @@ impl ChatKernel {
                                 "No tool calls. Final response received. ({} turns)",
                                 turns
                             );
-                            
+
                             break; // Break inner loop
                         }
                     }
                     Err(e) => {
                         tracing::error!("AI Client Error: {}", e);
                         if is_system_event {
-                            let _ = tx.send(AiResponseEvent::Response(format!("后台系统任务失败 (已重试3次): {}", e)));
+                            let _ = tx.send(AiResponseEvent::Response(format!(
+                                "后台系统任务失败 (已重试3次): {}",
+                                e
+                            )));
                         } else {
                             let _ = tx.send(AiResponseEvent::Response(format!("AI Error: {}", e)));
                         }
@@ -651,12 +689,15 @@ impl ChatKernel {
 
             if !content_accumulator.is_empty() || !fc_traces.is_empty() {
                 let combined_original_content = content_accumulator.join("\n\n");
-                
+
                 // 1. Process FC Traces
                 let fc_summary = if !fc_traces.is_empty() {
                     let mut combined_traces = fc_traces.join("\n---\n");
                     if combined_traces.len() > 2500 {
-                        tracing::info!("FC traces too long ({} chars), summarizing...", combined_traces.len());
+                        tracing::info!(
+                            "FC traces too long ({} chars), summarizing...",
+                            combined_traces.len()
+                        );
                         let summary_prompt = vec![Message {
                             role: "user".to_string(),
                             content: Some(Content::Simple(format!(
@@ -680,7 +721,10 @@ impl ChatKernel {
                     if combined_original_content.is_empty() {
                         format!("--- FC 调用过程记录 ---\n{}", traces)
                     } else {
-                        format!("{}\n\n--- FC 调用过程记录 ---\n{}", combined_original_content, traces)
+                        format!(
+                            "{}\n\n--- FC 调用过程记录 ---\n{}",
+                            combined_original_content, traces
+                        )
                     }
                 } else {
                     combined_original_content.clone()
@@ -688,36 +732,44 @@ impl ChatKernel {
 
                 // 3. Save to Memory (L1)
                 let user_msg_id = self.memory.add_message_returning_id(&user_msg).unwrap_or(0);
-                
+
                 // If it's a multimodal request with images, spawn async task to generate description
-                if user_msg_id > 0 && !images.is_empty() && self.config.active_profile().is_multimodal {
+                if user_msg_id > 0
+                    && !images.is_empty()
+                    && self.config.active_profile().is_multimodal
+                {
                     let client_clone = client.clone();
                     let memory_clone = Arc::clone(&self.memory);
                     let images_clone = images.clone();
-                    
+
                     tokio::spawn(async move {
-                        let mut prompt_parts = vec![ContentPart::Text { 
-                            text: "请用简短客观的语言描述这张/这些图片的内容，重点提取画面中的关键信息（如人物特征、场景、核心物件、明显意图），以便后续脱离图片阅读这段文字也能理解上下文。不要包含多余寒暄。".to_string() 
+                        let mut prompt_parts = vec![ContentPart::Text {
+                            text: "请用简短客观的语言描述这张/这些图片的内容，重点提取画面中的关键信息（如人物特征、场景、核心物件、明显意图），以便后续脱离图片阅读这段文字也能理解上下文。不要包含多余寒暄。".to_string()
                         }];
                         for img in images_clone {
-                            let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &img.data);
+                            let b64 = base64::Engine::encode(
+                                &base64::engine::general_purpose::STANDARD,
+                                &img.data,
+                            );
                             prompt_parts.push(ContentPart::ImageUrl {
                                 image_url: ImageUrl {
                                     url: format!("data:{};base64,{}", img.mime_type, b64),
                                 },
                             });
                         }
-                        
+
                         let prompt_msg = Message {
                             role: "user".to_string(),
                             content: Some(Content::Multimodal(prompt_parts)),
                             ..Default::default()
                         };
-                        
+
                         let mut attempts = 0;
                         let mut desc_result = String::new();
                         while attempts < 3 {
-                            if let Ok(resp) = client_clone.chat(vec![prompt_msg.clone()], None).await {
+                            if let Ok(resp) =
+                                client_clone.chat(vec![prompt_msg.clone()], None).await
+                            {
                                 let txt = resp.content_as_str().trim();
                                 if !txt.is_empty() {
                                     desc_result = txt.to_string();
@@ -727,15 +779,15 @@ impl ChatKernel {
                             attempts += 1;
                             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                         }
-                        
+
                         if desc_result.is_empty() {
                             desc_result = "[未能成功生成此图片的总结代述]".to_string();
                         }
-                        
+
                         let _ = memory_clone.update_image_desc(user_msg_id, &desc_result);
                     });
                 }
-                
+
                 let response_msg = Message {
                     role: "assistant".to_string(),
                     content: Some(Content::Simple(db_content)),
@@ -747,7 +799,7 @@ impl ChatKernel {
 
                 // Clear traces AFTER the turn is fully complete and saved to Layer 1
                 self.memory.clear_traces_for_request(&request_id).ok();
-                
+
                 // Prune expired images to save DB space (keep last 5)
                 self.memory.prune_expired_images(5).ok();
 
@@ -810,9 +862,10 @@ impl ChatKernel {
 
             if let Ok(last_summary) = client.chat(messages, None).await {
                 let summary_text = last_summary.content_as_str().to_string();
-                
+
                 // Construct UI intermediate for handover
-                let ui_handover_msg = format!("(思考中) 刚才我：\n{}\n\n正在继续处理...", summary_text);
+                let ui_handover_msg =
+                    format!("(思考中) 刚才我：\n{}\n\n正在继续处理...", summary_text);
                 content_accumulator.push(ui_handover_msg.clone());
                 let _ = tx.send(AiResponseEvent::Response(ui_handover_msg));
 
@@ -841,7 +894,11 @@ impl ChatKernel {
         input_data: crate::types::ChatInput,
         tx: Sender<AiResponseEvent>,
     ) {
-        tracing::info!("[Kernel] handle_system_event | text: {:.100}, images: {}", input_data.text, input_data.images.len());
+        tracing::info!(
+            "[Kernel] handle_system_event | text: {:.100}, images: {}",
+            input_data.text,
+            input_data.images.len()
+        );
         let prompt = format!(
             "{}\n\n[SYSTEM INSTRUCTION] This is an autonomous system event. You are proactive. \
             Based on the context and everything you know, decide if you should use tools (e.g. search weather, check news, send_notification) to help the user or record new insights. \
@@ -856,11 +913,7 @@ impl ChatKernel {
         self.handle(input, tx).await
     }
 
-    async fn run_memory_blocking<T, F>(
-        &self,
-        operation: &'static str,
-        f: F,
-    ) -> Result<T, String>
+    async fn run_memory_blocking<T, F>(&self, operation: &'static str, f: F) -> Result<T, String>
     where
         T: Send + 'static,
         F: FnOnce(&MemoryManager) -> rusqlite::Result<T> + Send + 'static,
@@ -880,7 +933,9 @@ impl ChatKernel {
             let guard = match self.memory.try_start_summarization() {
                 Some(guard) => guard,
                 None => {
-                    tracing::debug!("[Kernel] Summarization skipped: another task is already running");
+                    tracing::debug!(
+                        "[Kernel] Summarization skipped: another task is already running"
+                    );
                     return Ok(());
                 }
             };
@@ -916,7 +971,9 @@ impl ChatKernel {
                 .await?;
 
             if l1_batch.is_empty() {
-                tracing::warn!("[Kernel] L1 threshold was reached but no messages were available to summarize");
+                tracing::warn!(
+                    "[Kernel] L1 threshold was reached but no messages were available to summarize"
+                );
             } else {
                 let context: Vec<Message> = l1_batch.iter().map(|(_, msg)| msg.clone()).collect();
                 let mut prompt = context.clone();
@@ -937,7 +994,10 @@ impl ChatKernel {
                             let summary_for_commit = summary_text.clone();
                             let committed = self
                                 .run_memory_blocking("commit L1 summary", move |memory| {
-                                    memory.save_l1_summary_and_mark(&processed_ids, &summary_for_commit)
+                                    memory.save_l1_summary_and_mark(
+                                        &processed_ids,
+                                        &summary_for_commit,
+                                    )
                                 })
                                 .await?;
                             if committed {
@@ -1038,7 +1098,11 @@ impl ChatKernel {
                             }
                         }
                         Err(error) => {
-                            tracing::warn!("[Kernel] L2->L3 summarization request failed on attempt {}: {}", attempt, error);
+                            tracing::warn!(
+                                "[Kernel] L2->L3 summarization request failed on attempt {}: {}",
+                                attempt,
+                                error
+                            );
                             break;
                         }
                     }

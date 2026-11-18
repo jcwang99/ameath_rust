@@ -30,9 +30,7 @@ pub struct TtsController {
     notifier: Arc<Notify>,
 }
 
-fn abort_active_synthesis(
-    active_synthesis: &Arc<Mutex<Option<tokio::task::AbortHandle>>>,
-) -> bool {
+fn abort_active_synthesis(active_synthesis: &Arc<Mutex<Option<tokio::task::AbortHandle>>>) -> bool {
     if let Ok(mut guard) = active_synthesis.lock() {
         if let Some(handle) = guard.take() {
             handle.abort();
@@ -244,7 +242,11 @@ impl TtsController {
         if let Ok(mut q) = self.queue.lock() {
             let was_full = q.len() >= MAX_TTS_QUEUE;
             enqueue_command(&mut q, cmd);
-            tracing::info!("[TTS] speak: queue_len={}, dropped_oldest={}", q.len(), was_full);
+            tracing::info!(
+                "[TTS] speak: queue_len={}, dropped_oldest={}",
+                q.len(),
+                was_full
+            );
             self.notifier.notify_one();
         }
     }

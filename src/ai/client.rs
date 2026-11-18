@@ -193,10 +193,7 @@ pub(crate) enum ResponsesInputItem {
         arguments: String,
     },
     #[serde(rename = "function_call_output")]
-    FunctionCallOutput {
-        call_id: String,
-        output: String,
-    },
+    FunctionCallOutput { call_id: String, output: String },
 }
 
 /// Content in Responses API input can be a simple string or an array of content parts
@@ -242,13 +239,13 @@ pub(crate) enum ResponsesContentBlock {
 /// Parse the Responses API JSON response into output items.
 /// Uses Value-based extraction to tolerate unknown/extra fields gracefully.
 pub(crate) fn parse_responses_api_output(body: &str) -> Result<Vec<ResponsesOutputItem>, String> {
-    let root: Value = serde_json::from_str(body).map_err(|e| {
-        format!("Failed to parse Responses API JSON: {}", e)
-    })?;
+    let root: Value = serde_json::from_str(body)
+        .map_err(|e| format!("Failed to parse Responses API JSON: {}", e))?;
 
-    let output_arr = root.get("output").and_then(|v| v.as_array()).ok_or_else(|| {
-        "Responses API: missing 'output' array in response".to_string()
-    })?;
+    let output_arr = root
+        .get("output")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "Responses API: missing 'output' array in response".to_string())?;
 
     let mut items = Vec::new();
     for item in output_arr {
@@ -281,25 +278,50 @@ pub(crate) fn parse_responses_api_output(body: &str) -> Result<Vec<ResponsesOutp
                         }
                     }
                 }
-                let encrypted = item.get("encrypted_content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let encrypted = item
+                    .get("encrypted_content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 items.push(ResponsesOutputItem::Reasoning {
                     summary: summary_text,
                     encrypted_content: encrypted,
                 });
             }
             "function_call" => {
-                let item_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let call_id = item.get("call_id")
+                let item_id = item
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let call_id = item
+                    .get("call_id")
                     .or_else(|| item.get("id"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let arguments = item.get("arguments").and_then(|v| v.as_str()).unwrap_or("{}").to_string();
-                items.push(ResponsesOutputItem::FunctionCall { item_id, call_id, name, arguments });
+                let name = item
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let arguments = item
+                    .get("arguments")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("{}")
+                    .to_string();
+                items.push(ResponsesOutputItem::FunctionCall {
+                    item_id,
+                    call_id,
+                    name,
+                    arguments,
+                });
             }
             other => {
-                tracing::debug!("Responses API: skipping unknown output item type: '{}'", other);
+                tracing::debug!(
+                    "Responses API: skipping unknown output item type: '{}'",
+                    other
+                );
             }
         }
     }
@@ -387,9 +409,7 @@ pub(crate) fn convert_messages_to_responses_input(
                             .iter()
                             .map(|p| match p {
                                 ContentPart::Text { text } => {
-                                    ResponsesInputContentPart::InputText {
-                                        text: text.clone(),
-                                    }
+                                    ResponsesInputContentPart::InputText { text: text.clone() }
                                 }
                                 ContentPart::ImageUrl { image_url } => {
                                     ResponsesInputContentPart::InputImage {
@@ -417,7 +437,7 @@ pub(crate) fn convert_messages_to_responses_input(
                     });
                 }
 
-                // Assistant turnaround: Many proxies (like TokenX) break if a function_call item 
+                // Assistant turnaround: Many proxies (like TokenX) break if a function_call item
                 // is sent without a preceding message item for the same assistant turn.
                 if let Some(tool_calls) = &msg.tool_calls {
                     // Always emit a message item first, even if text content is empty, to anchor the function_calls
@@ -426,7 +446,7 @@ pub(crate) fn convert_messages_to_responses_input(
                         role: "assistant".to_string(),
                         content: Some(ResponsesInputContent::Text(content_str.to_string())),
                     });
-                    
+
                     for tc in tool_calls {
                         items.push(ResponsesInputItem::FunctionCall {
                             id: None, // Leave empty to let server assign its own item IDs
@@ -590,9 +610,11 @@ impl OpenAiClient {
         reasoning_effort: Option<String>,
     ) -> Result<Message, String> {
         if self.use_responses_api {
-            self.chat_responses_api(messages, tools, reasoning_effort).await
+            self.chat_responses_api(messages, tools, reasoning_effort)
+                .await
         } else {
-            self.chat_completions_api(messages, tools, reasoning_effort).await
+            self.chat_completions_api(messages, tools, reasoning_effort)
+                .await
         }
     }
 
@@ -604,14 +626,20 @@ impl OpenAiClient {
         reasoning_effort: Option<String>,
     ) -> Result<Message, String> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        
+
         // Detailed request context
-        let role_counts = messages.iter().fold(std::collections::HashMap::new(), |mut acc, m| {
-            *acc.entry(&m.role).or_insert(0) += 1;
-            acc
-        });
-        tracing::info!("AI Request | URL: {} | Model: {} | Messages: {} ({:?})", 
-            url, self.model, messages.len(), role_counts
+        let role_counts = messages
+            .iter()
+            .fold(std::collections::HashMap::new(), |mut acc, m| {
+                *acc.entry(&m.role).or_insert(0) += 1;
+                acc
+            });
+        tracing::info!(
+            "AI Request | URL: {} | Model: {} | Messages: {} ({:?})",
+            url,
+            self.model,
+            messages.len(),
+            role_counts
         );
 
         let request = ChatRequest {
@@ -656,12 +684,18 @@ impl OpenAiClient {
     ) -> Result<Message, String> {
         let url = format!("{}/responses", self.base_url.trim_end_matches('/'));
 
-        let role_counts = messages.iter().fold(std::collections::HashMap::new(), |mut acc, m| {
-            *acc.entry(&m.role).or_insert(0) += 1;
-            acc
-        });
-        tracing::info!("AI Request [Responses API] | URL: {} | Model: {} | Messages: {} ({:?})",
-            url, self.model, messages.len(), role_counts
+        let role_counts = messages
+            .iter()
+            .fold(std::collections::HashMap::new(), |mut acc, m| {
+                *acc.entry(&m.role).or_insert(0) += 1;
+                acc
+            });
+        tracing::info!(
+            "AI Request [Responses API] | URL: {} | Model: {} | Messages: {} ({:?})",
+            url,
+            self.model,
+            messages.len(),
+            role_counts
         );
 
         let (instructions, input) = convert_messages_to_responses_input(&messages);
@@ -693,16 +727,20 @@ impl OpenAiClient {
         };
 
         // Summary of payload for logs
-        let item_types: Vec<String> = request.input.iter().map(|it| {
-            match it {
+        let item_types: Vec<String> = request
+            .input
+            .iter()
+            .map(|it| match it {
                 ResponsesInputItem::Message { role, .. } => format!("message({})", role),
                 ResponsesInputItem::Reasoning { .. } => "reasoning".to_string(),
                 ResponsesInputItem::FunctionCall { id, .. } => {
                     format!("function_call(id={})", id.as_deref().unwrap_or("none"))
                 }
-                ResponsesInputItem::FunctionCallOutput { call_id, .. } => format!("function_call_output({})", call_id),
-            }
-        }).collect();
+                ResponsesInputItem::FunctionCallOutput { call_id, .. } => {
+                    format!("function_call_output({})", call_id)
+                }
+            })
+            .collect();
         tracing::debug!("Responses API Input Sequence: [{}]", item_types.join(", "));
 
         let body_text = self.send_request(&url, &request).await?;
@@ -725,11 +763,7 @@ impl OpenAiClient {
     }
 
     /// Common HTTP sending logic shared by both API paths
-    async fn send_request<T: Serialize>(
-        &self,
-        url: &str,
-        request: &T,
-    ) -> Result<String, String> {
+    async fn send_request<T: Serialize>(&self, url: &str, request: &T) -> Result<String, String> {
         let body = serde_json::to_string(request).map_err(|e| e.to_string())?;
         if body.chars().count() > 1000 {
             let preview: String = body.chars().take(1000).collect();
@@ -757,10 +791,16 @@ impl OpenAiClient {
         tracing::info!("AI Response Status: {}", status);
 
         // Defensive check: If server sends event-stream, we must reject it early
-        if let Some(ct) = headers.get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()) {
+        if let Some(ct) = headers
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+        {
             if ct.contains("text/event-stream") {
                 tracing::error!("Server ignored stream:false and sent text/event-stream");
-                return Err("API error: Received unexpected streaming response (text/event-stream).".to_string());
+                return Err(
+                    "API error: Received unexpected streaming response (text/event-stream)."
+                        .to_string(),
+                );
             }
         }
 
@@ -844,7 +884,9 @@ mod reasoning_effort_tests {
         assert!(rejects_reasoning_effort(
             "Invalid request: reasoning.effort is not supported"
         ));
-        assert!(!rejects_reasoning_effort("API Error (500): internal server error"));
+        assert!(!rejects_reasoning_effort(
+            "API Error (500): internal server error"
+        ));
         assert!(!rejects_reasoning_effort(
             "API Error (400): invalid value for temperature"
         ));
@@ -852,7 +894,10 @@ mod reasoning_effort_tests {
 
     #[test]
     fn invalid_effort_values_are_not_sent() {
-        assert_eq!(normalize_reasoning_effort(" HIGH ".to_string()).as_deref(), Some("high"));
+        assert_eq!(
+            normalize_reasoning_effort(" HIGH ".to_string()).as_deref(),
+            Some("high")
+        );
         assert_eq!(normalize_reasoning_effort("xhigh".to_string()), None);
         assert_eq!(normalize_reasoning_effort("".to_string()), None);
     }

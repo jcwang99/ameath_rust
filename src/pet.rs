@@ -137,12 +137,8 @@ impl Pet {
 
                     let (w, h) = self.get_scaled_size();
                     let (sw, sh) = self.screen_size;
-                    let (min_x, min_y, mut max_x, mut max_y) = self.safe_bounds.unwrap_or((
-                        0.0,
-                        0.0,
-                        sw - w,
-                        sh - h,
-                    ));
+                    let (min_x, min_y, mut max_x, mut max_y) =
+                        self.safe_bounds.unwrap_or((0.0, 0.0, sw - w, sh - h));
                     max_x = max_x.max(min_x);
                     max_y = max_y.max(min_y);
 
@@ -254,12 +250,8 @@ impl Pet {
         let (w, h) = self.get_scaled_size();
         let (sw, sh) = self.screen_size;
 
-        let (min_x, min_y, mut max_x, mut max_y) = self.safe_bounds.unwrap_or((
-            0.0,
-            0.0,
-            sw - w,
-            sh - h,
-        ));
+        let (min_x, min_y, mut max_x, mut max_y) =
+            self.safe_bounds.unwrap_or((0.0, 0.0, sw - w, sh - h));
         max_x = max_x.max(min_x);
         max_y = max_y.max(min_y);
 
@@ -443,5 +435,4 @@ impl Pet {
         }
         false
     }
-
 }

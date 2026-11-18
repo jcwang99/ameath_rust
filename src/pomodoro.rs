@@ -221,14 +221,18 @@ impl Pomodoro {
             let fill_width = (width as f32 * progress) as u32;
             let radius = (8.0 * scale) as u32;
 
-            let buffer_u32 = std::slice::from_raw_parts_mut(pixel_ptr as *mut u32, w_usize * h_usize);
-            
+            let buffer_u32 =
+                std::slice::from_raw_parts_mut(pixel_ptr as *mut u32, w_usize * h_usize);
+
             // 1. Generate high-quality AA mask for the whole rounded rect
             let mut mask = vec![0u8; (width * height) as usize];
             crate::ui_primitives::draw_rounded_rect_alpha_internal(
-                &mut mask, 
+                &mut mask,
                 width as u32,
-                0, 0, width as u32, height as u32,
+                0,
+                0,
+                width as u32,
+                height as u32,
                 radius,
             );
 
@@ -237,19 +241,29 @@ impl Pomodoro {
                 for x in 0..width {
                     let idx = (y * width + x) as usize;
                     let edge_alpha = mask[idx] as u32;
-                    if edge_alpha == 0 { continue; }
+                    if edge_alpha == 0 {
+                        continue;
+                    }
 
                     let is_fill = x < fill_width as i32;
-                    let color_val = if is_fill { progress_color_val } else { bg_color_val };
+                    let color_val = if is_fill {
+                        progress_color_val
+                    } else {
+                        bg_color_val
+                    };
 
                     let sa = (color_val >> 24) & 0xFF;
-                    let sa = if sa == 0 && (color_val & 0xFFFFFF) != 0 { 255 } else { sa };
+                    let sa = if sa == 0 && (color_val & 0xFFFFFF) != 0 {
+                        255
+                    } else {
+                        sa
+                    };
                     let effective_a = (sa * edge_alpha) / 255;
-                    
+
                     let r = ((color_val >> 16) & 0xFF) * effective_a / 255;
                     let g = ((color_val >> 8) & 0xFF) * effective_a / 255;
                     let b = (color_val & 0xFF) * effective_a / 255;
-                    
+
                     // Premultiplied BGR for GDI compatibility (bits are [B, G, R, A] in LE)
                     buffer_u32[idx] = (effective_a << 24) | (r << 16) | (g << 8) | b;
                 }
@@ -259,27 +273,34 @@ impl Pomodoro {
             // Use border_alpha_internal directly to avoid redundant fills
             let mut border_alpha = vec![0u8; (width * height) as usize];
             crate::ui_primitives::draw_rounded_rect_border_alpha_internal(
-                &mut border_alpha, width as u32, width as u32, height as u32, radius, 1
+                &mut border_alpha,
+                width as u32,
+                width as u32,
+                height as u32,
+                radius,
+                1,
             );
-            
+
             let b_rb = border_color_val & 0x00FF00FF;
             let b_g = border_color_val & 0x0000FF00;
             let b_a = 255u32;
 
             for i in 0..(w_usize * h_usize) {
                 let edge_a = border_alpha[i] as u32;
-                if edge_a == 0 { continue; }
-                
+                if edge_a == 0 {
+                    continue;
+                }
+
                 let sa = (b_a * edge_a) >> 8;
                 let inv_a = 255 - sa;
                 let d = buffer_u32[i];
                 let d_rb = d & 0x00FF00FF;
                 let d_g = d & 0x0000FF00;
-                
+
                 let res_rb = (b_rb * sa + d_rb * inv_a) >> 8;
                 let res_g = (b_g * sa + d_g * inv_a) >> 8;
                 let res_a = sa + ((((d >> 24) & 0xFF) * inv_a) >> 8);
-                
+
                 buffer_u32[i] = (res_a << 24) | (res_rb & 0x00FF00FF) | (res_g & 0x0000FF00);
             }
 

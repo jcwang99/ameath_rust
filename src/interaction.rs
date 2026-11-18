@@ -108,7 +108,12 @@ impl ActionScheduler {
         });
 
         cfg.save();
-        tracing::info!("[Scheduler] Reminder scheduled: '{}' in {} min, trigger at {}", memo, mins, trigger_time.format("%H:%M"));
+        tracing::info!(
+            "[Scheduler] Reminder scheduled: '{}' in {} min, trigger at {}",
+            memo,
+            mins,
+            trigger_time.format("%H:%M")
+        );
 
         Ok(format!("Scheduled: '{}' in {} minutes.", memo, mins))
     }
@@ -122,7 +127,7 @@ impl ActionScheduler {
 
         let now = Local::now();
         let target_time = DateTime::parse_from_rfc3339(&cfg.items[0].time).unwrap_or_default();
-        
+
         if now.with_timezone(&target_time.timezone()) >= target_time {
             let item = cfg.items.remove(0);
             cfg.save();
@@ -535,7 +540,11 @@ impl InteractionManager {
             self.last_interaction = now; // Reset routine timer too
             let now_local = Local::now();
             let scheduled_fmt = DateTime::parse_from_rfc3339(&scheduled_time)
-                .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
+                .map(|dt| {
+                    dt.with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M")
+                        .to_string()
+                })
                 .unwrap_or(scheduled_time);
             let now_fmt = now_local.format("%Y-%m-%d %H:%M").to_string();
             return Some(PendingInteractionRequest::direct(
@@ -690,7 +699,8 @@ impl InteractionManager {
                             if let Some(ref t) = routine.time_of_day {
                                 if let Ok(time) = NaiveTime::parse_from_str(t, "%H:%M") {
                                     let scheduled = now_local.date_naive().and_time(time);
-                                    let deadline = scheduled + chrono::Duration::minutes(expiry_min as i64);
+                                    let deadline =
+                                        scheduled + chrono::Duration::minutes(expiry_min as i64);
                                     now_local.naive_local() > deadline
                                 } else {
                                     false
@@ -702,12 +712,19 @@ impl InteractionManager {
                         _ => {
                             if let Some(lr) = last_run {
                                 let interval_secs = match routine.schedule_type {
-                                    ScheduleType::IntervalDays => routine.interval.unwrap_or(1) as i64 * 86400,
-                                    ScheduleType::IntervalHours => routine.interval.unwrap_or(1) as i64 * 3600,
-                                    ScheduleType::IntervalMinutes => routine.interval.unwrap_or(1) as i64 * 60,
+                                    ScheduleType::IntervalDays => {
+                                        routine.interval.unwrap_or(1) as i64 * 86400
+                                    }
+                                    ScheduleType::IntervalHours => {
+                                        routine.interval.unwrap_or(1) as i64 * 3600
+                                    }
+                                    ScheduleType::IntervalMinutes => {
+                                        routine.interval.unwrap_or(1) as i64 * 60
+                                    }
                                     _ => 0,
                                 };
-                                let deadline = lr + chrono::Duration::seconds(interval_secs)
+                                let deadline = lr
+                                    + chrono::Duration::seconds(interval_secs)
                                     + chrono::Duration::minutes(expiry_min as i64);
                                 now_local > deadline
                             } else {
@@ -717,17 +734,29 @@ impl InteractionManager {
                     };
 
                     if is_expired {
-                        self.routine_states.last_executions.insert(routine.id.clone(), now_local.to_rfc3339());
+                        self.routine_states
+                            .last_executions
+                            .insert(routine.id.clone(), now_local.to_rfc3339());
                         self.routine_states.save();
-                        tracing::info!("Routine '{}' expired (past {}min window), skipping.", routine.title, expiry_min);
+                        tracing::info!(
+                            "Routine '{}' expired (past {}min window), skipping.",
+                            routine.title,
+                            expiry_min
+                        );
                         continue;
                     }
                 }
 
-                self.routine_states.last_executions.insert(routine.id.clone(), now_local.to_rfc3339());
+                self.routine_states
+                    .last_executions
+                    .insert(routine.id.clone(), now_local.to_rfc3339());
                 self.routine_states.save();
                 self.last_interaction = now; // Reset random interaction timer
-                tracing::info!("[Routine] Triggered: '{}' (type={:?})", routine.title, routine.schedule_type);
+                tracing::info!(
+                    "[Routine] Triggered: '{}' (type={:?})",
+                    routine.title,
+                    routine.schedule_type
+                );
                 let scheduled_time_hint = match routine.schedule_type {
                     ScheduleType::Daily | ScheduleType::Weekly | ScheduleType::Monthly => {
                         routine.time_of_day.as_deref().unwrap_or("N/A").to_string()
